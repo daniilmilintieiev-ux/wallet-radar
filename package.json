@@ -1,0 +1,24 @@
+{
+  "name": "wallet-radar",
+  "version": "0.1.0",
+  "description": "Continuous wallet monitoring for Solana: baseline, diff, anomaly detection, LLM digest, alerts.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test \"dist/test/**/*.test.js\"",
+    "radar": "node dist/src/cli.js",
+    "mcp": "node dist/src/mcp.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.5.4"
+  }
+}

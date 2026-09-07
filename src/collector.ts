@@ -1,0 +1,88 @@
+import { EnhancedTx } from "./types.js";
+
+/**
+ * Fetch a wallet's recent enhanced transactions from the Helius Enhanced
+ * Transactions API (read-only GET).
+ *
+ * https://docs.helius.dev/api/transactions-api
+ */
+export async function fetchWalletTransactions(
+  apiKey: string,
+  walletAddress: string,
+  limit = 25,
+  before?: string,
+  after?: string,
+): Promise<EnhancedTx[]> {
+  const url = new URL(
+    `https://api.helius.xyz/v0/addresses/${walletAddress}/transactions`,
+  );
+  url.searchParams.set("api-key", apiKey);
+  url.searchParams.set("limit", String(limit));
+  if (before) url.searchParams.set("before", before);
+  if (after) url.searchParams.set("after", after);
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Helius fetch failed: ${response.status} ${response.statusText}`);
+  }
+  const data: unknown = await response.json();
+  return Array.isArray(data) ? (data as EnhancedTx[]) : [];
+}
+
+export interface HistoryQuery {
+  /** Unix seconds: only txs at/after this block time. */
+  gteTime?: number;
+  /** Unix seconds: only txs strictly before this block time. */
+  ltTime?: number;
+  /** Page size (max 100). Default 100. */
+  limit?: number;
+  /** Max pages to fetch (safety cap). Default 20. */
+  maxPages?: number;
+}
+
+/**
+ * Fetch a wallet's transaction history over an optional time range, paging
+ * backwards with signature cursors (`before` = oldest signature of the
+ * previous page). Returns txs in descending (newest-first) order.
+ *
+ * Verified against the live API (9/1): `before` accepts ONLY signatures
+ * (a unix timestamp there -> 400), while `gte-time`/`lt-time` are
+ * unix-seconds block-time filters.
+ */
+export async function fetchWalletHistory(
+  apiKey: string,
+  walletAddress: string,
+  query: HistoryQuery = {},
+): Promise<EnhancedTx[]> {
+  const limit = Math.min(Math.max(1, query.limit ?? 100), 100);
+  const maxPages = Math.max(1, query.maxPages ?? 20);
+  const out: EnhancedTx[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const url = new URL(
+      `https://api.helius.xyz/v0/addresses/${walletAddress}/transactions`,
+    );
+    url.searchParams.set("api-key", apiKey);
+    url.searchParams.set("limit", String(limit));
+    if (query.gteTime !== undefined) url.searchParams.set("gte-time", String(query.gteTime));
+    if (query.ltTime !== undefined) url.searchParams.set("lt-time", String(query.ltTime));
+    if (cursor) url.searchParams.set("before", cursor);
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`Helius history fetch failed: ${response.status} ${response.statusText}`);
+    }
+    const data: unknown = await response.json();
+    const batch: EnhancedTx[] = Array.isArray(data) ? data : [];
+    out.push(...batch);
+    if (batch.length < limit) break;
+    cursor = batch[batch.length - 1].signature;
+  }
+  return out;
+}
