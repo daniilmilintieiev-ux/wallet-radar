@@ -1,10 +1,40 @@
 # Wallet Radar
 
+[![CI](https://github.com/daniilmilintieiev-ux/wallet-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/actions)
+[![TypeScript](https://img.shields.io/badge/TypeScript-100%25-3178c6)](https://www.typescriptlang.org/)
+[![zero deps](https://img.shields.io/badge/deps-0-3fb950)](https://nodejs.org/api/sqlite.html)
+[![node ≥ 22](https://img.shields.io/badge/node-%E2%89%A522-36d1dc)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](./LICENSE)
+
 Continuous wallet monitoring for Solana. Point-in-time wallet intelligence answers
 "what does this wallet look like right now?". Wallet Radar answers **"what changed,
 and does it matter?"** — for a watchlist of wallets, continuously.
 
 Built for the Solana hackathon (fall 2026, Colosseum).
+
+## Demo
+
+The whole product in ~30 seconds — a deterministic replay of a real wallet's
+"awakening" window (Mar–Aug 2026):
+
+1. A dormant wallet (silent 173 days) reactivates.
+2. Five large swaps fire — each 3–5.7× the wallet's own USD median, on a DEX
+   it had never touched.
+3. Six deterministic rules fire with structured evidence (tx signatures, numbers).
+4. One LLM call turns it into a sentence; one Telegram alert goes out.
+5. An agent calls `radar_trust` before a copy-trade — and **skips**, with a
+   machine-readable reason.
+
+Replay it yourself (frozen window, no state, no polling):
+
+```bash
+npm install && npm run build
+export HELIUS_API_KEY=...
+node dist/src/cli.js replay 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j \
+  --since 2026-03-11T07:36:15Z --until 2026-08-31T08:00:00Z --llm --alert
+```
+
+Video demo: <https://daniilmilintieiev-ux.github.io/wallet-radar/>
 
 ## Quick start
 
