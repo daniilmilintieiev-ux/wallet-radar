@@ -20,6 +20,8 @@ section{padding:34px 0}
 h2{font-size:14px;letter-spacing:3px;text-transform:uppercase;color:var(--dim);text-align:center;margin-bottom:22px}
 .video-frame{max-width:900px;margin:0 auto;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:#000;box-shadow:0 20px 60px rgba(0,0,0,.5)}
 video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;max-width:900px;margin:0 auto;padding:0 24px}
+.hero-cap{max-width:900px;margin:16px auto 0;text-align:center;color:var(--muted);font-size:14px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;max-width:1040px;margin:0 auto;padding:0 24px}
 .card{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--panel);transition:border-color .2s}
 .card:hover{border-color:#3a414b}
@@ -52,24 +54,29 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
 <section>
   <h2>Demo</h2>
   <div class="video-frame">
-    <video controls playsinline preload="metadata" poster="posters/hero.png" src="videos/wallet-radar-hero.mp4"></video>
+    <video controls playsinline preload="metadata" poster="posters/scope.png" src="videos/wallet-radar-scope.mp4"></video>
   </div>
+  <div class="hero-cap">The radar — one scope, one story: behavioral baseline, the long silence, the awakening, and the gate that holds the trade.</div>
 </section>
 
 <section>
-  <h2>Three more angles</h2>
-  <div class="grid3">
+  <h2>Other angles</h2>
+  <div class="grid2">
     <div class="card">
-      <video controls playsinline preload="none" poster="posters/terminal.png" src="videos/wallet-radar-terminal.mp4"></video>
-      <div class="lbl"><b>Authentic terminal</b><span>The real CLI, real output — no mockups.</span></div>
+      <video controls playsinline preload="none" poster="posters/hero.png" src="videos/wallet-radar-hero.mp4"></video>
+      <div class="lbl"><b>Narrated</b><span>Story cut with English voiceover + Russian subtitles.</span></div>
     </div>
     <div class="card">
       <video controls playsinline preload="none" poster="posters/cinematic.png" src="videos/wallet-radar-cinematic.mp4"></video>
-      <div class="lbl"><b>Cinematic</b><span>Motion-graphic cut of the awakening.</span></div>
+      <div class="lbl"><b>Cinematic</b><span>Fast motion-graphic cut of the awakening.</span></div>
     </div>
     <div class="card">
       <video controls playsinline preload="none" poster="posters/agent.png" src="videos/wallet-radar-agent.mp4"></video>
       <div class="lbl"><b>Agent gate</b><span>The MCP pre-flight check that skips the bad trade.</span></div>
+    </div>
+    <div class="card">
+      <video controls playsinline preload="none" poster="posters/terminal.png" src="videos/wallet-radar-terminal.mp4"></video>
+      <div class="lbl"><b>Authentic terminal</b><span>The real CLI, real output — no mockups.</span></div>
     </div>
   </div>
 </section>
