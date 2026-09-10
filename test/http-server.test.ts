@@ -60,6 +60,28 @@ test("http-server bin: bin/http-server supports --version", async () => {
   assert.equal(res.stdout.trim(), getVersion());
 });
 
+test("http-server: rate limiting returns 429 when per-minute limit exceeded", async () => {
+  const server = createServer({ rateLimitPerMin: 3 });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const r = await fetch(`${base}/`);
+      assert.equal(r.status, 200);
+    }
+    const r4 = await fetch(`${base}/`);
+    assert.equal(r4.status, 429);
+    const body = (await r4.json()) as { error: string; retryAfterSec: number };
+    assert.equal(body.error, "Too Many Requests");
+    assert.ok(body.retryAfterSec >= 1);
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
 test("http-server: GET /health returns 200 ok=true", async () => {
   const r = await startTestServer();
   try {

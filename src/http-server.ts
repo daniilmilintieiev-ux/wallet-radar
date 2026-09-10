@@ -236,14 +236,62 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   }
 }
 
-export function createServer(): http.Server {
+interface RateLimiter {
+  check(ip: string): { ok: boolean; retryAfterSec?: number };
+}
+
+function createRateLimiter(limitPerMin: number): RateLimiter {
+  const WINDOW_MS = 60_000;
+  const buckets = new Map<string, { count: number; resetAt: number }>();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, b] of buckets) if (now >= b.resetAt) buckets.delete(ip);
+  }, WINDOW_MS);
+  timer.unref();
+  return {
+    check(ip: string): { ok: boolean; retryAfterSec?: number } {
+      const now = Date.now();
+      const b = buckets.get(ip);
+      if (!b || now >= b.resetAt) {
+        buckets.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+        return { ok: true };
+      }
+      b.count += 1;
+      if (b.count > limitPerMin) {
+        return { ok: false, retryAfterSec: Math.max(1, Math.ceil((b.resetAt - now) / 1000)) };
+      }
+      return { ok: true };
+    },
+  };
+}
+
+export interface ServerOptions {
+  rateLimitPerMin?: number;
+}
+
+export function createServer(options: ServerOptions = {}): http.Server {
+  const limit = options.rateLimitPerMin ?? Number(process.env.RADAR_RATE_LIMIT_PER_MIN ?? 120);
+  const rateLimiter = limit > 0 ? createRateLimiter(limit) : null;
   return http.createServer((req, res) => {
+    const url = req.url ?? "/";
+    if (rateLimiter && url !== "/health" && (req.method ?? "GET") !== "OPTIONS") {
+      const rl = rateLimiter.check(req.socket.remoteAddress ?? "unknown");
+      if (!rl.ok) {
+        res.writeHead(429, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": String(rl.retryAfterSec ?? 60),
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ error: "Too Many Requests", retryAfterSec: rl.retryAfterSec ?? 60 }));
+        return;
+      }
+    }
     void handleRequest(req, res);
   });
 }
 
-export function startServer(port: number, host = "0.0.0.0"): http.Server {
-  const server = createServer();
+export function startServer(port: number, host = "0.0.0.0", options: ServerOptions = {}): http.Server {
+  const server = createServer(options);
   server.listen(port, host);
   return server;
 }
