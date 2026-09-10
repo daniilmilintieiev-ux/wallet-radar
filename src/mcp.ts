@@ -23,7 +23,7 @@ export function buildServer(): McpServer {
     "radar_scan",
     {
       description:
-        "One-shot continuous-monitoring scan of a Solana wallet: fetches recent transactions from Helius (env HELIUS_API_KEY required), fetches USD prices from the Jupiter Price API (keyless; falls back to major-only sizing if the feed is down), updates the behavioral baseline, runs 6 deterministic anomaly rules (LARGE_SWAP is compared in USD when prices are available). Returns riskScore (0-100), anomalies with structured evidence, and a human/LLM-readable digest.",
+        "One-shot continuous-monitoring scan of a Solana wallet: fetches recent transactions from Helius (env HELIUS_API_KEY required), fetches USD prices from the Jupiter Price API (keyless; falls back to major-only sizing if the feed is down), updates the behavioral baseline, runs 7 deterministic anomaly rules (LARGE_SWAP is compared in USD when prices are available). Returns riskScore (0-100), anomalies with structured evidence, and a human/LLM-readable digest.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
       },

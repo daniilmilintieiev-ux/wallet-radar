@@ -4,7 +4,10 @@ Continuous wallet monitoring for Solana. Point-in-time wallet intelligence answe
 "what does this wallet look like right now?". Wallet Radar answers **"what changed,
 and does it matter?"** — for a watchlist of wallets, continuously.
 
-Built for the Solana hackathon (fall 2026, Colosseum).
+Wallet Radar is in **early-access** (v0.1.x). It was prototyped at the Solana
+hackathon (Colosseum, fall 2026) and is now available as a live HTTP / MCP /
+x402 service. See [Status](#status), [Support](#support), and
+[Security](SECURITY.md).
 
 ## Quick start
 
@@ -185,7 +188,7 @@ deterministic baseline, risk score, digest — no watchlist, no state.
 
 `trust` answers the question an agent asks before paying a counterparty:
 **"is it safe to deal with this wallet right now?"** It combines the
-behavioral risk score (6 rules over the recent window) with payment capacity
+behavioral risk score (7 rules over the recent window) with payment capacity
 (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 
 ```bash
@@ -297,7 +300,7 @@ template digest is used — alerting never blocks on the LLM:
 JSON, or provider error payloads automatically degrade to the deterministic rule
 template without throwing into the continuous watch loop.
 
-## Known limitations (v1)
+## Current scope & known limitations
 
 - **Cold start**: Baseline is seeded from recent history on the first watch (paged up to 300 txs + priced). Historical anomalies inside this initial seed window are intentionally not alerted; a brand-new wallet with zero transaction history starts with an empty baseline.
 - **Baseline drift / Sybil**: Baseline medians use a weighted blend between existing and new batches, so sustained micro-swap activity over time dilutes `LARGE_SWAP` sensitivity. Known venues and programs are append-only, meaning malicious pre-warming suppresses `NEW_VENUE` and `NEW_PROTOCOL`. Planned mitigations: sample floor before trusting medians, robust statistics, and recency decay.
@@ -306,13 +309,49 @@ template without throwing into the continuous watch loop.
 
 ## Status
 
-MVP complete: collector (Helius), baseline (incl. USD median), analyzer (6
-rules, USD-normalized, unit-tested), template digest, optional LLM digest
-(any OpenAI-compatible endpoint, template fallback), watch loop with SQLite
-persistence (`node:sqlite`, zero deps), Telegram and Webhook alerts, replay
-(deterministic historical window), trust check (risk + liquidity →
-safe/hold/unknown pre-flight verdict for agent payments), MCP server
-(stdio). Continuous trust-score stretch remains.
+**Early-access (v0.1.x)** — the core is production-usable and live: collector
+(Helius), per-wallet behavioral baseline (incl. USD median), deterministic
+analyzer (7 rules, USD-normalized, unit-tested), `trust` pre-flight verdict
+(risk + liquidity → `safe`/`hold`/`unknown` for agent payments), MCP server
+(stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts,
+deterministic replay, and self-contained HTML reports. Continuous monitoring
+watches a wallet list and alerts on fresh anomalies.
+
+### Roadmap
+
+- Continuous per-wallet trust-score trend (time-series) in reports.
+- Robustness mitigations for baseline drift / Sybil (sample floor, robust
+  statistics, recency decay) — see Current scope.
+- Self-hosted deployment guide and hosted-API terms/SLA for paying customers.
+
+## Support
+
+- **Report issues** via [GitHub Issues](https://github.com/daniilmilintieiev-ux/wallet-radar/issues)
+  (non-security) or privately via [SECURITY.md](SECURITY.md) (security).
+- **Early-access response target:** we aim to acknowledge within 1 business day
+  and follow up with a plan or a fix. For hosted-API customers, support is
+  provided per engagement; a formal uptime SLA is on the roadmap.
+- **Live service:** `GET /health` reports the version and configuration status.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for supported versions, the private
+vulnerability-disclosure process, and how we handle data.
+
+## Privacy
+
+Wallet Radar is read-only and custody-free: it reads public on-chain data via
+Helius, never holds a private key, and never signs or moves your funds. x402
+payment verification is read-only (it reads the submitted transaction and the
+recipient USDC balance). The full data-handling model is in
+[SECURITY.md](SECURITY.md).
+
+## Documentation
+
+- [CHANGELOG.md](CHANGELOG.md) — release history and unreleased changes.
+- [SECURITY.md](SECURITY.md) — security policy, disclosure, data handling.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute.
+- [docs/trust-spec.md](docs/trust-spec.md) — trust-check design.
 
 ## Develop
 
