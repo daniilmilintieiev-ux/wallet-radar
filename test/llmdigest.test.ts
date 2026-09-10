@@ -60,7 +60,15 @@ test("llmConfigFromEnv: null without key, defaults with key, env overrides", () 
     assert.ok(over);
     assert.equal(over.baseUrl, "https://custom.test/v1");
     assert.equal(over.model, "custom-model");
+
+    // RADAR_LLM_URL fallback when RADAR_LLM_BASE is unset
+    delete process.env.RADAR_LLM_BASE;
+    process.env.RADAR_LLM_URL = "https://url-fallback.test/v1";
+    const fallbackUrl = llmConfigFromEnv();
+    assert.ok(fallbackUrl);
+    assert.equal(fallbackUrl.baseUrl, "https://url-fallback.test/v1");
   } finally {
+    delete process.env.RADAR_LLM_URL;
     if (saved.key === undefined) delete process.env.RADAR_LLM_KEY;
     else process.env.RADAR_LLM_KEY = saved.key;
     if (saved.base === undefined) delete process.env.RADAR_LLM_BASE;
@@ -222,3 +230,98 @@ test("bestEffortDigest: no config -> template; failed call -> fallback; ok -> ll
   assert.equal(r2.source, "llm");
   assert.equal(r2.digest, "Custom llm summary.");
 });
+
+test("llmDigest: degrades gracefully on timeout (returns null)", async () => {
+  const timeoutCfg: LlmConfig = {
+    ...CFG,
+    timeoutMs: 10,
+  };
+  const slowFetch: typeof fetch = async (_input, init) => {
+    return new Promise((resolve, reject) => {
+      const signal = init?.signal;
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          const err = new Error("This operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      }
+    });
+  };
+
+  const res = await llmDigest("W1", 65, ANOMALIES, timeoutCfg, slowFetch);
+  assert.equal(res, null);
+
+  const bestEffort = await bestEffortDigest("W1", 65, ANOMALIES, timeoutCfg, slowFetch);
+  assert.equal(bestEffort.source, "template");
+  assert.match(bestEffort.digest, /reactivated after ~82 days/);
+});
+
+test("llmDigest: degrades gracefully on bad or unexpected JSON shapes", async () => {
+  // 1. Invalid JSON syntax (e.g. HTML 502 / proxy page)
+  const htmlFetch: typeof fetch = async () =>
+    new Response("<html>Bad Gateway</html>", {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+  assert.equal(await llmDigest("W1", 65, ANOMALIES, CFG, htmlFetch), null);
+
+  // 2. Non-object JSON (null, primitive string, number)
+  const nullJsonFetch: typeof fetch = async () =>
+    new Response(JSON.stringify(null), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  assert.equal(await llmDigest("W1", 65, ANOMALIES, CFG, nullJsonFetch), null);
+
+  // 3. Empty object
+  const emptyObjFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  assert.equal(await llmDigest("W1", 65, ANOMALIES, CFG, emptyObjFetch), null);
+
+  // 4. Empty choices array
+  const emptyChoicesFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({ choices: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  assert.equal(await llmDigest("W1", 65, ANOMALIES, CFG, emptyChoicesFetch), null);
+
+  // 5. Choices with empty or non-string message content
+  const malformedChoiceFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: null } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  assert.equal(await llmDigest("W1", 65, ANOMALIES, CFG, malformedChoiceFetch), null);
+
+  // 6. Error payload from provider (e.g. { error: "overloaded" })
+  const errorObjFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({ error: { message: "Rate limit reached" } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  assert.equal(await llmDigest("W1", 65, ANOMALIES, CFG, errorObjFetch), null);
+});
+
+test("bestEffortDigest: never throws into the watch loop on synchronous/non-Error exceptions", async () => {
+  // Synchronous throw
+  const syncThrowFetch: typeof fetch = () => {
+    throw new TypeError("Failed to parse URL");
+  };
+  const r1 = await bestEffortDigest("W1", 65, ANOMALIES, CFG, syncThrowFetch);
+  assert.equal(r1.source, "template");
+  assert.ok(r1.digest.length > 0);
+
+  // Non-Error rejection (string/primitive throw)
+  const stringThrowFetch: typeof fetch = async () => {
+    throw "unhandled promise rejection string";
+  };
+  const r2 = await bestEffortDigest("W1", 65, ANOMALIES, CFG, stringThrowFetch);
+  assert.equal(r2.source, "template");
+  assert.ok(r2.digest.length > 0);
+});
+

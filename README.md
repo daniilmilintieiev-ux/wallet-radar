@@ -1,54 +1,29 @@
 # Wallet Radar
 
-[![CI](https://github.com/daniilmilintieiev-ux/wallet-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/actions)
-[![TypeScript](https://img.shields.io/badge/TypeScript-100%25-3178c6)](https://www.typescriptlang.org/)
-[![zero deps](https://img.shields.io/badge/deps-0-3fb950)](https://nodejs.org/api/sqlite.html)
-[![node ≥ 22](https://img.shields.io/badge/node-%E2%89%A522-36d1dc)](https://nodejs.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](./LICENSE)
-
 Continuous wallet monitoring for Solana. Point-in-time wallet intelligence answers
 "what does this wallet look like right now?". Wallet Radar answers **"what changed,
 and does it matter?"** — for a watchlist of wallets, continuously.
 
 Built for the Solana hackathon (fall 2026, Colosseum).
 
-## Demo
-
-The whole product in ~30 seconds — a deterministic replay of a real wallet's
-"awakening" window (Mar–Aug 2026):
-
-1. A dormant wallet (silent 173 days) reactivates.
-2. Five large swaps fire — each 3–5.7× the wallet's own USD median, on a DEX
-   it had never touched.
-3. Six deterministic rules fire with structured evidence (tx signatures, numbers).
-4. One LLM call turns it into a sentence; one Telegram alert goes out.
-5. An agent calls `radar_trust` before a copy-trade — and **skips**, with a
-   machine-readable reason.
-
-Replay it yourself (frozen window, no state, no polling):
-
-```bash
-npm install && npm run build
-export HELIUS_API_KEY=...
-node dist/src/cli.js replay 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j \
-  --since 2026-03-11T07:36:15Z --until 2026-08-31T08:00:00Z --llm --alert
-```
-
-The demo is a **replay of real on-chain data** — re-run it live and it reproduces the same
-verdict (RISK 100/100 · 8 anomalies · 1,307-tx baseline). See [`LIVE-DATA.md`](./LIVE-DATA.md)
-and [`scripts/verify-canon.sh`](./scripts/verify-canon.sh) to verify it yourself.
-
-Video demo: <https://daniilmilintieiev-ux.github.io/wallet-radar/>
-
 ## Quick start
 
 ```bash
+# 1. Install & build
 npm install && npm run build
+
+# 2. Verify with offline smoke test (no API keys required)
+npm run radar -- selftest
+
+# 3. Live scan a Solana wallet
 export HELIUS_API_KEY=...
-node dist/src/cli.js scan <wallet>   # one-shot: fetch + baseline + rules + risk score
+npm run radar -- scan <wallet>
+
+# 4. Run tests
+npm test
 ```
 
-`npm run radar` is an alias for the CLI (`npm run radar -- scan <wallet>`).
+`npm run radar` is an alias for the CLI (`node dist/src/cli.js`).
 
 ## How it works
 
@@ -65,7 +40,7 @@ watchlist ──> collector (Helius Enhanced Transactions, read-only)
              digest    (one LLM call per anomaly batch, template fallback)
                 │
                 ▼
-             alerts    (CLI, Telegram; webhook next)
+             alerts    (Telegram, Webhook, or stdout console)
 ```
 
 ### Anomaly rules (v1)
@@ -78,6 +53,7 @@ watchlist ──> collector (Helius Enhanced Transactions, read-only)
 | `LARGE_SWAP` | Swap size > N× the wallet's own median swap size — compared **in USD** (see below) when prices are available, otherwise major-only raw quantities |
 | `CONCENTRATION` | Repeated swaps into the same token in a short window |
 | `NEW_PROTOCOL` | First interaction with an unseen program |
+| `TOXIC_MINT` | Swap involves a token with unrenounced mint authority or freeze authority |
 
 ### USD normalization
 
@@ -88,6 +64,7 @@ normalizes swap sizes to USD with the Jupiter Price API (read-only, keyless):
 - Any other leg is valued with its Jupiter USD price.
 - The baseline tracks a running **median swap size in USD** across all mints,
   so `LARGE_SWAP` works for any token, not just the majors.
+- The baseline computes **PnL-lite** (`pnl: { realizedUsd, winRate, roundTrips }`) via FIFO over closed swap legs; unpriced or one-sided legs emit `null`.
 - If the price feed is unavailable (or a swap can't be priced), the rule falls
   back to major-only raw quantities — a scan never fails because of prices.
 
@@ -98,7 +75,7 @@ one-sentence human-readable description, so both agents and humans can verify it
 
 Wallet Radar ships as an MCP server (`src/mcp.ts`), so any agent (Claude Code,
 Cursor, solana-agent-kit) can plug in one-shot risk checks with a single line of
-config. Three tools:
+config. Four tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -126,6 +103,72 @@ Example client config (`.mcp.json` / Claude Code / Cursor):
 }
 ```
 
+## MCP Service (AgenticTrade)
+
+Wallet Radar is packaged as a standalone MCP service ready for listing on [AgenticTrade](https://github.com/JudyaiLab/agentictrade) ([agentictrade.io](https://agentictrade.io)), allowing autonomous AI agents to discover, invoke, and pay for wallet risk checks via Model Context Protocol.
+
+### Running the standalone server
+
+The server can be run directly via `bin/mcp-server` or `npm run mcp:server`:
+
+```bash
+# Start stdio MCP server for agent hosts
+./bin/mcp-server
+# or
+npm run mcp:server
+
+# Print version and exit 0
+./bin/mcp-server --version
+
+# Print JSON health status and exit 0
+./bin/mcp-server --health
+```
+
+### Environment configuration
+
+Configuration is loaded from the environment, `radar.env`, or `.env`:
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `HELIUS_API_KEY` | Optional* | — | Helius API key (*required for live `radar_scan` and `radar_trust`) |
+| `SOLANA_RPC_URL` | Optional | — | Custom Solana RPC endpoint |
+| `RADAR_MAX_RISK` | Optional | `30` | Behavioral risk score threshold (0–100) |
+| `RADAR_MIN_LIQUIDITY_USD` | Optional | `50` | Minimum wallet liquidity threshold in USD |
+| `RADAR_WINDOW_DAYS` | Optional | `7` | Risk evaluation window in days |
+| `RADAR_SEED_PAGES` | Optional | `3` | History pages fetched when seeding a wallet baseline (1–20) |
+| `RADAR_QUIET_POLLS` | Optional | `3` | Consecutive zero-tx polls before stretching poll interval |
+| `RADAR_MAX_POLL_MS` | Optional | `3600000` | Maximum stretched poll interval in ms (60m) |
+| `WEBHOOK_URL` | Optional | — | Webhook endpoint for real-time compact JSON anomaly alerts |
+| `RADAR_LLM_KEY` | Optional | — | API key for LLM-generated anomaly digests |
+| `RADAR_LLM_BASE` | Optional | `https://api.openai.com/v1` | LLM service base URL (alias: `RADAR_LLM_URL`) |
+| `RADAR_LLM_MODEL` | Optional | `gpt-4o-mini` | LLM model identifier |
+| `RADAR_LLM_PATH` | Optional | — | LLM API endpoint path (e.g. `/api/generate` for Ollama) |
+| `RADAR_LLM_TIMEOUT_MS` | Optional | `5000` | Timeout for LLM digest calls in milliseconds |
+| `RADAR_LLM_OPTIONS` | Optional | — | JSON string of inference parameters |
+
+### Service manifest
+
+The service manifest is located at [`agentictrade/manifest.json`](agentictrade/manifest.json). It declares service metadata (`wallet-radar` v0.1.0), stdio transport, tools (`radar_scan`, `radar_analyze`, `radar_selftest`), configuration keys, and per-use pricing.
+
+### Listing on AgenticTrade
+
+1. **Per-use USDC pricing**:
+   - `radar_scan`: `0.005 USDC` per call (full Helius history + Jupiter USD pricing + anomaly rules)
+   - `radar_analyze`: `0.001 USDC` per call (offline analysis over client-provided transaction fixtures)
+   - `radar_selftest`: `0.000 USDC` (free offline smoke test / health check)
+2. **Platform incentives**: 0% platform commission fee during the first month via the Provider Growth Program (subsequent tiers capped at 5–10%).
+3. **Payouts**: Usage is metered by the marketplace and settled automatically to the provider's designated USDC wallet.
+
+## x402 pay-per-call (HTTP)
+
+Wallet Radar exposes a standalone HTTP service (`bin/x402-server` or `npm run x402:server`) implementing the [x402](https://x402.org) payment-required standard on Solana for autonomous agent micropayments.
+
+- **Endpoints & Pricing**: `GET /selftest` (0 USDC, free), `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC).
+- **Environment**: `RADAR_X402_RECIPIENT` (operator receiving wallet), `RADAR_X402_PORT` (default `4020`), `SOLANA_RPC_URL` (optional custom RPC; defaults to Helius or Solana mainnet).
+- **Handshake (402)**: Requests without proof receive `HTTP 402 Payment Required` containing amount, recipient, and USDC mint (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`).
+- **Proof Format**: Provide tx signature and payer via HTTP headers: `X-Payment-Signature: <tx_sig>` and `X-Payment-Payer: <payer_address>` (or `Authorization: x402 <sig>:<payer>`, or `X-Payment: {"signature":"...","payer":"..."}`).
+- **Settlement & Anti-Replay**: On-chain verification confirms the USDC transfer to the recipient with amount >= price. Settled signatures are recorded in SQLite (`settled_payments`) to prevent replay attacks across calls.
+
 ## One-shot checks (stateless)
 
 ```bash
@@ -148,19 +191,12 @@ behavioral risk score (6 rules over the recent window) with payment capacity
 ```bash
 node dist/src/cli.js trust <wallet>                        # defaults: max-risk 30, min-liquidity $50, window 7d
 node dist/src/cli.js trust <wallet> --max-risk 50 --min-liquidity 100 --json
-node dist/src/cli.js trust --watchlist                     # check the whole watchlist -> ranked shortlist
-node dist/src/cli.js trust --watchlist --json              # { shortlist, results } as JSON
 ```
 
 Verdicts: `safe` (both thresholds met), `hold` (data available, threshold
 missed), `unknown` (no data to decide — conservative). The JSON carries
 machine-readable reasons with exact numbers, so any agent can recompute the
-verdict from the same evidence. No LLM in the verdict path.
-
-`--watchlist` runs the check over every watched wallet and returns a ranked
-shortlist: `safe` wallets first (lowest risk, then highest liquidity), then
-`hold`, then `unknown` — "which of these can I pay right now, and in what
-order?". Deterministic and pure over the per-wallet results. Full design:
+verdict from the same evidence. No LLM in the verdict path. Full design:
 [`docs/trust-spec.md`](docs/trust-spec.md).
 
 ## Watchlist (continuous monitoring)
@@ -170,12 +206,36 @@ override with `RADAR_DB`):
 
 ```bash
 node dist/src/cli.js add <wallet>      # add a wallet
-node dist/src/cli.js watch             # poll every 5 min; alerts via Telegram or console
+node dist/src/cli.js watch             # poll every 5 min; alerts via Telegram, Webhook, or console
 node dist/src/cli.js watch --once      # single iteration (cron-friendly)
-node dist/src/cli.js report <wallet>   # baseline + recent anomalies + risk score
+node dist/src/cli.js report <wallet>   # baseline (incl. pnl: realizedUsd, winRate, roundTrips) + recent anomalies + risk score
+node dist/src/cli.js history <wallet> [--export [out.html]] # baseline + anomalies terminal summary or self-contained HTML export (--export - for stdout)
 node dist/src/cli.js alerts [limit]    # recent anomalies across the watchlist
 node dist/src/cli.js remove <wallet>   # drop a wallet
 ```
+
+### Webhook alerts
+
+Set `WEBHOOK_URL` to deliver compact structured alert payloads to any webhook endpoint (agent hooks, Slack/Discord bridges, or ingestion services). On every detected anomaly batch, Radar POSTs JSON:
+
+```json
+{
+  "wallet": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+  "risk": 65,
+  "anomalies": [
+    {
+      "type": "DORMANT_ACTIVE",
+      "wallet": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      "severity": "high",
+      "timestamp": 1773000000,
+      "evidence": { "daysSilent": 82 },
+      "text": "Wallet reactivated after ~82 days of inactivity."
+    }
+  ]
+}
+```
+
+Delivery is best-effort: failures (network errors, timeouts, non-2xx statuses) are logged to stderr and swallowed so alerting never disrupts or breaks the continuous watch loop. If both `WEBHOOK_URL` and Telegram credentials (`TG_BOT_TOKEN`, `TG_CHAT_ID`) are set, alerts broadcast to both sinks in parallel.
 
 ### Replay (deterministic historical run)
 
@@ -196,13 +256,27 @@ node dist/src/cli.js replay <wallet> --since 2026-03-11T07:36:15Z \
 - `--pages N` — history depth (default 20 × 100 tx).
 - `--no-prices` — skip Jupiter prices (major-only sizing).
 - `--llm` — use the LLM digest for the report/alert (else deterministic template).
-- `--alert` — deliver through the configured sink (Telegram or console).
+- `--alert` — deliver through the configured sink (Telegram, Webhook, or console).
 - `--json` — machine-readable result on stdout.
 
-First-seed semantics: when a wallet is added, its recent history is silently
-folded into the baseline (no alerts for old activity). After that, only unseen
-signatures are processed — signature dedupe keeps the loop correct even when
-chain timestamps collide within one second.
+First-seed semantics: when a wallet is added to the watchlist, its history is
+seeded via paged history (`fetchWalletHistory`, default 3 pages / up to 300 txs,
+configurable with `RADAR_SEED_PAGES` 1..20) and priced immediately with Jupiter
+USD prices. This ensures `medianSwapAmountUsd` is populated from day one so
+`LARGE_SWAP` USD evaluation is active immediately. Seeding is completely silent
+(no alerts on old historical activity), and all fetched signatures are marked seen
+so subsequent watch polls only process fresh, unseen transactions.
+
+### Adaptive polling & credit economics
+
+Polling idle wallets every 5 minutes wastes RPC credits. Radar implements per-wallet adaptive pacing to minimize Helius usage while preserving fast detection on active wallets:
+
+- **Credit economics**: Each poll consumes 1 Helius Enhanced Transactions request per polled wallet. On the free tier (~100k credits/month), watching 10 wallets every 5 minutes would consume ~86,400 requests/month (~86% of quota).
+- **Adaptive pacing**: When a wallet yields zero fresh transactions for $N$ consecutive polls (default 3, env `RADAR_QUIET_POLLS`), Radar progressively stretches its polling interval up to a cap (default 60 minutes, env `RADAR_MAX_POLL_MS`):
+  - Quiet wallets stretch up to 60 minutes (12× longer than the 5-minute base interval), reducing idle traffic by up to 12×.
+  - As soon as a fresh transaction appears, the wallet's polling interval instantly resets to the base interval (5 minutes).
+  - Quiet streak and `nextPollAt` schedules are persisted in SQLite (`wallet_pacing`), surviving service restarts.
+  - In `watchOnce` reports, skipped quiet wallets are marked with `{ skipped: true, quiet: true, nextPollAt: ... }` without querying Helius.
 
 ### Optional LLM digest
 
@@ -214,20 +288,31 @@ template digest is used — alerting never blocks on the LLM:
 - `RADAR_LLM_KEY` — enables the LLM digest (API key)
 - `RADAR_LLM_BASE` — endpoint base, default `https://api.openai.com/v1`
 - `RADAR_LLM_MODEL` — model, default `gpt-4o-mini`
-- `RADAR_LLM_TIMEOUT_MS` — request timeout, default `15000`
+- `RADAR_LLM_TIMEOUT_MS` — request timeout in ms, default `15000`
 - `RADAR_LLM_OPTIONS` — extra JSON request fields, e.g. Ollama `{"num_thread": 8}`
 - `RADAR_LLM_PATH` — path appended to the base, default `chat/completions`
-  (Ollama's native endpoint: `http://127.0.0.1:11434/api` + `chat`)
+  (Ollama native endpoint: `http://127.0.0.1:11434/api` + `chat`)
+
+**Hardened & unattended-safe**: Unreachable endpoints, request timeouts, malformed
+JSON, or provider error payloads automatically degrade to the deterministic rule
+template without throwing into the continuous watch loop.
+
+## Known limitations (v1)
+
+- **Cold start**: Baseline is seeded from recent history on the first watch (paged up to 300 txs + priced). Historical anomalies inside this initial seed window are intentionally not alerted; a brand-new wallet with zero transaction history starts with an empty baseline.
+- **Baseline drift / Sybil**: Baseline medians use a weighted blend between existing and new batches, so sustained micro-swap activity over time dilutes `LARGE_SWAP` sensitivity. Known venues and programs are append-only, meaning malicious pre-warming suppresses `NEW_VENUE` and `NEW_PROTOCOL`. Planned mitigations: sample floor before trusting medians, robust statistics, and recency decay.
+- **Helius credit consumption**: Continuous watching consumes 1 Enhanced Transactions request per polled wallet (free tier: ~100k credits/month). Exponential 429/5xx backoff and adaptive quiet-wallet pacing (stretching intervals up to 60m) mitigate credit exhaustion.
+- **Price feed dependency**: If Jupiter Price API is unreachable or tokens cannot be priced in USD, `LARGE_SWAP` falls back to major-only sizing (evaluating raw quantities on SOL, USDC, and USDT only).
 
 ## Status
 
 MVP complete: collector (Helius), baseline (incl. USD median), analyzer (6
 rules, USD-normalized, unit-tested), template digest, optional LLM digest
 (any OpenAI-compatible endpoint, template fallback), watch loop with SQLite
-persistence (`node:sqlite`, zero deps), Telegram/console alerts, replay
+persistence (`node:sqlite`, zero deps), Telegram and Webhook alerts, replay
 (deterministic historical window), trust check (risk + liquidity →
 safe/hold/unknown pre-flight verdict for agent payments), MCP server
-(stdio). Webhook alerts and the continuous trust-score stretch remain.
+(stdio). Continuous trust-score stretch remains.
 
 ## Develop
 
@@ -247,7 +332,16 @@ node dist/src/cli.js add <wallet> && node dist/src/cli.js watch --once   # conti
 - Jupiter Price API (keyless by default, `lite-api.jup.ag`). Optional:
   - `JUPITER_API_KEY` — uses the higher-limit `api.jup.ag` endpoint
   - `JUPITER_PRICE_BASE` — overrides the price endpoint URL entirely
-- Optional Telegram alerts: `TG_BOT_TOKEN` + `TG_CHAT_ID` (console fallback)
+- Alert sinks (optional, defaults to stdout console):
+  - Telegram alerts: `TG_BOT_TOKEN` + `TG_CHAT_ID`
+  - Webhook alerts: `WEBHOOK_URL` (POST compact JSON `{wallet, risk, anomalies}`)
+- LLM digest (optional, falls back to deterministic template):
+  - `RADAR_LLM_KEY` (plus optional `RADAR_LLM_BASE`, `RADAR_LLM_MODEL`, `RADAR_LLM_TIMEOUT_MS`, `RADAR_LLM_OPTIONS`, `RADAR_LLM_PATH`)
+- Watch tuning (optional):
+  - `RADAR_SEED_PAGES` — cold-start seed depth (default 3, range 1..20)
+  - `RADAR_QUIET_POLLS` — consecutive zero-tx polls before stretching interval (default 3)
+  - `RADAR_MAX_POLL_MS` — maximum stretched interval cap in ms (default 3,600,000 = 60m)
+
 
 ## License
 

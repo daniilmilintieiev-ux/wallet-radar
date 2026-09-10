@@ -2,7 +2,13 @@ import { Anomaly } from "./types.js";
 
 /** A place where alert messages can be delivered. */
 export interface AlertSink {
-  send(text: string): Promise<void>;
+  send(text: string, payload?: AlertPayload): Promise<void>;
+}
+
+export interface AlertPayload {
+  wallet: string;
+  risk: number;
+  anomalies: Anomaly[];
 }
 
 /** Prints alerts to stdout. Always works, no config needed. */
@@ -20,17 +26,18 @@ export class TelegramSink implements AlertSink {
   constructor(
     private token: string,
     private chatId: string,
+    private fetchImpl: typeof fetch = fetch,
   ) {}
 
   async send(text: string): Promise<void> {
     try {
-      const res = await fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
+      const res = await this.fetchImpl(`https://api.telegram.org/bot${this.token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: this.chatId, text }),
       });
       if (!res.ok) {
-        const body = await res.text();
+        const body = await res.text().catch(() => "");
         console.error(`telegram alert failed: ${res.status} ${body}`);
       }
     } catch (err) {
@@ -39,11 +46,58 @@ export class TelegramSink implements AlertSink {
   }
 }
 
-/** Pick a sink from the environment: TG when both vars are set, console otherwise. */
-export function makeSink(): AlertSink {
+/**
+ * Webhook alerts. Best-effort: a failed send is logged to stderr and
+ * swallowed — alerting must never break the watch loop.
+ * Posts compact JSON {wallet, risk, anomalies:[]}.
+ */
+export class WebhookSink implements AlertSink {
+  constructor(
+    private url: string,
+    private fetchImpl: typeof fetch = fetch,
+  ) {}
+
+  async send(text: string, payload?: AlertPayload): Promise<void> {
+    try {
+      const body = payload
+        ? { wallet: payload.wallet, risk: payload.risk, anomalies: payload.anomalies }
+        : { text };
+      const res = await this.fetchImpl(this.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(`webhook alert failed: ${res.status} ${body}`);
+      }
+    } catch (err) {
+      console.error(`webhook alert failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/** Broadcasts alerts to multiple sinks in parallel. */
+export class MultiSink implements AlertSink {
+  constructor(private sinks: AlertSink[]) {}
+
+  async send(text: string, payload?: AlertPayload): Promise<void> {
+    await Promise.all(this.sinks.map((s) => s.send(text, payload)));
+  }
+}
+
+/** Pick a sink from the environment: TG, webhook, or console fallback. */
+export function makeSink(fetchImpl: typeof fetch = fetch): AlertSink {
   const token = process.env.TG_BOT_TOKEN;
   const chatId = process.env.TG_CHAT_ID;
-  if (token && chatId) return new TelegramSink(token, chatId);
+  const webhookUrl = process.env.WEBHOOK_URL;
+
+  const sinks: AlertSink[] = [];
+  if (token && chatId) sinks.push(new TelegramSink(token, chatId, fetchImpl));
+  if (webhookUrl) sinks.push(new WebhookSink(webhookUrl, fetchImpl));
+
+  if (sinks.length === 1) return sinks[0];
+  if (sinks.length > 1) return new MultiSink(sinks);
   return new ConsoleSink();
 }
 

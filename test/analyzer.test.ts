@@ -307,3 +307,291 @@ test("computeRiskScore aggregates severity and caps at 100", () => {
     100,
   );
 });
+
+// --- Edge-case unit tests: thresholds, boundaries, concentration, and median blending ---
+
+function makeSwapTx(
+  sig: string,
+  ts: number,
+  inMint: string,
+  inAmount: number,
+  outMint: string,
+  outAmount: number,
+  dex: string = "JUPITER",
+): EnhancedTx {
+  const inDecimals = inMint === SOL_MINT ? 9 : 6;
+  const outDecimals = outMint === SOL_MINT ? 9 : 6;
+  return {
+    signature: sig,
+    timestamp: ts,
+    source: dex,
+    programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    swap: {
+      tokenInputs: [{ mint: inMint, rawTokenAmount: { tokenAmount: String(Math.round(inAmount * 10 ** inDecimals)), decimals: inDecimals } }],
+      tokenOutputs: [{ mint: outMint, rawTokenAmount: { tokenAmount: String(Math.round(outAmount * 10 ** outDecimals)), decimals: outDecimals } }],
+    },
+  };
+}
+
+test("LARGE_SWAP: USD threshold boundary (exact match fires, just below stays silent)", () => {
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 0,
+    medianSwapAmountUsd: 1000, // 3x multiplier = $3000 threshold
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 10,
+  };
+
+  // Exact threshold: $3,000 >= 3 * 1,000 -> fires
+  const exactTx = [makeSwapTx("exact", 1_700_000_100, USDC_MINT, 3000, "MEME", 100)];
+  const exactAnomalies = detectAnomalies(WALLET, exactTx, baseline, DEFAULT_CONFIG, {});
+  assert.equal(exactAnomalies.filter((a) => a.type === "LARGE_SWAP").length, 1);
+
+  // Just below threshold: $2,999.90 < 3 * 1,000 -> stays silent
+  const belowTx = [makeSwapTx("below", 1_700_000_100, USDC_MINT, 2999.9, "MEME", 100)];
+  const belowAnomalies = detectAnomalies(WALLET, belowTx, baseline, DEFAULT_CONFIG, {});
+  assert.equal(belowAnomalies.filter((a) => a.type === "LARGE_SWAP").length, 0);
+});
+
+test("LARGE_SWAP: custom config multiplier (e.g. 5x) is respected", () => {
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: [],
+    medianSwapAmount: 0,
+    medianSwapAmountUsd: 1000,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 10,
+  };
+  const customConfig = { ...DEFAULT_CONFIG, largeSwapMultiplier: 5 };
+
+  // $4,000 (4x): fires on default 3x, but silent under 5x
+  const tx4k = [makeSwapTx("tx4k", 1_700_000_100, USDC_MINT, 4000, "MEME", 100)];
+  assert.equal(detectAnomalies(WALLET, tx4k, baseline, customConfig, {}).filter((a) => a.type === "LARGE_SWAP").length, 0);
+
+  // $5,000 (5x): fires under 5x
+  const tx5k = [makeSwapTx("tx5k", 1_700_000_100, USDC_MINT, 5000, "MEME", 100)];
+  assert.equal(detectAnomalies(WALLET, tx5k, baseline, customConfig, {}).filter((a) => a.type === "LARGE_SWAP").length, 1);
+});
+
+test("ACTIVITY_BURST: boundary conditions and severity scaling (medium at threshold, high at 2x)", () => {
+  const base = 1_700_000_000;
+  const mkTxs = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      signature: "b" + i,
+      timestamp: base + i * 30, // 30s apart, well within 10 min window
+      source: "JUPITER",
+    }));
+
+  // 4 txs (< threshold 5): silent
+  const res4 = detectAnomalies(WALLET, mkTxs(4), null);
+  assert.equal(res4.some((a) => a.type === "ACTIVITY_BURST"), false);
+
+  // 5 txs (== threshold 5): fires medium
+  const res5 = detectAnomalies(WALLET, mkTxs(5), null);
+  const burst5 = res5.find((a) => a.type === "ACTIVITY_BURST");
+  assert.ok(burst5);
+  assert.equal(burst5.severity, "medium");
+
+  // 10 txs (>= 2 * threshold 5): fires high
+  const res10 = detectAnomalies(WALLET, mkTxs(10), null);
+  const burst10 = res10.find((a) => a.type === "ACTIVITY_BURST");
+  assert.ok(burst10);
+  assert.equal(burst10.severity, "high");
+});
+
+test("ACTIVITY_BURST: window boundary (inclusive at windowSec, exclusive at windowSec + 1)", () => {
+  const base = 1_700_000_000;
+  const windowSec = DEFAULT_CONFIG.burstWindowMin * 60; // 600s
+
+  // 5 txs: 4 at base + 600, 1 at base (diff = 600s <= windowSec) -> fires
+  const txsInclusive: EnhancedTx[] = [
+    { signature: "t0", timestamp: base, source: "JUPITER" },
+    { signature: "t1", timestamp: base + windowSec, source: "JUPITER" },
+    { signature: "t2", timestamp: base + windowSec, source: "JUPITER" },
+    { signature: "t3", timestamp: base + windowSec, source: "JUPITER" },
+    { signature: "t4", timestamp: base + windowSec, source: "JUPITER" },
+  ];
+  assert.ok(detectAnomalies(WALLET, txsInclusive, null).some((a) => a.type === "ACTIVITY_BURST"));
+
+  // 5 txs: 4 at base + 601, 1 at base (diff = 601s > windowSec) -> oldest is excluded, only 4 in window -> silent
+  const txsExclusive: EnhancedTx[] = [
+    { signature: "t0", timestamp: base, source: "JUPITER" },
+    { signature: "t1", timestamp: base + windowSec + 1, source: "JUPITER" },
+    { signature: "t2", timestamp: base + windowSec + 1, source: "JUPITER" },
+    { signature: "t3", timestamp: base + windowSec + 1, source: "JUPITER" },
+    { signature: "t4", timestamp: base + windowSec + 1, source: "JUPITER" },
+  ];
+  assert.equal(detectAnomalies(WALLET, txsExclusive, null).some((a) => a.type === "ACTIVITY_BURST"), false);
+});
+
+test("CONCENTRATION: fires at exact threshold, respects count and independent token tracking", () => {
+  const base = 1_700_000_000;
+  const TOKEN_A = "TokenA11111111111111111111111111111111111";
+  const TOKEN_B = "TokenB22222222222222222222222222222222222";
+
+  // Under default config (concentrationCount = 2):
+  // 1 swap into TOKEN_A: below threshold (2) -> silent
+  const txs1 = [
+    makeSwapTx("c1", base, USDC_MINT, 10, TOKEN_A, 100),
+  ];
+  assert.equal(detectAnomalies(WALLET, txs1, null).filter((a) => a.type === "CONCENTRATION").length, 0);
+
+  // 2 swaps into TOKEN_A: reaches default threshold (2) -> fires
+  const txs2 = [
+    ...txs1,
+    makeSwapTx("c2", base + 60, USDC_MINT, 10, TOKEN_A, 100),
+  ];
+  const anom2 = detectAnomalies(WALLET, txs2, null).filter((a) => a.type === "CONCENTRATION");
+  assert.equal(anom2.length, 1);
+  assert.equal(anom2[0].evidence.token, TOKEN_A);
+  assert.equal(anom2[0].evidence.count, 2);
+
+  // Custom config with concentrationCount = 3: 2 swaps silent, 3 swaps fires
+  const customConfig = { ...DEFAULT_CONFIG, concentrationCount: 3 };
+  assert.equal(detectAnomalies(WALLET, txs2, null, customConfig).filter((a) => a.type === "CONCENTRATION").length, 0);
+
+  const txs3 = [
+    ...txs2,
+    makeSwapTx("c3", base + 120, USDC_MINT, 10, TOKEN_A, 100),
+  ];
+  const anom3 = detectAnomalies(WALLET, txs3, null, customConfig).filter((a) => a.type === "CONCENTRATION");
+  assert.equal(anom3.length, 1);
+  assert.equal(anom3[0].evidence.token, TOKEN_A);
+  assert.equal(anom3[0].evidence.count, 3);
+
+  // 3 swaps into TOKEN_A and 2 into TOKEN_B under customConfig (count 3): fires only for TOKEN_A
+  const mixed = [
+    ...txs3,
+    makeSwapTx("cb1", base + 30, USDC_MINT, 5, TOKEN_B, 50),
+    makeSwapTx("cb2", base + 90, USDC_MINT, 5, TOKEN_B, 50),
+  ];
+  const mixedAnom = detectAnomalies(WALLET, mixed, null, customConfig).filter((a) => a.type === "CONCENTRATION");
+  assert.equal(mixedAnom.length, 1);
+  assert.equal(mixedAnom[0].evidence.token, TOKEN_A);
+});
+
+test("CONCENTRATION: window boundary (span == windowSec fires, span > windowSec silent)", () => {
+  const base = 1_700_000_000;
+  const windowSec = DEFAULT_CONFIG.concentrationWindowMin * 60; // 1800s (30 min)
+  const TOKEN_A = "TokenA11111111111111111111111111111111111";
+
+  // Span is exactly 1800s (30 min) -> fires
+  const txsExact = [
+    makeSwapTx("ce1", base, USDC_MINT, 10, TOKEN_A, 100),
+    makeSwapTx("ce2", base + 300, USDC_MINT, 10, TOKEN_A, 100),
+    makeSwapTx("ce3", base + windowSec, USDC_MINT, 10, TOKEN_A, 100),
+  ];
+  assert.equal(detectAnomalies(WALLET, txsExact, null).filter((a) => a.type === "CONCENTRATION").length, 1);
+
+  // Span is 1801s (> 30 min) -> silent
+  const txsWide = [
+    makeSwapTx("cw1", base, USDC_MINT, 10, TOKEN_A, 100),
+    makeSwapTx("cw2", base + 300, USDC_MINT, 10, TOKEN_A, 100),
+    makeSwapTx("cw3", base + windowSec + 1, USDC_MINT, 10, TOKEN_A, 100),
+  ];
+  assert.equal(detectAnomalies(WALLET, txsWide, null).filter((a) => a.type === "CONCENTRATION").length, 0);
+});
+
+test("updateBaseline: weighted blending of swap medians (raw and USD)", () => {
+  // Initial baseline with 10 txs: medianSwapAmount = 50, medianSwapAmountUsd = 500
+  const prev: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: [],
+    medianSwapAmount: 50,
+    medianSwapAmountUsd: 500,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 10,
+  };
+
+  // New batch: 2 swaps with raw SOL inputs [100, 200] (median 150)
+  // Priced at $20/SOL -> USD values [2000, 4000] (median 3000)
+  const txs = [
+    makeSwapTx("nb1", 1_700_000_100, SOL_MINT, 100, USDC_MINT, 2000),
+    makeSwapTx("nb2", 1_700_000_200, SOL_MINT, 200, USDC_MINT, 4000),
+  ];
+  const prices = { [SOL_MINT]: 20 };
+
+  const updated = updateBaseline(WALLET, prev, txs, 1_700_000_300, prices);
+
+  // Blending formula: (prevMedian * prevCount + newMedian * newCount) / (prevCount + newCount)
+  // Raw: (50 * 10 + 150 * 2) / (10 + 2) = 800 / 12 = 66.66666666666667
+  const expectedRaw = (50 * 10 + 150 * 2) / 12;
+  assert.equal(updated.medianSwapAmount, expectedRaw);
+
+  // USD: (500 * 10 + 3000 * 2) / (10 + 2) = 11000 / 12 = 916.6666666666666
+  const expectedUsd = (500 * 10 + 3000 * 2) / 12;
+  assert.equal(updated.medianSwapAmountUsd, expectedUsd);
+
+  assert.equal(updated.txCount, 12);
+  assert.equal(updated.lastSeenAt, 1_700_000_200);
+});
+
+test("updateBaseline: non-swap transactions preserve existing medians untouched", () => {
+  const prev: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["P1"],
+    medianSwapAmount: 75,
+    medianSwapAmountUsd: 1500,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 8,
+  };
+
+  // 2 transfer txs without swaps
+  const nonSwapTxs: EnhancedTx[] = [
+    { signature: "ns1", timestamp: 1_700_000_500, source: "SYSTEM_PROGRAM", type: "TRANSFER", programs: ["P2"] },
+    { signature: "ns2", timestamp: 1_700_000_600, source: "SYSTEM_PROGRAM", type: "TRANSFER", programs: ["P3"] },
+  ];
+
+  const updated = updateBaseline(WALLET, prev, nonSwapTxs, 1_700_000_700);
+
+  // Medians untouched
+  assert.equal(updated.medianSwapAmount, 75);
+  assert.equal(updated.medianSwapAmountUsd, 1500);
+
+  // Programs and venues accumulated, txCount incremented, lastSeen updated
+  assert.equal(updated.txCount, 10);
+  assert.equal(updated.lastSeenAt, 1_700_000_600);
+  assert.ok(updated.knownPrograms.includes("P1") && updated.knownPrograms.includes("P2") && updated.knownPrograms.includes("P3"));
+});
+
+test("DORMANT_ACTIVE: boundary conditions (exact dormantDays fires, just below stays silent)", () => {
+  const base = 1_700_000_000;
+  const dormantSec = DEFAULT_CONFIG.dormantDays * 86_400; // 7 days = 604,800s
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: base,
+    knownVenues: ["JUPITER"],
+    knownPrograms: [],
+    medianSwapAmount: 10,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: base,
+    txCount: 5,
+  };
+
+  // Exactly 7 days later -> fires
+  const exactTxs = [swapTx("dExact", base + dormantSec, "JUPITER", 10)];
+  assert.ok(detectAnomalies(WALLET, exactTxs, baseline).some((a) => a.type === "DORMANT_ACTIVE"));
+
+  // 1 second before 7 days -> silent
+  const belowTxs = [swapTx("dBelow", base + dormantSec - 1, "JUPITER", 10)];
+  assert.equal(detectAnomalies(WALLET, belowTxs, baseline).some((a) => a.type === "DORMANT_ACTIVE"), false);
+});
+

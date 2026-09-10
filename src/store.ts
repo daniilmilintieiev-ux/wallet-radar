@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { Anomaly, Baseline } from "./types.js";
+import { Anomaly, Baseline, MintRiskInfo, SettledPayment } from "./types.js";
 
 /**
  * SQLite persistence for the watch loop (node:sqlite, zero deps).
@@ -35,6 +35,31 @@ export class Store {
         detected_at INTEGER NOT NULL,
         alerted INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS wallet_backoff (
+        address TEXT PRIMARY KEY,
+        backoff_until INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE IF NOT EXISTS wallet_pacing (
+        address TEXT PRIMARY KEY,
+        quiet_streak INTEGER NOT NULL DEFAULT 0,
+        next_poll_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS settled_payments (
+        signature TEXT PRIMARY KEY,
+        payer TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        amount REAL NOT NULL,
+        endpoint TEXT NOT NULL,
+        settled_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS mint_cache (
+        mint TEXT PRIMARY KEY,
+        mint_authority TEXT,
+        freeze_authority TEXT,
+        fetched_at INTEGER NOT NULL,
+        ttl_sec INTEGER NOT NULL DEFAULT 14400
+      );
     `);
   }
 
@@ -51,6 +76,8 @@ export class Store {
   removeWallet(address: string): void {
     this.db.prepare("DELETE FROM wallets WHERE address = ?").run(address);
     this.db.prepare("DELETE FROM seen_txs WHERE wallet = ?").run(address);
+    this.db.prepare("DELETE FROM wallet_backoff WHERE address = ?").run(address);
+    this.db.prepare("DELETE FROM wallet_pacing WHERE address = ?").run(address);
   }
 
   listWallets(): string[] {
@@ -134,4 +161,147 @@ export class Store {
       this.db.prepare("UPDATE anomalies SET alerted = 1 WHERE alerted = 0").run();
     }
   }
+
+  getBackoff(address: string): { backoffUntil: number; attempt: number } | null {
+    const row = this.db
+      .prepare("SELECT backoff_until, attempt FROM wallet_backoff WHERE address = ?")
+      .get(address) as { backoff_until: number; attempt: number } | undefined;
+    if (!row) return null;
+    return { backoffUntil: Number(row.backoff_until), attempt: Number(row.attempt) };
+  }
+
+  isBackingOff(address: string, nowSec: number = Math.floor(Date.now() / 1000)): boolean {
+    const b = this.getBackoff(address);
+    if (!b) return false;
+    return nowSec < b.backoffUntil;
+  }
+
+  recordBackoff(
+    address: string,
+    nowSec: number = Math.floor(Date.now() / 1000),
+  ): { backoffUntil: number; attempt: number } {
+    const prev = this.getBackoff(address);
+    const attempt = prev ? prev.attempt + 1 : 1;
+    const delaySec = calculateBackoffDelay(attempt);
+    const backoffUntil = nowSec + delaySec;
+    this.db
+      .prepare(
+        "INSERT INTO wallet_backoff (address, backoff_until, attempt) VALUES (?, ?, ?) " +
+          "ON CONFLICT(address) DO UPDATE SET backoff_until = excluded.backoff_until, attempt = excluded.attempt",
+      )
+      .run(address, backoffUntil, attempt);
+    return { backoffUntil, attempt };
+  }
+
+  clearBackoff(address: string): void {
+    this.db.prepare("DELETE FROM wallet_backoff WHERE address = ?").run(address);
+  }
+
+  getPacing(address: string): WalletPacing | null {
+    const row = this.db
+      .prepare("SELECT quiet_streak, next_poll_at FROM wallet_pacing WHERE address = ?")
+      .get(address) as { quiet_streak: number; next_poll_at: number } | undefined;
+    if (!row) return null;
+    return { quietStreak: Number(row.quiet_streak), nextPollAt: Number(row.next_poll_at) };
+  }
+
+  recordPacing(address: string, quietStreak: number, nextPollAt: number): void {
+    this.db
+      .prepare(
+        "INSERT INTO wallet_pacing (address, quiet_streak, next_poll_at) VALUES (?, ?, ?) " +
+          "ON CONFLICT(address) DO UPDATE SET quiet_streak = excluded.quiet_streak, next_poll_at = excluded.next_poll_at",
+      )
+      .run(address, quietStreak, nextPollAt);
+  }
+
+  clearPacing(address: string): void {
+    this.db.prepare("DELETE FROM wallet_pacing WHERE address = ?").run(address);
+  }
+
+  hasSettledPayment(signature: string): boolean {
+    return this.db.prepare("SELECT 1 FROM settled_payments WHERE signature = ?").get(signature) !== undefined;
+  }
+
+  recordSettledPayment(
+    payment: { signature: string; payer: string; recipient: string; amount: number; endpoint: string },
+    settledAt: number = Math.floor(Date.now() / 1000),
+  ): void {
+    this.db
+      .prepare(
+        "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt);
+  }
+
+  getSettledPayment(signature: string): SettledPayment | null {
+    const row = this.db
+      .prepare("SELECT signature, payer, recipient, amount, endpoint, settled_at FROM settled_payments WHERE signature = ?")
+      .get(signature) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      signature: row.signature as string,
+      payer: row.payer as string,
+      recipient: row.recipient as string,
+      amount: Number(row.amount),
+      endpoint: row.endpoint as string,
+      settledAt: Number(row.settled_at),
+    };
+  }
+
+  getMintMetadata(mint: string, nowSec: number = Math.floor(Date.now() / 1000)): MintRiskInfo | null {
+    const row = this.db
+      .prepare(
+        "SELECT mint, mint_authority, freeze_authority, fetched_at, ttl_sec FROM mint_cache WHERE mint = ?",
+      )
+      .get(mint) as any;
+    if (!row) return null;
+    if (nowSec > Number(row.fetched_at) + Number(row.ttl_sec)) {
+      return null;
+    }
+    return {
+      mint: row.mint as string,
+      mintAuthority: row.mint_authority !== null ? (row.mint_authority as string) : null,
+      freezeAuthority: row.freeze_authority !== null ? (row.freeze_authority as string) : null,
+    };
+  }
+
+  saveMintMetadata(
+    meta: MintRiskInfo,
+    nowSec: number = Math.floor(Date.now() / 1000),
+    ttlSec: number = 14400,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO mint_cache (mint, mint_authority, freeze_authority, fetched_at, ttl_sec)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(mint) DO UPDATE SET
+           mint_authority = excluded.mint_authority,
+           freeze_authority = excluded.freeze_authority,
+           fetched_at = excluded.fetched_at,
+           ttl_sec = excluded.ttl_sec`,
+      )
+      .run(meta.mint, meta.mintAuthority, meta.freezeAuthority, nowSec, ttlSec);
+  }
+
+  cleanExpiredMintCache(nowSec: number = Math.floor(Date.now() / 1000)): number {
+    const res = this.db.prepare("DELETE FROM mint_cache WHERE ? > fetched_at + ttl_sec").run(nowSec);
+    return Number(res.changes);
+  }
 }
+
+export interface WalletPacing {
+  quietStreak: number;
+  nextPollAt: number;
+}
+
+/**
+ * Exponential schedule: 5min (300s), 15min (900s), 45min (2700s), capped at 4h (14400s).
+ */
+export function calculateBackoffDelay(attempt: number): number {
+  if (attempt <= 1) return 5 * 60;
+  if (attempt === 2) return 15 * 60;
+  if (attempt === 3) return 45 * 60;
+  const maxDelay = 4 * 3600; // 4h cap
+  return Math.min(maxDelay, 45 * 60 * Math.pow(3, attempt - 3));
+}
+

@@ -7,11 +7,21 @@
   "engines": {
     "node": ">=22"
   },
+  "bin": {
+    "mcp-server": "./bin/mcp-server",
+    "wallet-radar-mcp": "./bin/mcp-server",
+    "x402-server": "./bin/x402-server",
+    "wallet-radar-x402": "./bin/x402-server",
+    "http-server": "./bin/http-server"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test \"dist/test/**/*.test.js\"",
     "radar": "node dist/src/cli.js",
-    "mcp": "node dist/src/mcp.js"
+    "mcp": "node dist/src/mcp.js",
+    "mcp:server": "node dist/src/mcp-server.js",
+    "x402:server": "node dist/src/x402server.js",
+    "http": "node dist/src/http-server.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

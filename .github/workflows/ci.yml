@@ -1,22 +1,31 @@
 name: CI
 
-on:
+'on':
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+    branches: [main, master]
 
 jobs:
-  test:
-    name: build + test + selftest
+  build-and-test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
+          # Node 22 is required for built-in node:sqlite support (engines: >=22)
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      - name: offline selftest
-        run: node dist/src/cli.js selftest
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test

@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+import { runCli } from "../dist/src/x402server.js";
+
+runCli().catch((err) => {
+  console.error("x402 server failed:", err);
+  process.exit(1);
+});

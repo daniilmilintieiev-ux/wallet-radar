@@ -3,7 +3,9 @@ import {
   Baseline,
   DEFAULT_CONFIG,
   EnhancedTx,
+  MintRiskMap,
   RadarConfig,
+  Severity,
   SOL_MINT,
   SwapEvent,
   USDC_MINT,
@@ -124,6 +126,7 @@ export function detectAnomalies(
   baseline: Baseline | null,
   config: RadarConfig = DEFAULT_CONFIG,
   prices: UsdPriceMap | null = null,
+  mintRisk: MintRiskMap | null = null,
 ): Anomaly[] {
   const anomalies: Anomaly[] = [];
   const ts = (tx: EnhancedTx) => tx.timestamp ?? 0;
@@ -282,6 +285,43 @@ export function detectAnomalies(
         evidence: { program: p },
         text: `First interaction with program ${p}.`,
       });
+    }
+  }
+
+  // TOXIC_MINT: swaps involving tokens with unrenounced freeze or mint authorities.
+  if (mintRisk) {
+    const flaggedMints = new Set<string>();
+    for (const s of swaps) {
+      const candidateMints = [s.tokenIn.mint, s.tokenOut.mint].filter(
+        (m) => m && !MAJOR_MINTS.includes(m),
+      );
+      for (const m of candidateMints) {
+        if (flaggedMints.has(m)) continue;
+        const meta = mintRisk[m];
+        if (!meta) continue; // Fetch failed or no metadata: skip rule for this mint
+        const hasFreeze = Boolean(meta.freezeAuthority);
+        const hasMint = Boolean(meta.mintAuthority);
+        if (hasFreeze || hasMint) {
+          flaggedMints.add(m);
+          const severity: Severity = hasFreeze ? "high" : "medium";
+          const reasons: string[] = [];
+          if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})`);
+          if (hasMint) reasons.push(`mint authority (${meta.mintAuthority})`);
+          anomalies.push({
+            type: "TOXIC_MINT",
+            wallet,
+            severity,
+            timestamp: s.timestamp,
+            evidence: {
+              mint: m,
+              freezeAuthority: meta.freezeAuthority,
+              mintAuthority: meta.mintAuthority,
+              sig: s.signature,
+            },
+            text: `Token ${m} has unrenounced ${reasons.join(" and ")}.`,
+          });
+        }
+      }
     }
   }
 

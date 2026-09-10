@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store } from "../src/store.js";
+import { Store, calculateBackoffDelay } from "../src/store.js";
 import { watchOnce } from "../src/watch.js";
 import { formatAlert } from "../src/alerts.js";
 import { Baseline, EnhancedTx, SOL_MINT, USDC_MINT } from "../src/types.js";
@@ -187,4 +187,158 @@ test("formatAlert: compact one-message digest", () => {
   assert.match(msg, /W1 — risk 45\/100, 2 anomalies/);
   assert.match(msg, /\[MEDIUM\] ACTIVITY_BURST/);
   assert.match(msg, /\[HIGH\] LARGE_SWAP/);
+});
+
+test("store: calculateBackoffDelay exponential schedule", () => {
+  assert.equal(calculateBackoffDelay(0), 300); // 5m
+  assert.equal(calculateBackoffDelay(1), 300); // 5m
+  assert.equal(calculateBackoffDelay(2), 900); // 15m
+  assert.equal(calculateBackoffDelay(3), 2700); // 45m
+  assert.equal(calculateBackoffDelay(4), 8100); // 135m
+  assert.equal(calculateBackoffDelay(5), 14400); // capped at 4h
+  assert.equal(calculateBackoffDelay(10), 14400); // capped at 4h
+});
+
+test("store: wallet backoff tracking and cleanup", () => {
+  const { store, dir } = tmpStore();
+  const wallet = "W_BACKOFF";
+  store.addWallet(wallet);
+
+  assert.equal(store.getBackoff(wallet), null);
+  assert.equal(store.isBackingOff(wallet, 1000), false);
+
+  // Attempt 1: backoff recorded
+  const b1 = store.recordBackoff(wallet, 1000);
+  assert.equal(b1.attempt, 1);
+  assert.equal(b1.backoffUntil, 1000 + 300); // +5m
+  assert.equal(store.isBackingOff(wallet, 1200), true);
+  assert.equal(store.isBackingOff(wallet, 1300), false);
+
+  // Attempt 2: backoff increased
+  const b2 = store.recordBackoff(wallet, 1300);
+  assert.equal(b2.attempt, 2);
+  assert.equal(b2.backoffUntil, 1300 + 900); // +15m
+  assert.equal(store.isBackingOff(wallet, 2000), true);
+
+  // Clear backoff
+  store.clearBackoff(wallet);
+  assert.equal(store.getBackoff(wallet), null);
+  assert.equal(store.isBackingOff(wallet, 2000), false);
+
+  // Re-record and removeWallet cleanup
+  store.recordBackoff(wallet, 3000);
+  assert.ok(store.getBackoff(wallet) !== null);
+  store.removeWallet(wallet);
+  assert.equal(store.getBackoff(wallet), null);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("store: wallet pacing tracking and cleanup", () => {
+  const { store, dir } = tmpStore();
+  const wallet = "W_PACING";
+  store.addWallet(wallet);
+
+  assert.equal(store.getPacing(wallet), null);
+
+  // Record streak 3 and nextPollAt 1200
+  store.recordPacing(wallet, 3, 1200);
+  const p1 = store.getPacing(wallet);
+  assert.ok(p1 !== null);
+  assert.equal(p1.quietStreak, 3);
+  assert.equal(p1.nextPollAt, 1200);
+
+  // Update streak 0 and nextPollAt 1500 (reset)
+  store.recordPacing(wallet, 0, 1500);
+  const p2 = store.getPacing(wallet);
+  assert.ok(p2 !== null);
+  assert.equal(p2.quietStreak, 0);
+  assert.equal(p2.nextPollAt, 1500);
+
+  // Clear pacing
+  store.clearPacing(wallet);
+  assert.equal(store.getPacing(wallet), null);
+
+  // Remove wallet cleans up pacing
+  store.recordPacing(wallet, 5, 2000);
+  assert.ok(store.getPacing(wallet) !== null);
+  store.removeWallet(wallet);
+  assert.equal(store.getPacing(wallet), null);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("store: backoff persistence across restart", () => {
+  const { store, dir } = tmpStore();
+  const dbPath = join(dir, "test.db");
+  const wallet = "W_RESTART_BACKOFF";
+  store.addWallet(wallet);
+
+  // Record attempt 1 at t=1000
+  const b1 = store.recordBackoff(wallet, 1000);
+  assert.equal(b1.attempt, 1);
+  assert.equal(b1.backoffUntil, 1000 + 300);
+
+  // Close and reopen database
+  store.close();
+  const store2 = new Store(dbPath);
+
+  // State survived restart
+  const bPersisted = store2.getBackoff(wallet);
+  assert.ok(bPersisted !== null);
+  assert.equal(bPersisted.attempt, 1);
+  assert.equal(bPersisted.backoffUntil, 1300);
+  assert.equal(store2.isBackingOff(wallet, 1200), true);
+  assert.equal(store2.isBackingOff(wallet, 1350), false);
+
+  // Attempt 2 increments from persisted attempt count
+  const b2 = store2.recordBackoff(wallet, 1350);
+  assert.equal(b2.attempt, 2);
+  assert.equal(b2.backoffUntil, 1350 + 900); // +15m
+
+  store2.close();
+  cleanup(dir);
+});
+
+test("store: settled payments tracking and replay prevention across restart", () => {
+  const { store, dir } = tmpStore();
+  const dbPath = join(dir, "test.db");
+  const sig = "5fakeSignatureForPayment11111111111111111111111111111111";
+  const payer = "PayerWallet1111111111111111111111111111111";
+  const recipient = "RecipientWallet111111111111111111111111111";
+
+  assert.equal(store.hasSettledPayment(sig), false);
+  assert.equal(store.getSettledPayment(sig), null);
+
+  store.recordSettledPayment({
+    signature: sig,
+    payer,
+    recipient,
+    amount: 0.005,
+    endpoint: "/scan",
+  }, 1700000000);
+
+  assert.equal(store.hasSettledPayment(sig), true);
+  const settled = store.getSettledPayment(sig);
+  assert.ok(settled !== null);
+  assert.equal(settled.signature, sig);
+  assert.equal(settled.payer, payer);
+  assert.equal(settled.recipient, recipient);
+  assert.equal(settled.amount, 0.005);
+  assert.equal(settled.endpoint, "/scan");
+  assert.equal(settled.settledAt, 1700000000);
+
+  // Close and reopen to verify persistence
+  store.close();
+  const store2 = new Store(dbPath);
+  assert.equal(store2.hasSettledPayment(sig), true);
+  const settled2 = store2.getSettledPayment(sig);
+  assert.ok(settled2 !== null);
+  assert.equal(settled2.signature, sig);
+  assert.equal(settled2.amount, 0.005);
+
+  store2.close();
+  cleanup(dir);
 });

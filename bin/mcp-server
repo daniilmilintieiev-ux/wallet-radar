@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+import { runCli } from "../dist/src/mcp-server.js";
+
+runCli().catch((err) => {
+  console.error("MCP server failed:", err);
+  process.exit(1);
+});

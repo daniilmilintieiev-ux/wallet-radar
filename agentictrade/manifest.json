@@ -1,0 +1,114 @@
+{
+  "name": "wallet-radar",
+  "version": "0.1.0",
+  "description": "Solana wallet & transaction risk scoring",
+  "transport": "stdio",
+  "tools": [
+    {
+      "name": "radar_scan",
+      "description": "One-shot continuous-monitoring scan of a Solana wallet for behavioral anomalies and risk score."
+    },
+    {
+      "name": "radar_analyze",
+      "description": "Offline anomaly analysis and risk scoring over an array of enhanced Solana transactions without network calls."
+    },
+    {
+      "name": "radar_selftest",
+      "description": "Offline smoke test verifying anomaly detection rules against a built-in transaction fixture."
+    }
+  ],
+  "config": {
+    "HELIUS_API_KEY": {
+      "description": "Helius API key for Solana RPC and enhanced transaction history",
+      "required": false
+    },
+    "SOLANA_RPC_URL": {
+      "description": "Optional custom Solana RPC endpoint URL",
+      "required": false
+    },
+    "RADAR_MAX_RISK": {
+      "description": "Maximum acceptable behavioral risk score threshold (0-100, default 30)",
+      "required": false,
+      "default": "30"
+    },
+    "RADAR_MIN_LIQUIDITY_USD": {
+      "description": "Minimum acceptable wallet liquidity in USD (default 50)",
+      "required": false,
+      "default": "50"
+    },
+    "RADAR_WINDOW_DAYS": {
+      "description": "Behavioral risk window in days (default 7)",
+      "required": false,
+      "default": "7"
+    },
+    "RADAR_SEED_PAGES": {
+      "description": "Optional history page depth when seeding wallet baselines (1-20, default 3)",
+      "required": false,
+      "default": "3"
+    },
+    "RADAR_QUIET_POLLS": {
+      "description": "Optional consecutive zero-tx polls before stretching poll interval (default 3)",
+      "required": false,
+      "default": "3"
+    },
+    "RADAR_MAX_POLL_MS": {
+      "description": "Optional maximum stretched poll interval in milliseconds (default 3600000 = 60m)",
+      "required": false,
+      "default": "3600000"
+    },
+    "WEBHOOK_URL": {
+      "description": "Optional webhook endpoint for real-time compact JSON anomaly alerts",
+      "required": false
+    },
+    "RADAR_LLM_KEY": {
+      "description": "Optional API key for LLM-generated anomaly digests",
+      "required": false
+    },
+    "RADAR_LLM_BASE": {
+      "description": "Optional LLM service base URL (defaults to OpenRouter or OpenAI)",
+      "required": false,
+      "default": "https://api.openai.com/v1"
+    },
+    "RADAR_LLM_URL": {
+      "description": "Optional LLM service base URL alias (defaults to OpenRouter or local Ollama)",
+      "required": false
+    },
+    "RADAR_LLM_MODEL": {
+      "description": "Optional LLM model identifier (e.g. meta-llama/llama-3-8b-instruct or gpt-4o-mini)",
+      "required": false,
+      "default": "gpt-4o-mini"
+    },
+    "RADAR_LLM_PATH": {
+      "description": "Optional LLM API endpoint path (e.g. /api/generate for Ollama)",
+      "required": false
+    },
+    "RADAR_LLM_TIMEOUT_MS": {
+      "description": "Optional timeout for LLM digest calls in milliseconds (default 5000)",
+      "required": false,
+      "default": "5000"
+    },
+    "RADAR_LLM_OPTIONS": {
+      "description": "Optional JSON string of model inference parameters forwarded in request body",
+      "required": false
+    }
+  },
+  "pricing": {
+    "model": "per-use",
+    "currency": "USDC",
+    "radar_scan": {
+      "amount": 0.005,
+      "currency": "USDC",
+      "description": "Full scan with Helius transaction fetching, Jupiter USD pricing, and anomaly analysis"
+    },
+    "radar_analyze": {
+      "amount": 0.001,
+      "currency": "USDC",
+      "description": "Offline anomaly analysis over client-supplied transaction fixture"
+    },
+    "radar_selftest": {
+      "amount": 0,
+      "currency": "USDC",
+      "description": "Free offline health check and smoke test"
+    }
+  }
+}

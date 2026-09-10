@@ -6,12 +6,14 @@ import { updateBaseline } from "./baseline.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
+import { fetchSwapMintRisk } from "./mint.js";
 import { Store } from "./store.js";
 import { watchLoop, watchOnce, WatchOptions } from "./watch.js";
 import { makeSink } from "./alerts.js";
 import { parseTime, replayWallet, ReplayResult } from "./replay.js";
 import { buildShortlist, formatShortlist, formatTrustLine, runTrustCheck, runTrustChecks } from "./trust.js";
-import { Baseline, EnhancedTx, DEFAULT_CONFIG } from "./types.js";
+import { renderHtmlReport, formatHistoryText, computeVerdict, HtmlReportData } from "./htmlreport.js";
+import { Anomaly, Baseline, EnhancedTx, DEFAULT_CONFIG } from "./types.js";
 
 function usage(): void {
   console.log(`wallet-radar — continuous Solana wallet monitoring
@@ -21,6 +23,8 @@ usage:
   radar remove <wallet>           remove a wallet from the watchlist
   radar watch [--once]            poll the watchlist (needs HELIUS_API_KEY; TG alerts if TG_BOT_TOKEN+TG_CHAT_ID)
   radar report <wallet>           baseline + recent anomalies for one wallet
+  radar history <wallet> [--export [out.html]] [--live] [--json]
+                                  historical profile + anomalies (HTML report with --export [file], or stdout with --export -)
   radar alerts [limit]            recent anomalies across the watchlist
   radar scan <wallet>             one-shot scan (needs HELIUS_API_KEY; prices via Jupiter)
   radar analyze <wallet> <txs.json>  run anomaly rules over a tx fixture
@@ -156,12 +160,105 @@ async function main(): Promise<void> {
       const anomalies = store.recentAnomalies(wallet, 20);
       console.log(
         JSON.stringify(
-          { wallet, baseline, recentAnomalies: anomalies, riskScore: computeRiskScore(anomalies) },
+          {
+            wallet,
+            baseline,
+            pnl: baseline?.pnl ?? null,
+            recentAnomalies: anomalies,
+            riskScore: computeRiskScore(anomalies),
+          },
           null,
           2,
         ),
       );
       store.close();
+      return;
+    }
+    case "history": {
+      const exportIdx = args.indexOf("--export");
+      const hasExport = exportIdx !== -1;
+      let exportPath: string | undefined = undefined;
+      if (hasExport && exportIdx + 1 < args.length && !args[exportIdx + 1].startsWith("--")) {
+        exportPath = args[exportIdx + 1];
+      }
+      const wallet = args.find((a, idx) => !a.startsWith("--") && (!hasExport || idx !== exportIdx + 1));
+      if (!wallet) return usage();
+
+      const store = openStore();
+      let baseline: Baseline | null = null;
+      let anomalies: Anomaly[] = [];
+      let windowSince: number | null = null;
+      let windowUntil: number | null = null;
+
+      const isLive = args.includes("--live");
+      const inStore = store.hasWallet(wallet);
+
+      if (inStore && !isLive) {
+        baseline = store.getBaseline(wallet);
+        anomalies = store.recentAnomalies(wallet, 100);
+        if (anomalies.length > 0) {
+          const timestamps = anomalies.map((a) => a.timestamp).filter(Number.isFinite);
+          if (timestamps.length > 0) {
+            windowSince = Math.min(...timestamps);
+            windowUntil = Math.max(...timestamps);
+          }
+        }
+        if (baseline?.lastSeenAt != null) {
+          if (windowUntil == null || baseline.lastSeenAt > windowUntil) {
+            windowUntil = baseline.lastSeenAt;
+          }
+        }
+      } else {
+        const apiKey = process.env.HELIUS_API_KEY;
+        if (!apiKey) {
+          if (!inStore) {
+            console.error(`wallet not in watchlist: ${wallet}. Add it with 'radar add <wallet>' or set HELIUS_API_KEY to fetch live.`);
+            store.close();
+            process.exit(1);
+          }
+        } else {
+          const txs = await fetchWalletTransactions(apiKey, wallet);
+          const prices = await fetchSwapPrices(txs);
+          const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
+          baseline = updateBaseline(wallet, null, txs, Math.floor(Date.now() / 1000), prices);
+          anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+          if (txs.length > 0) {
+            windowSince = txs[txs.length - 1].timestamp;
+            windowUntil = txs[0].timestamp;
+          }
+        }
+      }
+      store.close();
+
+      const riskScore = computeRiskScore(anomalies);
+      const verdict = computeVerdict(riskScore);
+      const reportData: HtmlReportData = {
+        wallet,
+        riskScore,
+        verdict,
+        baseline,
+        anomalies,
+        window: {
+          sinceSec: windowSince,
+          untilSec: windowUntil,
+        },
+        generatedAt: Math.floor(Date.now() / 1000),
+      };
+
+      if (hasExport) {
+        const html = renderHtmlReport(reportData);
+        if (exportPath === "-") {
+          process.stdout.write(html + "\n");
+        } else {
+          const dest = exportPath || `${wallet.slice(0, 8)}-history.html`;
+          await import("node:fs/promises").then((fs) => fs.writeFile(dest, html, "utf8"));
+          console.log(`exported HTML report to ${dest}`);
+        }
+      } else if (args.includes("--json")) {
+        console.log(JSON.stringify(reportData, null, 2));
+      } else {
+        console.log(formatHistoryText(reportData));
+      }
       return;
     }
     case "alerts": {
@@ -178,8 +275,9 @@ async function main(): Promise<void> {
       if (!wallet) return usage();
       const txs = await fetchWalletTransactions(apiKey, wallet);
       const prices = await fetchSwapPrices(txs);
+      const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
       const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
-      const anomalies = detectAnomalies(wallet, txs, null, undefined, prices);
+      const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
       console.log(
         JSON.stringify(
           {
@@ -189,6 +287,7 @@ async function main(): Promise<void> {
             priceCount: prices ? Object.keys(prices).length : 0,
             prices,
             baseline,
+            pnl: baseline.pnl ?? null,
             riskScore: computeRiskScore(anomalies),
             anomalies,
             digest: digestAnomalies(anomalies),

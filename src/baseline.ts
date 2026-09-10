@@ -1,6 +1,9 @@
 import { Baseline, EnhancedTx } from "./types.js";
 import { extractSwap, MAJOR_MINTS, txPrograms } from "./analyzer.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
+import { computePnlLite, mergePnl } from "./pnl.js";
+
+export { computePnlLite, mergePnl };
 
 function median(nums: number[]): number {
   if (nums.length === 0) return 0;
@@ -69,10 +72,16 @@ export function updateBaseline(
 
   const medianSwapAmountUsd =
     swapSizesUsd.length > 0
-      ? ((prevB.medianSwapAmountUsd ?? 0) * prevB.txCount +
-          median(swapSizesUsd) * swapSizesUsd.length) /
-        (prevB.txCount + swapSizesUsd.length)
+      ? prevB.medianSwapAmountUsd !== undefined
+        ? (prevB.medianSwapAmountUsd * prevB.txCount +
+            median(swapSizesUsd) * swapSizesUsd.length) /
+          (prevB.txCount + swapSizesUsd.length)
+        : median(swapSizesUsd)
       : prevB.medianSwapAmountUsd;
+
+  const batchPnl = computePnlLite(txs, prices, prevB.openLots);
+  const pnl = mergePnl(prevB.pnl, batchPnl);
+  const openLots = batchPnl.openLots;
 
   return {
     walletAddress: wallet,
@@ -81,6 +90,12 @@ export function updateBaseline(
     knownPrograms: Array.from(programs),
     medianSwapAmount,
     medianSwapAmountUsd,
+    pnl: {
+      realizedUsd: pnl.realizedUsd,
+      winRate: pnl.winRate,
+      roundTrips: pnl.roundTrips,
+    },
+    openLots,
     medianTps: prevB.medianTps,
     activeHours: prevB.activeHours,
     lastSeenAt: lastSeen,

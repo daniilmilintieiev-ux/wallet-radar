@@ -2,6 +2,7 @@ import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
 import { fetchWalletHistory, HistoryQuery } from "./collector.js";
 import { fetchSwapPrices, UsdPriceMap } from "./pricing.js";
+import { fetchSwapMintRisk, MintRiskMap } from "./mint.js";
 import { AlertSink, formatAlert } from "./alerts.js";
 import { bestEffortDigest, llmConfigFromEnv } from "./llmdigest.js";
 import { Anomaly, Baseline, DEFAULT_CONFIG, EnhancedTx, RadarConfig } from "./types.js";
@@ -48,6 +49,8 @@ export interface ReplayOptions {
   useLlm?: boolean;
   /** Injectable fetcher for tests. */
   fetchHistory?: (wallet: string, query: HistoryQuery) => Promise<EnhancedTx[]>;
+  /** Injectable mint risk fetcher for tests. */
+  fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
 }
 
 /**
@@ -89,10 +92,11 @@ export function buildReplay(
   burst: EnhancedTx[],
   prices: UsdPriceMap | null,
   config: RadarConfig = DEFAULT_CONFIG,
+  mintRisk: MintRiskMap | null = null,
 ): ReplayAnalysis {
   const burstNewest = burst.length > 0 ? Math.max(...burst.map((t) => t.timestamp ?? 0)) : 0;
   const baseline = updateBaseline(wallet, null, history, burstNewest, prices);
-  const anomalies = detectAnomalies(wallet, burst, baseline, config, prices);
+  const anomalies = detectAnomalies(wallet, burst, baseline, config, prices, mintRisk);
   return { baseline, anomalies, riskScore: computeRiskScore(anomalies) };
 }
 
@@ -121,6 +125,8 @@ export async function replayWallet(
   const maxPages = Math.max(1, opts.maxHistoryPages ?? 20);
   const fetchHistory =
     opts.fetchHistory ?? ((w: string, q: HistoryQuery) => fetchWalletHistory(apiKey, w, q));
+  const fetchMintRisk =
+    opts.fetchMintRisk ?? ((txs: EnhancedTx[]) => fetchSwapMintRisk(txs, { apiKey }));
 
   const [burstSide, historySide] = await Promise.all([
     fetchHistory(wallet, { gteTime: win.sinceSec, ltTime: win.untilSec, maxPages }),
@@ -134,7 +140,15 @@ export async function replayWallet(
   }
 
   const prices = usePrices ? await fetchSwapPrices([...burst, ...history]) : null;
-  const { baseline, anomalies, riskScore } = buildReplay(wallet, history, burst, prices, config);
+  const mintRisk = await fetchMintRisk(burst);
+  const { baseline, anomalies, riskScore } = buildReplay(
+    wallet,
+    history,
+    burst,
+    prices,
+    config,
+    mintRisk,
+  );
 
   const result: ReplayResult = {
     wallet,
@@ -157,7 +171,10 @@ export async function replayWallet(
   result.digestSource = source;
 
   if (opts.sink) {
-    await opts.sink.send(formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined));
+    await opts.sink.send(
+      formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined),
+      { wallet, risk: riskScore, anomalies },
+    );
   }
 
   return result;

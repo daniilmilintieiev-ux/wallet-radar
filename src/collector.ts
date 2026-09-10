@@ -1,5 +1,14 @@
 import { EnhancedTx } from "./types.js";
 
+export class HttpError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
 /**
  * Fetch a wallet's recent enhanced transactions from the Helius Enhanced
  * Transactions API (read-only GET).
@@ -26,7 +35,7 @@ export async function fetchWalletTransactions(
     headers: { "Content-Type": "application/json" },
   });
   if (!response.ok) {
-    throw new Error(`Helius fetch failed: ${response.status} ${response.statusText}`);
+    throw new HttpError(`Helius fetch failed: ${response.status} ${response.statusText}`, response.status);
   }
   const data: unknown = await response.json();
   return Array.isArray(data) ? (data as EnhancedTx[]) : [];
@@ -76,7 +85,7 @@ export async function fetchWalletHistory(
       headers: { "Content-Type": "application/json" },
     });
     if (!response.ok) {
-      throw new Error(`Helius history fetch failed: ${response.status} ${response.statusText}`);
+      throw new HttpError(`Helius history fetch failed: ${response.status} ${response.statusText}`, response.status);
     }
     const data: unknown = await response.json();
     const batch: EnhancedTx[] = Array.isArray(data) ? data : [];

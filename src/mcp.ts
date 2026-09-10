@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
@@ -6,6 +8,7 @@ import { updateBaseline } from "./baseline.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
+import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck } from "./trust.js";
 import { Baseline, EnhancedTx } from "./types.js";
 
@@ -13,7 +16,7 @@ function json(payload: unknown): { content: Array<{ type: "text"; text: string }
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
 }
 
-function buildServer(): McpServer {
+export function buildServer(): McpServer {
   const server = new McpServer({ name: "wallet-radar", version: "0.1.0" });
 
   server.registerTool(
@@ -33,21 +36,30 @@ function buildServer(): McpServer {
           isError: true,
         };
       }
-      const txs = await fetchWalletTransactions(apiKey, wallet);
-      const prices = await fetchSwapPrices(txs);
-      const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
-      const anomalies = detectAnomalies(wallet, txs, null, undefined, prices);
-      return json({
-        wallet,
-        txCount: txs.length,
-        lastSeenAt: baseline.lastSeenAt,
-        pricesAvailable: prices !== null,
-        priceCount: prices ? Object.keys(prices).length : 0,
-        prices,
-        riskScore: computeRiskScore(anomalies),
-        anomalies,
-        digest: digestAnomalies(anomalies),
-      });
+      try {
+        const txs = await fetchWalletTransactions(apiKey, wallet);
+        const prices = await fetchSwapPrices(txs);
+        const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
+        const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
+        const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+        return json({
+          wallet,
+          txCount: txs.length,
+          lastSeenAt: baseline.lastSeenAt,
+          pnl: baseline.pnl ?? null,
+          pricesAvailable: prices !== null,
+          priceCount: prices ? Object.keys(prices).length : 0,
+          prices,
+          riskScore: computeRiskScore(anomalies),
+          anomalies,
+          digest: digestAnomalies(anomalies),
+        });
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Scan failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
     }
   );
 
@@ -114,8 +126,15 @@ function buildServer(): McpServer {
           isError: true,
         };
       }
-      const result = await runTrustCheck(apiKey, wallet, { maxRisk, minLiquidityUsd, windowDays });
-      return json(result);
+      try {
+        const result = await runTrustCheck(apiKey, wallet, { maxRisk, minLiquidityUsd, windowDays });
+        return json(result);
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Trust check failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
     }
   );
 
@@ -140,4 +159,10 @@ function buildServer(): McpServer {
   return server;
 }
 
-serveStdio(buildServer);
+const isDirectRun = Boolean(
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url),
+);
+
+if (isDirectRun) {
+  serveStdio(buildServer);
+}

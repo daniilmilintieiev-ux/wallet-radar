@@ -42,6 +42,17 @@ export interface EnhancedTx {
   instructions?: Array<{ programId?: string }>;
 }
 
+export interface OpenLot {
+  amount: number;
+  pricePerUnit: number;
+}
+
+export interface PnlSummary {
+  realizedUsd: number | null;
+  winRate: number | null;
+  roundTrips: number;
+}
+
 /** Learned behavioral profile for a watched wallet. */
 export interface Baseline {
   walletAddress: string;
@@ -51,6 +62,10 @@ export interface Baseline {
   medianSwapAmount: number;
   /** Median swap size in USD (Jupiter price feed). Set only when prices were available. */
   medianSwapAmountUsd?: number;
+  /** Realized PnL summary approximated via FIFO over closed swap round-trips. */
+  pnl?: PnlSummary;
+  /** Open buy lots per token pair for incremental cross-batch FIFO matching. */
+  openLots?: Record<string, OpenLot[]>;
   medianTps: number;
   activeHours: number[];
   lastSeenAt: number | null;
@@ -63,7 +78,16 @@ export type AnomalyType =
   | "NEW_VENUE"
   | "LARGE_SWAP"
   | "CONCENTRATION"
-  | "NEW_PROTOCOL";
+  | "NEW_PROTOCOL"
+  | "TOXIC_MINT";
+
+export interface MintRiskInfo {
+  mint: string;
+  mintAuthority: string | null;
+  freezeAuthority: string | null;
+}
+
+export type MintRiskMap = Record<string, MintRiskInfo>;
 
 export type Severity = "low" | "medium" | "high";
 
@@ -87,6 +111,8 @@ export interface RadarConfig {
   largeSwapMultiplier: number;
   concentrationWindowMin: number;
   concentrationCount: number;
+  quietPolls: number;
+  maxPollMs: number;
 }
 
 export const DEFAULT_CONFIG: RadarConfig = {
@@ -97,4 +123,15 @@ export const DEFAULT_CONFIG: RadarConfig = {
   largeSwapMultiplier: 3,
   concentrationWindowMin: 30,
   concentrationCount: 2,
+  quietPolls: 3,
+  maxPollMs: 3_600_000,
 };
+
+export interface SettledPayment {
+  signature: string;
+  payer: string;
+  recipient: string;
+  amount: number;
+  endpoint: string;
+  settledAt: number;
+}

@@ -22,7 +22,7 @@ export interface LlmConfig {
 /** Read the LLM config from the environment; null when no key is set. */
 export function llmConfigFromEnv(): LlmConfig | null {
   const apiKey = process.env.RADAR_LLM_KEY;
-  if (!apiKey) return null;
+  if (!apiKey || !apiKey.trim()) return null;
   let options: Record<string, unknown> | undefined;
   const rawOptions = process.env.RADAR_LLM_OPTIONS;
   if (rawOptions) {
@@ -36,8 +36,8 @@ export function llmConfigFromEnv(): LlmConfig | null {
   const rawPath = process.env.RADAR_LLM_PATH;
   if (rawPath && rawPath.trim()) path = rawPath.trim();
   return {
-    baseUrl: process.env.RADAR_LLM_BASE ?? "https://api.openai.com/v1",
-    apiKey,
+    baseUrl: process.env.RADAR_LLM_BASE ?? process.env.RADAR_LLM_URL ?? "https://api.openai.com/v1",
+    apiKey: apiKey.trim(),
     model: process.env.RADAR_LLM_MODEL ?? "gpt-4o-mini",
     timeoutMs: timeoutMsFromEnv(),
     options,
@@ -74,7 +74,7 @@ const SYSTEM_PROMPT =
 
 /**
  * Call the chat-completions endpoint. Returns the digest text, or null on any
- * failure (bad status, network error, timeout, empty content).
+ * failure (bad status, network error, timeout, empty content, bad JSON).
  */
 export async function llmDigest(
   wallet: string,
@@ -83,9 +83,11 @@ export async function llmDigest(
   cfg: LlmConfig,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string | null> {
+  const timeoutMs = cfg.timeoutMs !== undefined && cfg.timeoutMs > 0 ? cfg.timeoutMs : 15_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 15_000);
     const endpoint = `${cfg.baseUrl.replace(/\/$/, "")}/${cfg.path ?? "chat/completions"}`;
     const res = await fetchImpl(endpoint, {
       method: "POST",
@@ -106,17 +108,27 @@ export async function llmDigest(
       }),
       signal: controller.signal,
     });
-    clearTimeout(timer);
     if (!res.ok) return null;
-    const data = (await res.json()) as {
+    const data: unknown = await res.json();
+    if (!data || typeof data !== "object") return null;
+
+    const obj = data as {
       choices?: Array<{ message?: { content?: string } }>;
       message?: { content?: string };
     };
-    const text =
-      data.choices?.[0]?.message?.content?.trim() ?? data.message?.content?.trim();
-    return text ? text : null;
+
+    let text: string | undefined;
+    if (Array.isArray(obj.choices) && obj.choices[0]?.message?.content) {
+      text = String(obj.choices[0].message.content).trim();
+    } else if (obj.message && typeof obj.message === "object" && obj.message.content) {
+      text = String(obj.message.content).trim();
+    }
+
+    return text && text.length > 0 ? text : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -125,7 +137,7 @@ export interface DigestResult {
   source: "llm" | "template";
 }
 
-/** LLM digest when configured and reachable, template otherwise. Never throws. */
+/** LLM digest when configured and reachable, template otherwise. Never throws into the watch loop. */
 export async function bestEffortDigest(
   wallet: string,
   riskScore: number,
@@ -133,8 +145,18 @@ export async function bestEffortDigest(
   cfg: LlmConfig | null,
   fetchImpl?: typeof fetch,
 ): Promise<DigestResult> {
-  const template = digestAnomalies(anomalies);
+  let template = "";
+  try {
+    template = digestAnomalies(anomalies);
+  } catch {
+    template = `${anomalies.length} anomal${anomalies.length === 1 ? "y" : "ies"} detected.`;
+  }
   if (!cfg) return { digest: template, source: "template" };
-  const text = await llmDigest(wallet, riskScore, anomalies, cfg, fetchImpl);
-  return text ? { digest: text, source: "llm" } : { digest: template, source: "template" };
+  try {
+    const text = await llmDigest(wallet, riskScore, anomalies, cfg, fetchImpl);
+    return text ? { digest: text, source: "llm" } : { digest: template, source: "template" };
+  } catch {
+    return { digest: template, source: "template" };
+  }
 }
+

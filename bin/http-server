@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+import { runCli } from "../dist/src/http-server.js";
+
+runCli().catch((err) => {
+  console.error("wallet-radar HTTP server failed:", err);
+  process.exit(1);
+});

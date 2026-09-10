@@ -6,5 +6,7 @@ dist/
 *.sqlite
 *.sqlite3
 *.db
-radar.db
+*.db-*
+radar.env
+dist.bak*
 .DS_Store
