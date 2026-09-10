@@ -23,7 +23,7 @@ interface EndpointInfo {
 }
 
 const ENDPOINTS: EndpointInfo[] = [
-  { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 6 deterministic anomaly rules. Returns riskScore (0-100), anomalies with evidence, digest." },
+  { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 7 deterministic anomaly rules. Returns riskScore (0-100), anomalies with evidence, digest." },
   { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls." },
   { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture." },
