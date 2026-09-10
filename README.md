@@ -34,6 +34,10 @@ node dist/src/cli.js replay 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j \
   --since 2026-03-11T07:36:15Z --until 2026-08-31T08:00:00Z --llm --alert
 ```
 
+The demo is a **replay of real on-chain data** — re-run it live and it reproduces the same
+verdict (RISK 100/100 · 8 anomalies · 1,307-tx baseline). See [`LIVE-DATA.md`](./LIVE-DATA.md)
+and [`scripts/verify-canon.sh`](./scripts/verify-canon.sh) to verify it yourself.
+
 Video demo: <https://daniilmilintieiev-ux.github.io/wallet-radar/>
 
 ## Quick start

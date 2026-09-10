@@ -2,92 +2,79 @@
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wallet Radar — continuous Solana wallet anomaly detection</title>
-<meta name="description" content="Wallet Radar turns Solana wallet history into a behavioral baseline and flags the moment the behavior breaks. Deterministic rules, zero deps, MCP server.">
+<meta name="description" content="Wallet Radar builds each Solana wallet's behavioral baseline and flags the exact moment the behavior breaks — deterministically, 24/7, as an MCP tool any agent can call before it acts.">
 <style>
 :root{--bg:#05070a;--panel:#0d1117;--border:#21262d;--ink:#f5f5f5;--muted:#8b949e;--dim:#5c6370;--accent:#FF4D1A;--green:#3FB950;--red:#F85149;}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,-apple-system,sans-serif;line-height:1.6}
 a{color:var(--accent);text-decoration:none}
-.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+code{font-family:Consolas,monospace;font-size:.9em;color:var(--ink);background:#161b22;padding:1px 5px;border-radius:4px}
 header{padding:64px 0 28px;text-align:center}
 .logo{font-size:40px;font-weight:800;letter-spacing:1px}
 .logo .a{color:var(--accent)}
-.tag{color:var(--muted);font-size:18px;margin-top:10px;letter-spacing:.3px}
+.tag{color:var(--muted);font-size:18px;margin:10px auto 0;letter-spacing:.3px;max-width:740px}
 .chips{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:22px}
 .chip{font-family:Consolas,monospace;font-size:13px;color:var(--muted);background:#161b22;border:1px solid var(--border);border-radius:6px;padding:6px 12px}
 .chip b{color:var(--ink)}
 section{padding:34px 0}
-h2{font-size:14px;letter-spacing:3px;text-transform:uppercase;color:var(--dim);text-align:center;margin-bottom:22px}
-.video-frame{max-width:900px;margin:0 auto;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:#000;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+h2{font-size:14px;letter-spacing:3px;text-transform:uppercase;color:var(--dim);text-align:center;margin-bottom:8px}
+.sub{color:var(--muted);text-align:center;max-width:780px;margin:0 auto 22px;font-size:15px}
+.video-frame{max-width:940px;margin:0 auto;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:#000;box-shadow:0 20px 60px rgba(0,0,0,.5)}
 video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000}
-.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;max-width:900px;margin:0 auto;padding:0 24px}
-.hero-cap{max-width:900px;margin:16px auto 0;text-align:center;color:var(--muted);font-size:14px}
-.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;max-width:1040px;margin:0 auto;padding:0 24px}
-.card{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--panel);transition:border-color .2s}
-.card:hover{border-color:#3a414b}
-.card video{aspect-ratio:16/9}
-.card .lbl{padding:14px 16px}
-.card .lbl b{display:block;font-size:15px}
-.card .lbl span{color:var(--muted);font-size:13px}
-.about{max-width:760px;margin:0 auto;text-align:center;color:#c9d1d9;font-size:16px}
-.rules{max-width:760px;margin:24px auto 0;border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.rules .row{display:flex;justify-content:space-between;padding:12px 18px;border-bottom:1px solid var(--border);font-family:Consolas,monospace;font-size:14px}
+.hero-cap{max-width:940px;margin:16px auto 0;text-align:center;color:var(--muted);font-size:15px}
+.hero-cap b{color:var(--ink)}
+.pipeline{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;max-width:1040px;margin:0 auto;padding:0 24px}
+.step{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:18px}
+.step .k{font-family:Consolas,monospace;font-size:12px;color:var(--accent);letter-spacing:1px}
+.step b{display:block;font-size:15px;margin:8px 0 4px}
+.step span{color:var(--muted);font-size:13px}
+.rules{max-width:760px;margin:22px auto 0;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.rules .row{display:flex;justify-content:space-between;gap:16px;padding:12px 18px;border-bottom:1px solid var(--border);font-family:Consolas,monospace;font-size:14px}
 .rules .row:last-child{border-bottom:0}
-.rules .row .n{color:var(--accent)}
-.rules .row .d{color:var(--muted)}
+.rules .row .n{color:var(--accent);white-space:nowrap}
+.rules .row .d{color:var(--muted);text-align:right}
+.live{max-width:940px;margin:0 auto;border:1px solid var(--border);border-left:3px solid var(--green);border-radius:12px;background:var(--panel);padding:26px 30px}
+.live .h{font-size:18px;margin-bottom:12px}
+.live p{color:var(--muted);font-size:15px;margin-bottom:12px}
+.live p:last-child{margin-bottom:0}
+.live b{color:var(--ink)}
+.live .ok{color:var(--green);font-weight:700}
+.about{max-width:760px;margin:0 auto;text-align:center;color:#c9d1d9;font-size:16px}
+.about b{color:var(--ink)}
 footer{padding:40px 0 64px;text-align:center;color:var(--dim);font-size:14px}
 footer .gh{color:var(--muted);font-family:Consolas,monospace}
+@media(max-width:720px){.pipeline{grid-template-columns:1fr 1fr}.rules .row{flex-direction:column;gap:2px}.rules .row .d{text-align:left}}
 </style></head>
 <body>
 <header>
   <div class="logo">WALLET<span class="a">RADAR</span></div>
-  <div class="tag">Turns Solana wallet history into a behavioral baseline — and flags the moment the behavior breaks.</div>
+  <div class="tag">Builds each Solana wallet's behavioral baseline — then flags the exact moment the behavior breaks.</div>
   <div class="chips">
     <span class="chip"><b>100%</b> TypeScript</span>
     <span class="chip"><b>0</b> dependencies</span>
     <span class="chip"><b>6</b> deterministic rules</span>
+    <span class="chip"><b>24/7</b> live monitoring</span>
     <span class="chip"><b>MCP</b> server</span>
-    <span class="chip"><b>LLM</b> digest (optional)</span>
   </div>
 </header>
 
 <section>
   <h2>Demo</h2>
+  <div class="sub">One scope, one story: a wallet dormant for 173 days wakes up and moves 5× its norm on a brand-new venue.</div>
   <div class="video-frame">
     <video controls playsinline preload="metadata" poster="posters/scope.png" src="videos/wallet-radar-scope.mp4"></video>
   </div>
-  <div class="hero-cap">The radar — one scope, one story: behavioral baseline, the long silence, the awakening, and the gate that holds the trade.</div>
+  <div class="hero-cap">Verdict: <b>RISK 100/100</b> · 8 anomalies. The final gate (<code>radar_trust</code>) tells the copy-trading agent to hold — <b>$3,996 protected.</b></div>
 </section>
 
 <section>
-  <h2>Other angles</h2>
-  <div class="grid2">
-    <div class="card">
-      <video controls playsinline preload="none" poster="posters/hero.png" src="videos/wallet-radar-hero.mp4"></video>
-      <div class="lbl"><b>Narrated</b><span>Story cut with English voiceover + Russian subtitles.</span></div>
-    </div>
-    <div class="card">
-      <video controls playsinline preload="none" poster="posters/cinematic.png" src="videos/wallet-radar-cinematic.mp4"></video>
-      <div class="lbl"><b>Cinematic</b><span>Fast motion-graphic cut of the awakening.</span></div>
-    </div>
-    <div class="card">
-      <video controls playsinline preload="none" poster="posters/agent.png" src="videos/wallet-radar-agent.mp4"></video>
-      <div class="lbl"><b>Agent gate</b><span>The MCP pre-flight check that skips the bad trade.</span></div>
-    </div>
-    <div class="card">
-      <video controls playsinline preload="none" poster="posters/terminal.png" src="videos/wallet-radar-terminal.mp4"></video>
-      <div class="lbl"><b>Authentic terminal</b><span>The real CLI, real output — no mockups.</span></div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="about">
-    Wallet Radar answers <b>"what changed, and does it matter?"</b> — for a watchlist of wallets,
-    continuously. A collector builds a per-wallet baseline; a deterministic analyzer fires
-    anomaly rules with structured evidence (tx signatures, numbers); an optional one-call
-    LLM digest turns it into a sentence; alerts go to Telegram. Any agent can call it as an
-    MCP tool before it acts.
+  <h2>How it works</h2>
+  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and six deterministic rules.</div>
+  <div class="pipeline">
+    <div class="step"><div class="k">COLLECT</div><b>Helius enhanced tx</b><span>Full per-wallet history, paged, straight from mainnet.</span></div>
+    <div class="step"><div class="k">BASELINE</div><b>Learn the normal</b><span>Median size, venues, programs, cadence — per wallet.</span></div>
+    <div class="step"><div class="k">DETECT</div><b>6 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers).</span></div>
+    <div class="step"><div class="k">ACT</div><b>Score + alert</b><span>Risk 0–100 → Telegram, optional LLM digest, MCP call.</span></div>
   </div>
   <div class="rules">
     <div class="row"><span class="n">DORMANT_ACTIVE</span><span class="d">reactivated after N days of silence</span></div>
@@ -96,6 +83,24 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <div class="row"><span class="n">LARGE_SWAP</span><span class="d">swap &gt; N× the wallet's own USD median</span></div>
     <div class="row"><span class="n">CONCENTRATION</span><span class="d">repeated swaps into the same token</span></div>
     <div class="row"><span class="n">NEW_PROTOCOL</span><span class="d">first interaction with an unseen program</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>Live, not just a demo</h2>
+  <div class="live">
+    <div class="h">It runs 24/7 on a watchlist — and the demo above is real on-chain data.</div>
+    <p>The radar continuously polls each watched wallet (Helius), rebuilds its baseline, and alerts the moment a rule fires. The demo is a <b>replay of a real event</b>: wallet <code>8XeK5m…eYXU2j</code>, dormant for 173 days, waking with five ≥3×-median swaps on a brand-new venue.</p>
+    <p>Because mainnet is immutable, re-running the detector on live data reproduces the same verdict — <code>radar replay 8XeK5m… --since 2026-03-11 --until 2026-08-31</code> → <span class="ok">RISK 100/100 · 8 anomalies · 1,307-tx baseline</span>.</p>
+    <p>Reproduce it yourself with <code>scripts/verify-canon.sh</code>; full write-up in <code>LIVE-DATA.md</code>.</p>
+  </div>
+</section>
+
+<section>
+  <div class="about">
+    The payoff for agents: <code>radar_trust</code> is an MCP tool that returns one decision —
+    <b>safe / hold / unknown</b> — before an agent acts. An agent about to copy-trade a wallet
+    calls it first and stops, instead of sending money to a wallet that just woke up.
   </div>
 </section>
 
