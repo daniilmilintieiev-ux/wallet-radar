@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   shortlist — `safe` ranked by risk then liquidity, plus `hold` and `unknown`
   buckets — so a copy-trading agent can gate its whole book in one call. A
   per-wallet failure is reported as `unknown` and never aborts the batch.
+- Monitoring over HTTP (the agent surface for "keep gating while you copy"): the
+  HTTP server can now run the watch loop in-process (`RADAR_WATCH=1` or
+  `--watch`), sharing the same SQLite store and firing `WEBHOOK_URL` / Telegram
+  alerts on every new anomaly. New routes: `POST /watch` (add), `GET /watch`
+  (list), `POST /unwatch` (remove), `GET /alerts` (recent anomalies), and
+  `POST /poll` (re-check the whole watchlist now and fire webhooks on any new
+  anomaly). `watchLoop` now accepts an `AbortSignal` for clean in-process
+  shutdown.
 
 ### Changed
 - README reframed from "hackathon MVP" to **early-access (v0.1.x)**, with

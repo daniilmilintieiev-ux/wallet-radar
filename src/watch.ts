@@ -71,6 +71,8 @@ export interface WatchOptions {
   fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
   /** Injectable mint risk fetcher (tests). Defaults to fetchSwapMintRisk. */
   fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  /** Abort signal to stop the continuous loop (in-process watch mode). */
+  signal?: AbortSignal;
 }
 
 export interface WalletReport {
@@ -259,8 +261,10 @@ export async function watchLoop(
 ): Promise<void> {
   const pollMs = opts.pollMs ?? DEFAULT_CONFIG.pollMs;
   for (;;) {
+    if (opts.signal?.aborted) return;
     const report = await watchOnce(store, apiKey, opts);
     onIteration?.(report);
+    if (opts.signal?.aborted) return;
     await sleep(pollMs);
   }
 }

@@ -247,6 +247,32 @@ node dist/src/cli.js alerts [limit]    # recent anomalies across the watchlist
 node dist/src/cli.js remove <wallet>   # drop a wallet
 ```
 
+### Monitoring over HTTP (agent surface)
+
+The same watchlist is exposed over HTTP so an agent can set up monitoring without the CLI. Start the HTTP server with monitoring enabled and it opens the same SQLite store and runs the continuous watch loop in-process, firing `WEBHOOK_URL` / Telegram alerts on every new anomaly:
+
+```bash
+RADAR_WATCH=1 WEBHOOK_URL=https://your-agent/hook \
+  node dist/src/http-server.js     # or pass --watch; poll interval via RADAR_POLL_MS
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /watch` `{wallet}` | Add a wallet to the watchlist |
+| `GET /watch` | List watched wallets (seed status + unalerted-anomaly count) |
+| `POST /unwatch` `{wallet}` | Remove a wallet |
+| `GET /alerts?limit=N` | Recent recorded anomalies (most recent first) |
+| `POST /poll` | Immediately re-check the whole watchlist and fire webhooks/Telegram on any new anomaly — "re-check my copied wallet now" |
+
+```bash
+curl -s http://localhost:7690/watch -H 'Content-Type: application/json' \
+  -d '{"wallet":"8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j"}'
+curl -s http://localhost:7690/poll -X POST -H 'Content-Type: application/json' -d '{}'   # re-check now
+curl -s http://localhost:7690/alerts
+```
+
+`POST /poll` runs one synchronous iteration over the watchlist (seed → detect → alert), so an agent gets an immediate risk report plus any webhooks without waiting for the next scheduled poll. Without `RADAR_WATCH=1` the HTTP server is stateless and these routes return `503` (the CLI above still works standalone).
+
 ### Webhook alerts
 
 Set `WEBHOOK_URL` to deliver compact structured alert payloads to any webhook endpoint (agent hooks, Slack/Discord bridges, or ingestion services). On every detected anomaly batch, Radar POSTs JSON:

@@ -12,6 +12,11 @@ import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
+import { Store } from "./store.js";
+import { watchOnce, watchLoop } from "./watch.js";
+import { makeSink, type AlertSink } from "./alerts.js";
+import type { MintRiskMap } from "./mint.js";
+import { homedir } from "node:os";
 import type { EnhancedTx } from "./types.js";
 
 const SERVICE = "wallet-radar";
@@ -28,6 +33,11 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls. Returns riskScore, anomalies, per-rule reasons, summary, and digest." },
   { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
   { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once." },
+  { method: "GET", path: "/watch", tool: "radar_watch", description: "List the monitoring watchlist: each watched wallet with its seed status and unalerted-anomaly count. Requires the watch store (start the server with RADAR_WATCH=1)." },
+  { method: "POST", path: "/watch", tool: "radar_watch", description: "Add a wallet to the monitoring watchlist so it is continuously re-checked for new anomalies (webhook/Telegram on detection). Requires the watch store (RADAR_WATCH=1)." },
+  { method: "POST", path: "/unwatch", tool: "radar_unwatch", description: "Remove a wallet from the monitoring watchlist. Requires the watch store (RADAR_WATCH=1)." },
+  { method: "GET", path: "/alerts", tool: "radar_alerts", description: "Recent recorded anomalies from the monitoring watchlist, most recent first. Requires the watch store (RADAR_WATCH=1)." },
+  { method: "POST", path: "/poll", tool: "radar_poll", description: "Immediately re-check the whole monitoring watchlist for new activity and fire webhooks/Telegram on any new anomaly (re-check your copied wallet now). Requires the watch store + HELIUS_API_KEY (RADAR_WATCH=1)." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
 ];
@@ -189,7 +199,32 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<un
   "/radar_selftest": toolSelftest,
 };
 
-export async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+export interface RequestContext {
+  store?: Store;
+  sink?: AlertSink;
+  apiKey?: string;
+  fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
+  fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
+  fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+}
+
+function requireStore(ctx: RequestContext): Store {
+  if (!ctx.store) {
+    throw new HttpError(503, "watch store not enabled — start the server with RADAR_WATCH=1 (or provide a Store).");
+  }
+  return ctx.store;
+}
+
+function watchListPayload(store: Store): unknown {
+  const wallets = store.listWallets().map((w) => ({
+    wallet: w,
+    seeded: store.getBaseline(w) !== null,
+    unalerted: store.unalertedCount(w),
+  }));
+  return { watching: wallets, count: wallets.length };
+}
+
+export async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse, ctx: RequestContext = {}): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const p = url.pathname;
   const method = req.method ?? "GET";
@@ -214,6 +249,19 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         });
         return;
       }
+      // Monitoring watchlist (store-backed, enabled with RADAR_WATCH=1).
+      if (p === "/watch") {
+        sendJson(res, 200, watchListPayload(requireStore(ctx)));
+        return;
+      }
+      if (p === "/alerts") {
+        const store = requireStore(ctx);
+        const limitRaw = url.searchParams.get("limit");
+        const limit = limitRaw ? Math.max(1, Math.min(100, parseInt(limitRaw, 10) || 20)) : 20;
+        const anomalies = store.recentAnomalies(null, limit);
+        sendJson(res, 200, { anomalies, count: anomalies.length });
+        return;
+      }
       // Health-friendly: a GET on a tool path returns 200 with its descriptor.
       const info = ENDPOINTS.find((e) => e.path === p);
       if (info) {
@@ -234,6 +282,38 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         } catch {
           throw new HttpError(400, "body must be a JSON object.");
         }
+      }
+
+      // Monitoring watchlist management (store-backed, enabled with RADAR_WATCH=1).
+      if (p === "/watch") {
+        const store = requireStore(ctx);
+        const wallet = body.wallet;
+        if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+        store.addWallet(wallet);
+        sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() });
+        return;
+      }
+      if (p === "/unwatch") {
+        const store = requireStore(ctx);
+        const wallet = body.wallet;
+        if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+        store.removeWallet(wallet);
+        sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() });
+        return;
+      }
+      if (p === "/poll") {
+        const store = requireStore(ctx);
+        const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
+        if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+        const report = await watchOnce(store, apiKey, {
+          sink: ctx.sink,
+          fetchTxs: ctx.fetchTxs,
+          fetchPrices: ctx.fetchPrices,
+          fetchMintRisk: ctx.fetchMintRisk,
+          usePrices: typeof body.usePrices === "boolean" ? body.usePrices : true,
+        });
+        sendJson(res, 200, report);
+        return;
       }
 
       // Path dispatch (primary).
@@ -299,12 +379,36 @@ function createRateLimiter(limitPerMin: number): RateLimiter {
 
 export interface ServerOptions {
   rateLimitPerMin?: number;
+  /** Watchlist store (enables /watch, /unwatch, /alerts, /poll + the in-process loop). */
+  store?: Store;
+  /** Alert sink for the watch loop (webhook/Telegram/console). */
+  sink?: AlertSink;
+  /** Run the continuous watch loop in-process (requires a store + a Helius key). */
+  watch?: boolean;
+  /** Poll interval for the in-process loop (ms). Defaults to DEFAULT_CONFIG.pollMs. */
+  pollMs?: number;
+  /** Helius API key for the loop/poll (env HELIUS_API_KEY if omitted). */
+  apiKey?: string;
+  /** Injectable tx source for the loop/poll (tests). */
+  fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
+  /** Injectable price source for the loop/poll (tests). */
+  fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
+  /** Injectable mint-risk source for the loop/poll (tests). */
+  fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
   const limit = options.rateLimitPerMin ?? Number(process.env.RADAR_RATE_LIMIT_PER_MIN ?? 120);
   const rateLimiter = limit > 0 ? createRateLimiter(limit) : null;
-  return http.createServer((req, res) => {
+  const ctx: RequestContext = {
+    store: options.store,
+    sink: options.sink,
+    apiKey: options.apiKey,
+    fetchTxs: options.fetchTxs,
+    fetchPrices: options.fetchPrices,
+    fetchMintRisk: options.fetchMintRisk,
+  };
+  const server = http.createServer((req, res) => {
     const url = req.url ?? "/";
     if (rateLimiter && url !== "/health" && (req.method ?? "GET") !== "OPTIONS") {
       const rl = rateLimiter.check(req.socket.remoteAddress ?? "unknown");
@@ -318,8 +422,43 @@ export function createServer(options: ServerOptions = {}): http.Server {
         return;
       }
     }
-    void handleRequest(req, res);
+    void handleRequest(req, res, ctx);
   });
+
+  // Continuous in-process watch loop (opt-in): poll the watchlist and fire alerts.
+  if (options.watch && options.store) {
+    const apiKey = options.apiKey ?? process.env.HELIUS_API_KEY;
+    if (apiKey) {
+      const abort = new AbortController();
+      void watchLoop(
+        options.store,
+        apiKey,
+        {
+          sink: options.sink,
+          pollMs: options.pollMs,
+          fetchTxs: options.fetchTxs,
+          fetchPrices: options.fetchPrices,
+          fetchMintRisk: options.fetchMintRisk,
+          signal: abort.signal,
+        },
+        (report) => {
+          const active = report.wallets.filter((w) => w.anomalyCount > 0);
+          if (active.length > 0) {
+            console.log(`[watch] ${active.map((w) => `${w.wallet} risk=${w.riskScore} anomalies=${w.anomalyCount}`).join(", ")}`);
+          }
+        },
+      ).catch((err) => {
+        if (!abort.signal.aborted) {
+          console.error("watch loop error:", err instanceof Error ? err.message : String(err));
+        }
+      });
+      server.on("close", () => abort.abort());
+    } else {
+      console.warn("RADAR_WATCH=1 but no Helius key — in-process watch loop not started (set HELIUS_API_KEY).");
+    }
+  }
+
+  return server;
 }
 
 export function startServer(port: number, host = "0.0.0.0", options: ServerOptions = {}): http.Server {
@@ -341,7 +480,27 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
   loadEnv();
   const port = Number(process.env.PORT ?? 7690);
   const host = process.env.HOST ?? "0.0.0.0";
-  const server = startServer(port, host);
+
+  // Optional in-process monitoring: RADAR_WATCH=1 (or --watch) opens a shared Store
+  // and runs the watch loop, firing WEBHOOK_URL / Telegram alerts on new anomalies.
+  const watchEnabled = process.env.RADAR_WATCH === "1" || args.includes("--watch");
+  const options: ServerOptions = {};
+  if (watchEnabled) {
+    const dbPath = process.env.RADAR_DB ?? path.join(homedir(), ".wallet-radar", "radar.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    options.store = new Store(dbPath);
+    options.sink = makeSink();
+    options.watch = true;
+    const pollMsRaw = process.env.RADAR_POLL_MS;
+    if (pollMsRaw) {
+      const parsed = parseInt(pollMsRaw, 10);
+      if (!Number.isNaN(parsed) && parsed > 0) options.pollMs = parsed;
+    }
+    const sinkName = process.env.WEBHOOK_URL ? "webhook" : process.env.TG_BOT_TOKEN ? "telegram" : "console";
+    console.log(`${SERVICE} monitoring enabled — store ${dbPath}, alert sink: ${sinkName}`);
+  }
+
+  const server = startServer(port, host, options);
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   console.log(`${SERVICE} HTTP server listening on http://${host}:${port}`);
 }
