@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A `freshness` block on `/scan` and `/trust`: last activity, analysis window,
   days-since-last-activity, and a `stale` flag — a gate now states how recent
   its data is, instead of being silent about it.
+- Batch trust gate: `POST /batch` (HTTP) and the `radar_batch` MCP tool run the
+  pre-flight trust check over up to 20 wallets at once and return a deterministic
+  shortlist — `safe` ranked by risk then liquidity, plus `hold` and `unknown`
+  buckets — so a copy-trading agent can gate its whole book in one call. A
+  per-wallet failure is reported as `unknown` and never aborts the batch.
 
 ### Changed
 - README reframed from "hackathon MVP" to **early-access (v0.1.x)**, with

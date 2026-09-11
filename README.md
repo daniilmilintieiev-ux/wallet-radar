@@ -81,12 +81,13 @@ one-sentence human-readable description, so both agents and humans can verify it
 
 Wallet Radar ships as an MCP server (`src/mcp.ts`), so any agent (Claude Code,
 Cursor, solana-agent-kit) can plug in one-shot risk checks with a single line of
-config. Four tools:
+config. Five tools:
 
 | Tool | Purpose |
 | --- | --- |
 | `radar_scan` | Live Helius fetch + baseline + rules → risk score, per-rule `reasons`, `summary`, and `freshness` (needs `HELIUS_API_KEY`) |
 | `radar_trust` | Gate before you copy / pay: risk + liquidity → `safe`/`hold`/`unknown`, with verdict reasons, per-rule `reasons`, `summary`, and `freshness` (needs `HELIUS_API_KEY`) |
+| `radar_batch` | Gate a whole copy-book at once: runs `radar_trust` over up to 20 wallets and returns a deterministic shortlist — `safe` ranked by risk then liquidity, plus `hold` and `unknown` buckets (needs `HELIUS_API_KEY`) |
 | `radar_analyze` | Run the rules over a transactions fixture you already have (no network) |
 | `radar_selftest` | Offline smoke test, no keys |
 
@@ -208,6 +209,28 @@ one-line `summary`**, so any agent or human can see exactly which rules fired an
 why. A `freshness` block states the last activity, the analysis window, and whether
 the read is stale — a gate is only as good as the data behind it. No LLM in the
 verdict path. Full design: [`docs/trust-spec.md`](docs/trust-spec.md).
+
+### Batch trust gate (gate the whole book)
+
+A copy-trading agent doesn't gate one wallet — it gates the *book* of wallets it
+was told to copy. `radar_batch` / `POST /batch` runs the trust check over a whole
+set of wallets at once and returns a deterministic shortlist: which are `safe`
+(ranked by risk, then liquidity), which are `hold`, and which are `unknown`. A
+per-wallet failure never aborts the batch — it is reported as `unknown`.
+
+```bash
+# gate the stored watchlist (CLI)
+node dist/src/cli.js trust --watchlist --json
+```
+
+```bash
+# gate any set of up to 20 wallets over HTTP (independent of the watchlist)
+curl -s http://localhost:7690/batch -H 'Content-Type: application/json' \
+  -d '{"wallets": ["<w1>", "<w2>", "<w3>"], "maxRisk": 30, "minLiquidityUsd": 50}'
+```
+
+The response is `{ generatedAt, total, counts: {safe, hold, unknown}, shortlist: [...], borderline: [...], unknown: [...] }`.
+MCP tool: `radar_batch`.
 
 ## Watchlist (continuous monitoring)
 

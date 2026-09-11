@@ -9,7 +9,7 @@ import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
-import { runTrustCheck } from "./trust.js";
+import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { Baseline, EnhancedTx } from "./types.js";
 
@@ -139,6 +139,57 @@ export function buildServer(): McpServer {
       } catch (err) {
         return {
           content: [{ type: "text", text: `Trust check failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "radar_batch",
+    {
+      description:
+        "Batch pre-flight trust-gate over a set of Solana wallets (up to 20): runs the behavioral risk + payment-capacity trust check on each and returns a deterministic shortlist — which wallets are safe to copy/deal with right now (ranked by risk, then liquidity), plus the hold and unknown buckets. Use to gate an entire copy-trading book in one call. Requires HELIUS_API_KEY.",
+      inputSchema: {
+        wallets: z
+          .array(z.string())
+          .min(1)
+          .max(20)
+          .describe("Solana wallet addresses (base58), up to 20"),
+        maxRisk: z
+          .number()
+          .int()
+          .min(0)
+          .max(100)
+          .optional()
+          .describe("Max acceptable risk score (default 30)"),
+        minLiquidityUsd: z
+          .number()
+          .min(0)
+          .optional()
+          .describe("Minimum acceptable liquidity in USD (default 50)"),
+        windowDays: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Behavioral risk window in days (default 7)"),
+      },
+    },
+    async ({ wallets, maxRisk, minLiquidityUsd, windowDays }) => {
+      const apiKey = process.env.HELIUS_API_KEY;
+      if (!apiKey) {
+        return {
+          content: [{ type: "text", text: "HELIUS_API_KEY is not set. Configure it in the server env." }],
+          isError: true,
+        };
+      }
+      try {
+        const results = await runTrustChecks(apiKey, wallets, { maxRisk, minLiquidityUsd, windowDays });
+        return json(buildShortlist(results));
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Batch trust check failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         };
       }

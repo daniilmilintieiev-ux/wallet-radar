@@ -10,7 +10,7 @@ import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
-import { runTrustCheck } from "./trust.js";
+import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import type { EnhancedTx } from "./types.js";
 
@@ -27,6 +27,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 7 deterministic anomaly rules. Returns riskScore (0-100), anomalies with evidence, per-rule reasons, summary, digest, and data freshness." },
   { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls. Returns riskScore, anomalies, per-rule reasons, summary, and digest." },
   { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
+  { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
 ];
@@ -132,6 +133,27 @@ async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   });
 }
 
+async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
+  const wallets = body.wallets;
+  if (!Array.isArray(wallets) || wallets.length === 0) {
+    throw new HttpError(400, "body.wallets must be a non-empty array of Solana base58 addresses.");
+  }
+  if (wallets.length > 20) {
+    throw new HttpError(400, `body.wallets: at most 20 wallets per batch (got ${String(wallets.length)}).`);
+  }
+  for (const w of wallets) {
+    if (!isBase58Address(w)) throw new HttpError(400, "body.wallets must all be Solana base58 addresses: " + String(w));
+  }
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+  const results = await runTrustChecks(apiKey, wallets, {
+    maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
+    minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
+    windowDays: typeof body.windowDays === "number" ? body.windowDays : undefined,
+  });
+  return buildShortlist(results);
+}
+
 function toolSelftest(): unknown {
   const wallet = "DemoWallet11111111111111111111111111111111";
   const txs: EnhancedTx[] = [
@@ -161,6 +183,8 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<un
   "/radar_analyze": toolAnalyze,
   "/trust": toolTrust,
   "/radar_trust": toolTrust,
+  "/batch": toolBatch,
+  "/radar_batch": toolBatch,
   "/selftest": toolSelftest,
   "/radar_selftest": toolSelftest,
 };

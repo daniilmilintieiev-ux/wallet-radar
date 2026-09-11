@@ -240,6 +240,82 @@ test("http-server: malformed JSON body returns 400", async () => {
   }
 });
 
+test("http-server: POST /batch without HELIUS_API_KEY returns 503", async () => {
+  const r = await startTestServer();
+  try {
+    const prev = process.env.HELIUS_API_KEY;
+    delete process.env.HELIUS_API_KEY;
+    try {
+      const res = await fetch(`${r.base}/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallets: ["5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8"] }),
+      });
+      assert.equal(res.status, 503);
+    } finally {
+      if (prev === undefined) delete process.env.HELIUS_API_KEY;
+      else process.env.HELIUS_API_KEY = prev;
+    }
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /batch with empty wallets returns 400", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallets: [] }),
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /batch with a non-base58 wallet returns 400", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallets: ["not-a-wallet"] }),
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /batch over 20 wallets returns 400", async () => {
+  const r = await startTestServer();
+  try {
+    const many = Array.from({ length: 21 }, () => "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8");
+    const res = await fetch(`${r.base}/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallets: many }),
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: GET on /batch is health-friendly (200 + descriptor)", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/batch`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.tool, "radar_batch");
+  } finally {
+    await r.close();
+  }
+});
+
 test("http-server: unknown POST route returns 404", async () => {
   const r = await startTestServer();
   try {

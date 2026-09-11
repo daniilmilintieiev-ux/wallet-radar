@@ -47,7 +47,7 @@ async function createTestClient() {
   return { request, close };
 }
 
-test("MCP: tools/list includes radar_scan, radar_analyze, radar_selftest", async () => {
+test("MCP: tools/list includes radar_scan, radar_analyze, radar_trust, radar_batch, radar_selftest", async () => {
   const client = await createTestClient();
   try {
     const res = await client.request("tools/list", {});
@@ -56,6 +56,8 @@ test("MCP: tools/list includes radar_scan, radar_analyze, radar_selftest", async
 
     assert.ok(names.includes("radar_scan"), "radar_scan should be registered");
     assert.ok(names.includes("radar_analyze"), "radar_analyze should be registered");
+    assert.ok(names.includes("radar_trust"), "radar_trust should be registered");
+    assert.ok(names.includes("radar_batch"), "radar_batch should be registered");
     assert.ok(names.includes("radar_selftest"), "radar_selftest should be registered");
   } finally {
     await client.close();
@@ -141,6 +143,23 @@ test("MCP radar_scan: reports error when HELIUS_API_KEY is not set", async () =>
     const res = await client.request("tools/call", {
       name: "radar_scan",
       arguments: { wallet: "DemoWallet" },
+    });
+    assert.equal(res.result.isError, true);
+    assert.match(res.result.content[0].text, /HELIUS_API_KEY is not set/);
+  } finally {
+    if (saved !== undefined) process.env.HELIUS_API_KEY = saved;
+    await client.close();
+  }
+});
+
+test("MCP radar_batch: reports error when HELIUS_API_KEY is not set", async () => {
+  const saved = process.env.HELIUS_API_KEY;
+  delete process.env.HELIUS_API_KEY;
+  const client = await createTestClient();
+  try {
+    const res = await client.request("tools/call", {
+      name: "radar_batch",
+      arguments: { wallets: ["5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8"] },
     });
     assert.equal(res.result.isError, true);
     assert.match(res.result.content[0].text, /HELIUS_API_KEY is not set/);
