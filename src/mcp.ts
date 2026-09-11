@@ -10,6 +10,7 @@ import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck } from "./trust.js";
+import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { Baseline, EnhancedTx } from "./types.js";
 
 function json(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -23,7 +24,7 @@ export function buildServer(): McpServer {
     "radar_scan",
     {
       description:
-        "One-shot continuous-monitoring scan of a Solana wallet: fetches recent transactions from Helius (env HELIUS_API_KEY required), fetches USD prices from the Jupiter Price API (keyless; falls back to major-only sizing if the feed is down), updates the behavioral baseline, runs 7 deterministic anomaly rules (LARGE_SWAP is compared in USD when prices are available). Returns riskScore (0-100), anomalies with structured evidence, and a human/LLM-readable digest.",
+        "One-shot continuous-monitoring scan of a Solana wallet: fetches recent transactions from Helius (env HELIUS_API_KEY required), fetches USD prices from the Jupiter Price API (keyless; falls back to major-only sizing if the feed is down), updates the behavioral baseline, runs 7 deterministic anomaly rules (LARGE_SWAP is compared in USD when prices are available). Returns riskScore (0-100), anomalies with structured evidence, per-rule reasons, a one-line summary, a human/LLM-readable digest, and data freshness.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
       },
@@ -42,6 +43,9 @@ export function buildServer(): McpServer {
         const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
         const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
         const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+        const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
+        const lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
+        const windowStart = stamps.length > 0 ? Math.min(...stamps) : null;
         return json({
           wallet,
           txCount: txs.length,
@@ -52,7 +56,10 @@ export function buildServer(): McpServer {
           prices,
           riskScore: computeRiskScore(anomalies),
           anomalies,
+          reasons: anomalyReasons(anomalies),
+          summary: anomalySummary(anomalies),
           digest: digestAnomalies(anomalies),
+          freshness: buildFreshness(lastActivity, Math.floor(Date.now() / 1000), windowStart, lastActivity),
         });
       } catch (err) {
         return {
@@ -67,7 +74,7 @@ export function buildServer(): McpServer {
     "radar_analyze",
     {
       description:
-        "Runs the 6 anomaly rules over a JSON array of enhanced transactions without any network calls. Use when the agent already has the transaction data (e.g. from a Helius call). Returns riskScore (0-100), anomalies with evidence, and a digest.",
+        "Runs the 7 deterministic anomaly rules over a JSON array of enhanced transactions without any network calls. Use when the agent already has the transaction data (e.g. from a Helius call). Returns riskScore (0-100), anomalies with evidence, per-rule reasons, a one-line summary, and a digest.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
         txs: z
@@ -87,7 +94,7 @@ export function buildServer(): McpServer {
         };
       }
       const anomalies = detectAnomalies(wallet, parsed, null);
-      return json({ wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, digest: digestAnomalies(anomalies) });
+      return json({ wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) });
     }
   );
 
@@ -95,7 +102,7 @@ export function buildServer(): McpServer {
     "radar_trust",
     {
       description:
-        "Pre-flight trust check for agent payments (x402 / agent-to-agent): combines Wallet Radar's behavioral risk score (6 deterministic rules over the recent window) with the wallet's payment capacity (SOL + USDC/USDT liquidity in USD) into one verdict — safe, hold, or unknown. Deterministic, no LLM in the verdict path; every verdict comes with machine-readable reasons. Use before paying or trusting an unverified counterparty wallet.",
+        "Pre-flight trust check for agent payments (x402 / agent-to-agent): combines Wallet Radar's behavioral risk score (7 deterministic rules over the recent window) with the wallet's payment capacity (SOL + USDC/USDT liquidity in USD) into one verdict — safe, hold, or unknown. Deterministic, no LLM in the verdict path; every verdict comes with machine-readable verdict reasons, a per-rule anomaly breakdown, a one-line summary, and data freshness. Use before paying or trusting an unverified counterparty wallet.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
         maxRisk: z
@@ -152,7 +159,7 @@ export function buildServer(): McpServer {
         { signature: "sigB", timestamp: 1_700_000_120, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
       ];
       const anomalies = detectAnomalies(wallet, txs, null);
-      return json({ ok: true, riskScore: computeRiskScore(anomalies), anomalies });
+      return json({ ok: true, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies) });
     }
   );
 

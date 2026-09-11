@@ -11,6 +11,7 @@ import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck } from "./trust.js";
+import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import type { EnhancedTx } from "./types.js";
 
 const SERVICE = "wallet-radar";
@@ -23,10 +24,10 @@ interface EndpointInfo {
 }
 
 const ENDPOINTS: EndpointInfo[] = [
-  { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 7 deterministic anomaly rules. Returns riskScore (0-100), anomalies with evidence, digest." },
-  { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls." },
-  { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict." },
-  { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture." },
+  { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 7 deterministic anomaly rules. Returns riskScore (0-100), anomalies with evidence, per-rule reasons, summary, digest, and data freshness." },
+  { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls. Returns riskScore, anomalies, per-rule reasons, summary, and digest." },
+  { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
+  { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
 ];
 
@@ -79,6 +80,10 @@ async function toolScan(body: Record<string, unknown>): Promise<unknown> {
   const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
   const baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
   const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+  const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
+  const lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
+  const windowStart = stamps.length > 0 ? Math.min(...stamps) : null;
+  const nowSec = Math.floor(Date.now() / 1000);
   return {
     wallet,
     txCount: txs.length,
@@ -88,7 +93,10 @@ async function toolScan(body: Record<string, unknown>): Promise<unknown> {
     priceCount: prices ? Object.keys(prices).length : 0,
     riskScore: computeRiskScore(anomalies),
     anomalies,
+    reasons: anomalyReasons(anomalies),
+    summary: anomalySummary(anomalies),
     digest: digestAnomalies(anomalies),
+    freshness: buildFreshness(lastActivity, nowSec, windowStart, lastActivity),
   };
 }
 
@@ -109,7 +117,7 @@ async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
     throw new HttpError(400, "body.txs must be an array of transactions (or a JSON string encoding one).");
   }
   const anomalies = detectAnomalies(wallet, parsed, null);
-  return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, digest: digestAnomalies(anomalies) };
+  return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) };
 }
 
 async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
@@ -131,7 +139,7 @@ function toolSelftest(): unknown {
     { signature: "sigB", timestamp: 1_700_000_120, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
   ];
   const anomalies = detectAnomalies(wallet, txs, null);
-  return { ok: true, riskScore: computeRiskScore(anomalies), anomalies };
+  return { ok: true, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies) };
 }
 
 function healthPayload(): Record<string, unknown> {

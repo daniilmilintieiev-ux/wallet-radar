@@ -15,12 +15,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (the operator USDC receiving wallet).
 - Production-readiness documentation: `SECURITY.md` (vulnerability disclosure +
   data handling), `CHANGELOG.md`, `CONTRIBUTING.md`.
+- Explainability: a per-rule `reasons[]` breakdown and a one-line `summary` on
+  `/scan`, `/analyze`, and `/selftest` (HTTP + MCP), and a per-rule anomaly
+  breakdown + summary on the `trust` verdict — so any agent or human can see
+  exactly which deterministic rules fired and why.
+- A `freshness` block on `/scan` and `/trust`: last activity, analysis window,
+  days-since-last-activity, and a `stale` flag — a gate now states how recent
+  its data is, instead of being silent about it.
 
 ### Changed
 - README reframed from "hackathon MVP" to **early-access (v0.1.x)**, with
   Status, Support, Security, and Privacy sections and links to the new docs.
 - Corrected the anomaly-rule count in user-facing text from 6 to 7 to match
   the documented rule set.
+- README and landing site reframed around the **gate-before-you-copy** wedge:
+  Radar is the deterministic pre-copy / pre-payment trust gate that copy-trading
+  bots (BonkBot, Maestro, Trojan, Axiom, Photon, BullX) don't provide.
+- Fixed the remaining stale "6 rules" → 7 in the MCP tool descriptions and the
+  landing site, and added the missing `TOXIC_MINT` row to the site rules list.
 
 ## [0.1.0] - 2026-09-10
 

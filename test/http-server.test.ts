@@ -128,6 +128,8 @@ test("http-server: POST /selftest returns 200 ok=true", async () => {
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(typeof body.riskScore, "number");
+    assert.ok(Array.isArray(body.reasons));
+    assert.equal(typeof body.summary, "string");
   } finally {
     await r.close();
   }
@@ -151,6 +153,8 @@ test("http-server: POST /analyze over a fixture returns riskScore and digest", a
     assert.equal(body.txCount, 2);
     assert.equal(typeof body.riskScore, "number");
     assert.ok(Array.isArray(body.anomalies));
+    assert.ok(Array.isArray(body.reasons));
+    assert.equal(typeof body.summary, "string");
     assert.equal(typeof body.digest, "string");
   } finally {
     await r.close();

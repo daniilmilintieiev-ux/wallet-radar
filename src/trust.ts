@@ -1,9 +1,10 @@
 import { SOL_MINT, USDC_MINT, USDT_MINT } from "./types.js";
-import { Anomaly, EnhancedTx } from "./types.js";
+import { Anomaly, EnhancedTx, Freshness } from "./types.js";
 import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
 import { fetchWalletHistory } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
+import { anomalyReasons, anomalySummary, buildFreshness, type AnomalyReason } from "./explain.js";
 
 /**
  * `radar trust <wallet>` — pre-flight check for agent payments (x402 and
@@ -101,6 +102,12 @@ export interface TrustResult {
   solPrice: number | null;
   liquidityUsd: number;
   reasons: string[];
+  /** Per-rule behavioral breakdown (human-first), when anomalies were detected. */
+  anomalyReasons?: AnomalyReason[];
+  /** Compact one-line summary of the detected anomalies. */
+  summary?: string;
+  /** Recency of the behavioral data behind the verdict. */
+  freshness?: Freshness;
   txCount: number;
   windowDays: number;
   generatedAt: number;
@@ -170,6 +177,7 @@ export async function runTrustCheck(
   let riskScore: number | null = null;
   let anomalies: Anomaly[] = [];
   let txCount = 0;
+  let lastActivity: number | null = null;
   try {
     const txs: EnhancedTx[] = await fetchWalletHistory(apiKey, wallet, {
       gteTime: sinceSec,
@@ -177,6 +185,8 @@ export async function runTrustCheck(
       maxPages: 1,
     });
     txCount = txs.length;
+    const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
+    lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
     const prices = opts.noPrices ? null : await fetchSwapPrices(txs);
     const baseline = updateBaseline(wallet, null, txs, generatedAt, prices);
     anomalies = detectAnomalies(wallet, txs, baseline, undefined, prices);
@@ -219,6 +229,9 @@ export async function runTrustCheck(
     riskScore,
     anomalyCount: anomalies.length,
     anomalies,
+    anomalyReasons: anomalyReasons(anomalies),
+    summary: anomalySummary(anomalies),
+    freshness: buildFreshness(lastActivity, generatedAt, sinceSec, generatedAt),
     balances,
     solPriced: solPrice !== null,
     solPrice,
@@ -258,12 +271,16 @@ export async function runTrustChecks(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`trust check failed for ${wallet}: ${msg}`);
+      const genAt = Math.floor(Date.now() / 1000);
       out.push({
         wallet,
         verdict: "unknown",
         riskScore: null,
         anomalyCount: 0,
         anomalies: [],
+        anomalyReasons: [],
+        summary: "no anomalies in this window",
+        freshness: buildFreshness(null, genAt, null, null),
         balances: null,
         solPriced: false,
         solPrice: null,
@@ -271,7 +288,7 @@ export async function runTrustChecks(
         reasons: [`check failed: ${msg}`],
         txCount: 0,
         windowDays: opts.windowDays ?? TRUST_DEFAULTS.windowDays,
-        generatedAt: Math.floor(Date.now() / 1000),
+        generatedAt: genAt,
       });
     }
   }

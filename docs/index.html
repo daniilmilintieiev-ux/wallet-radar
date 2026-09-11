@@ -52,7 +52,7 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
   <div class="chips">
     <span class="chip"><b>100%</b> TypeScript</span>
     <span class="chip"><b>0</b> dependencies</span>
-    <span class="chip"><b>6</b> deterministic rules</span>
+    <span class="chip"><b>7</b> deterministic rules</span>
     <span class="chip"><b>24/7</b> live monitoring</span>
     <span class="chip"><b>MCP</b> server</span>
   </div>
@@ -69,11 +69,11 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
 
 <section>
   <h2>How it works</h2>
-  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and six deterministic rules.</div>
+  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and seven deterministic rules, each with a human-readable reason.</div>
   <div class="pipeline">
     <div class="step"><div class="k">COLLECT</div><b>Helius enhanced tx</b><span>Full per-wallet history, paged, straight from mainnet.</span></div>
     <div class="step"><div class="k">BASELINE</div><b>Learn the normal</b><span>Median size, venues, programs, cadence — per wallet.</span></div>
-    <div class="step"><div class="k">DETECT</div><b>6 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers).</span></div>
+    <div class="step"><div class="k">DETECT</div><b>7 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers) and a per-rule reason.</span></div>
     <div class="step"><div class="k">ACT</div><b>Score + alert</b><span>Risk 0–100 → Telegram, optional LLM digest, MCP call.</span></div>
   </div>
   <div class="rules">
@@ -83,6 +83,7 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <div class="row"><span class="n">LARGE_SWAP</span><span class="d">swap &gt; N× the wallet's own USD median</span></div>
     <div class="row"><span class="n">CONCENTRATION</span><span class="d">repeated swaps into the same token</span></div>
     <div class="row"><span class="n">NEW_PROTOCOL</span><span class="d">first interaction with an unseen program</span></div>
+    <div class="row"><span class="n">TOXIC_MINT</span><span class="d">unrenounced mint / freeze authority on a token</span></div>
   </div>
 </section>
 
@@ -98,9 +99,13 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
 
 <section>
   <div class="about">
-    The payoff for agents: <code>radar_trust</code> is an MCP tool that returns one decision —
-    <b>safe / hold / unknown</b> — before an agent acts. An agent about to copy-trade a wallet
-    calls it first and stops, instead of sending money to a wallet that just woke up.
+    The payoff is the <b>gate before you copy</b>. Copy-trading bots (BonkBot, Maestro,
+    Trojan, Axiom, Photon, BullX) surface wallets to copy — none of them safety-gate the
+    wallet first. <code>radar_trust</code> is that gate: it returns one decision —
+    <b>safe / hold / unknown</b> — with a per-rule <code>reasons[]</code> breakdown, a one-line
+    summary, and a <code>freshness</code> stamp on how recent the data is. An agent about to
+    copy-trade a wallet calls it first and stops, instead of sending money to a wallet that
+    just woke up.
   </div>
 </section>
 

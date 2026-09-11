@@ -1,8 +1,11 @@
 # Wallet Radar
 
-Continuous wallet monitoring for Solana. Point-in-time wallet intelligence answers
-"what does this wallet look like right now?". Wallet Radar answers **"what changed,
-and does it matter?"** — for a watchlist of wallets, continuously.
+Continuous wallet monitoring for Solana — and a **gate before you copy**. Point-in-time
+wallet intelligence answers "what does this wallet look like right now?"; Wallet Radar
+answers **"what changed, and does it matter?"** — and, before you copy or pay an
+unverified wallet, **"is it safe to trust it right now?"** Copy-trading tools find wallets
+to copy; none of them safety-gate the wallet first. Radar does — deterministically, with a
+per-rule explanation you can audit and a stamp on how fresh the data is.
 
 Wallet Radar is in **early-access** (v0.1.x). It was prototyped at the Solana
 hackathon (Colosseum, fall 2026) and is now available as a live HTTP / MCP /
@@ -82,8 +85,8 @@ config. Four tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `radar_scan` | Live Helius fetch + baseline + rules → risk score (needs `HELIUS_API_KEY`) |
-| `radar_trust` | Pre-flight check for agent payments: risk + liquidity → `safe`/`hold`/`unknown` (needs `HELIUS_API_KEY`) |
+| `radar_scan` | Live Helius fetch + baseline + rules → risk score, per-rule `reasons`, `summary`, and `freshness` (needs `HELIUS_API_KEY`) |
+| `radar_trust` | Gate before you copy / pay: risk + liquidity → `safe`/`hold`/`unknown`, with verdict reasons, per-rule `reasons`, `summary`, and `freshness` (needs `HELIUS_API_KEY`) |
 | `radar_analyze` | Run the rules over a transactions fixture you already have (no network) |
 | `radar_selftest` | Offline smoke test, no keys |
 
@@ -184,10 +187,12 @@ node dist/src/cli.js prices <mint>...         # Jupiter Price API lookup
 `scan` is the fastest way to try Radar on any wallet: one Helius fetch,
 deterministic baseline, risk score, digest — no watchlist, no state.
 
-### Trust check (pre-flight for agent payments)
+### Trust check (the gate before you copy)
 
-`trust` answers the question an agent asks before paying a counterparty:
-**"is it safe to deal with this wallet right now?"** It combines the
+`trust` answers the question every copy-trader and agent asks before copying or
+paying an unverified wallet: **"is it safe to trust this wallet right now?"**
+Copy-trading bots (BonkBot, Maestro, Trojan, Axiom, Photon, BullX) surface wallets
+to copy but don't safety-gate them first — Radar is that gate. It combines the
 behavioral risk score (7 rules over the recent window) with payment capacity
 (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 
@@ -198,9 +203,11 @@ node dist/src/cli.js trust <wallet> --max-risk 50 --min-liquidity 100 --json
 
 Verdicts: `safe` (both thresholds met), `hold` (data available, threshold
 missed), `unknown` (no data to decide — conservative). The JSON carries
-machine-readable reasons with exact numbers, so any agent can recompute the
-verdict from the same evidence. No LLM in the verdict path. Full design:
-[`docs/trust-spec.md`](docs/trust-spec.md).
+machine-readable verdict reasons **plus a per-rule `reasons[]` breakdown and a
+one-line `summary`**, so any agent or human can see exactly which rules fired and
+why. A `freshness` block states the last activity, the analysis window, and whether
+the read is stale — a gate is only as good as the data behind it. No LLM in the
+verdict path. Full design: [`docs/trust-spec.md`](docs/trust-spec.md).
 
 ## Watchlist (continuous monitoring)
 
@@ -311,8 +318,9 @@ template without throwing into the continuous watch loop.
 
 **Early-access (v0.1.x)** — the core is production-usable and live: collector
 (Helius), per-wallet behavioral baseline (incl. USD median), deterministic
-analyzer (7 rules, USD-normalized, unit-tested), `trust` pre-flight verdict
-(risk + liquidity → `safe`/`hold`/`unknown` for agent payments), MCP server
+analyzer (7 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict
+(risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data
+freshness), MCP server
 (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts,
 deterministic replay, and self-contained HTML reports. Continuous monitoring
 watches a wallet list and alerts on fresh anomalies.

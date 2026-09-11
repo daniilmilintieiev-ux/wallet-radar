@@ -103,6 +103,22 @@ export interface Anomaly {
   text: string;
 }
 
+/** Recency of the analyzed activity, so a gate is honest about the age of its data. */
+export interface Freshness {
+  /** Last observed on-chain activity (unix seconds); null if none in the window. */
+  lastActivity: number | null;
+  /** Whole days since last activity; null when no activity was observed. */
+  daysSinceLastActivity: number | null;
+  /** Analysis window start (unix seconds); null when not applicable. */
+  windowStart: number | null;
+  /** Analysis window end (unix seconds); null when not applicable. */
+  windowEnd: number | null;
+  /** True when last activity is older than `staleAfterDays`, or none was observed. */
+  stale: boolean;
+  /** Staleness threshold in days. */
+  staleAfterDays: number;
+}
+
 export interface RadarConfig {
   pollMs: number;
   dormantDays: number;
