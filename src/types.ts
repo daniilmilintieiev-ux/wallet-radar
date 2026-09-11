@@ -85,6 +85,8 @@ export interface MintRiskInfo {
   mint: string;
   mintAuthority: string | null;
   freezeAuthority: string | null;
+  /** Top-10 holder concentration, % of total supply (0-100). `null` = unknown. */
+  top10Pct?: number | null;
 }
 
 export type MintRiskMap = Record<string, MintRiskInfo>;

@@ -13,6 +13,11 @@ import {
 } from "./types.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
 
+/** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
+export const TOP10_CONCENTRATION_PCT = 60;
+/** Top-10 holder concentration (% of supply) at/above which the TOXIC_MINT severity is `high`. */
+export const TOP10_HIGH_PCT = 80;
+
 // Re-exported for modules that import the well-known mints from the analyzer.
 export { SOL_MINT, USDC_MINT, USDT_MINT };
 
@@ -288,7 +293,8 @@ export function detectAnomalies(
     }
   }
 
-  // TOXIC_MINT: swaps involving tokens with unrenounced freeze or mint authorities.
+  // TOXIC_MINT: swaps involving tokens with unrenounced freeze/mint authorities, OR extreme
+  // top-holder concentration (top-10 wallets control most of the supply = rug risk).
   if (mintRisk) {
     const flaggedMints = new Set<string>();
     for (const s of swaps) {
@@ -301,12 +307,16 @@ export function detectAnomalies(
         if (!meta) continue; // Fetch failed or no metadata: skip rule for this mint
         const hasFreeze = Boolean(meta.freezeAuthority);
         const hasMint = Boolean(meta.mintAuthority);
-        if (hasFreeze || hasMint) {
+        const top10 = typeof meta.top10Pct === "number" ? meta.top10Pct : null;
+        const concentrated = top10 != null && top10 >= TOP10_CONCENTRATION_PCT;
+        if (hasFreeze || hasMint || concentrated) {
           flaggedMints.add(m);
-          const severity: Severity = hasFreeze ? "high" : "medium";
+          const veryConcentrated = top10 != null && top10 >= TOP10_HIGH_PCT;
+          const severity: Severity = hasFreeze || veryConcentrated ? "high" : "medium";
           const reasons: string[] = [];
           if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})`);
           if (hasMint) reasons.push(`mint authority (${meta.mintAuthority})`);
+          if (concentrated) reasons.push(`top-10 holders control ${top10}% of supply`);
           anomalies.push({
             type: "TOXIC_MINT",
             wallet,
@@ -316,9 +326,10 @@ export function detectAnomalies(
               mint: m,
               freezeAuthority: meta.freezeAuthority,
               mintAuthority: meta.mintAuthority,
+              top10Pct: top10,
               sig: s.signature,
             },
-            text: `Token ${m} has unrenounced ${reasons.join(" and ")}.`,
+            text: `Token ${m}: ${reasons.join("; ")}.`,
           });
         }
       }

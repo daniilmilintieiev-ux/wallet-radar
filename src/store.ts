@@ -57,10 +57,16 @@ export class Store {
         mint TEXT PRIMARY KEY,
         mint_authority TEXT,
         freeze_authority TEXT,
+        top10_pct REAL,
         fetched_at INTEGER NOT NULL,
         ttl_sec INTEGER NOT NULL DEFAULT 14400
       );
     `);
+    // Migration: add top10_pct to mint_cache for databases created before it existed.
+    const mintCols = this.db.prepare("PRAGMA table_info(mint_cache)").all() as Array<{ name: string }>;
+    if (!mintCols.some((c) => c.name === "top10_pct")) {
+      this.db.exec("ALTER TABLE mint_cache ADD COLUMN top10_pct REAL");
+    }
   }
 
   close(): void {
@@ -251,7 +257,7 @@ export class Store {
   getMintMetadata(mint: string, nowSec: number = Math.floor(Date.now() / 1000)): MintRiskInfo | null {
     const row = this.db
       .prepare(
-        "SELECT mint, mint_authority, freeze_authority, fetched_at, ttl_sec FROM mint_cache WHERE mint = ?",
+        "SELECT mint, mint_authority, freeze_authority, top10_pct, fetched_at, ttl_sec FROM mint_cache WHERE mint = ?",
       )
       .get(mint) as any;
     if (!row) return null;
@@ -262,6 +268,7 @@ export class Store {
       mint: row.mint as string,
       mintAuthority: row.mint_authority !== null ? (row.mint_authority as string) : null,
       freezeAuthority: row.freeze_authority !== null ? (row.freeze_authority as string) : null,
+      top10Pct: row.top10_pct !== null && row.top10_pct !== undefined ? Number(row.top10_pct) : null,
     };
   }
 
@@ -272,15 +279,23 @@ export class Store {
   ): void {
     this.db
       .prepare(
-        `INSERT INTO mint_cache (mint, mint_authority, freeze_authority, fetched_at, ttl_sec)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(mint) DO UPDATE SET
-           mint_authority = excluded.mint_authority,
-           freeze_authority = excluded.freeze_authority,
-           fetched_at = excluded.fetched_at,
-           ttl_sec = excluded.ttl_sec`,
+        `INSERT INTO mint_cache (mint, mint_authority, freeze_authority, top10_pct, fetched_at, ttl_sec)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(mint) DO UPDATE SET
+            mint_authority = excluded.mint_authority,
+            freeze_authority = excluded.freeze_authority,
+            top10_pct = excluded.top10_pct,
+            fetched_at = excluded.fetched_at,
+            ttl_sec = excluded.ttl_sec`,
       )
-      .run(meta.mint, meta.mintAuthority, meta.freezeAuthority, nowSec, ttlSec);
+      .run(
+        meta.mint,
+        meta.mintAuthority,
+        meta.freezeAuthority,
+        meta.top10Pct ?? null,
+        nowSec,
+        ttlSec,
+      );
   }
 
   cleanExpiredMintCache(nowSec: number = Math.floor(Date.now() / 1000)): number {

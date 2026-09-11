@@ -1,12 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectAnomalies, MAJOR_MINTS } from "../src/analyzer.js";
+import {
+  detectAnomalies,
+  MAJOR_MINTS,
+  TOP10_CONCENTRATION_PCT,
+  TOP10_HIGH_PCT,
+} from "../src/analyzer.js";
 import {
   collectCandidateMints,
+  computeTop10Pct,
   fetchMintMetadata,
   fetchSwapMintRisk,
   parseDasAssetResponse,
+  parseDasAssetSupply,
   parseRpcAccountInfoResponse,
+  parseRpcMintSupply,
 } from "../src/mint.js";
 import { Store } from "../src/store.js";
 import { watchOnce } from "../src/watch.js";
@@ -358,4 +366,135 @@ test("watchOnce: fires TOXIC_MINT alert on fresh activity when mint has unrenoun
   assert.match(sentAlerts[0], /TOXIC_MINT/);
 
   store.close();
+});
+
+// --- top-10 holder concentration sub-signal ---
+
+test("computeTop10Pct: sums top-10 holders as % of supply", () => {
+  // supply 1e9 base / 1e6 = 1_000 tokens. Top-10 hold 700 tokens (500+200) => 70%.
+  const accounts = [
+    { amount: "500000000", uiAmount: 500 },
+    { amount: "200000000", uiAmount: 200 },
+  ];
+  assert.equal(computeTop10Pct("1000000000", 6, accounts), 70);
+});
+
+test("computeTop10Pct: only the top 10 accounts are counted", () => {
+  // 12 accounts of 100 tokens each; only the first 10 (1_000 tokens) count => 100%.
+  const accounts = Array.from({ length: 12 }, () => ({ amount: "100000000", uiAmount: 100 }));
+  const pct = computeTop10Pct("1000000000", 6, accounts);
+  assert.ok(pct != null && pct >= 99.99);
+});
+
+test("computeTop10Pct: falls back to amount when uiAmount is null", () => {
+  const accounts = [{ amount: "300000000", uiAmount: null }];
+  assert.equal(computeTop10Pct("1000000000", 6, accounts), 30);
+});
+
+test("computeTop10Pct: clamps to 100 and returns null on invalid supply", () => {
+  const accounts = [{ amount: "5000000000", uiAmount: 5_000_000 }];
+  assert.equal(computeTop10Pct("1000000000", 6, accounts), 100);
+  assert.equal(computeTop10Pct("0", 6, [{ amount: "100", uiAmount: 1 }]), null);
+  assert.equal(computeTop10Pct("abc", 6, [{ amount: "100", uiAmount: 1 }]), null);
+});
+
+test("parseDasAssetSupply: extracts supply and decimals from DAS token_info", () => {
+  const data = { result: { id: TOXIC_MINT, token_info: { supply: "1000000000", decimals: 6 } } };
+  const { supply, decimals } = parseDasAssetSupply(data);
+  assert.equal(supply, "1000000000");
+  assert.equal(decimals, 6);
+});
+
+test("parseRpcMintSupply: extracts supply and decimals from getAccountInfo", () => {
+  const data = {
+    result: { value: { data: { parsed: { info: { supply: "5000000000", decimals: 9 } } } } },
+  };
+  const { supply, decimals } = parseRpcMintSupply(data);
+  assert.equal(supply, "5000000000");
+  assert.equal(decimals, 9);
+});
+
+test("fetchMintMetadata: computes top10Pct from DAS supply + getTokenLargestAccounts", async () => {
+  let largestCalled = false;
+  const stubFetch: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (body.method === "getAsset") {
+      return {
+        ok: true,
+        json: async () => ({
+          result: {
+            id: TOXIC_MINT,
+            token_info: {
+              mint_authority: null,
+              freeze_authority: null,
+              supply: "1000000000",
+              decimals: 6,
+            },
+          },
+        }),
+      } as Response;
+    }
+    if (body.method === "getTokenLargestAccounts") {
+      largestCalled = true;
+      const accounts = [
+        { amount: "500000000", uiAmount: 500 },
+        { amount: "200000000", uiAmount: 200 },
+      ];
+      return { ok: true, json: async () => ({ result: { value: accounts } }) } as Response;
+    }
+    throw new Error("unexpected method " + body.method);
+  };
+
+  const info = await fetchMintMetadata(TOXIC_MINT, { rpcUrl: "http://stub", fetchFn: stubFetch });
+  assert.ok(info);
+  assert.equal(largestCalled, true);
+  assert.ok(info.top10Pct != null);
+  assert.ok(Math.abs(info.top10Pct! - 70) < 1e-6, `expected ~70%, got ${info.top10Pct}`);
+});
+
+test("detectAnomalies TOXIC_MINT: top-10 concentration at/above 60% fires medium", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, top10Pct: 60 },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "medium");
+  assert.match(toxic.text, /top-10 holders control/);
+  assert.equal(toxic.evidence.top10Pct, 60);
+});
+
+test("detectAnomalies TOXIC_MINT: top-10 concentration >= 80% fires high severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, top10Pct: 90 },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "high");
+  assert.equal(toxic.evidence.top10Pct, 90);
+});
+
+test("detectAnomalies TOXIC_MINT: concentration below threshold does not fire", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, top10Pct: 59 },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
+});
+
+test("detectAnomalies TOXIC_MINT: renounced authorities but concentrated still fires", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, top10Pct: 75 },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "medium");
+  assert.match(toxic.text, /top-10 holders control 75%/);
+  assert.doesNotMatch(toxic.text, /authority/);
 });

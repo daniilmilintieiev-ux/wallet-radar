@@ -32,9 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `--watch`), sharing the same SQLite store and firing `WEBHOOK_URL` / Telegram
   alerts on every new anomaly. New routes: `POST /watch` (add), `GET /watch`
   (list), `POST /unwatch` (remove), `GET /alerts` (recent anomalies), and
-  `POST /poll` (re-check the whole watchlist now and fire webhooks on any new
-  anomaly). `watchLoop` now accepts an `AbortSignal` for clean in-process
-  shutdown.
+   `POST /poll` (re-check the whole watchlist now and fire webhooks on any new
+   anomaly). `watchLoop` now accepts an `AbortSignal` for clean in-process
+   shutdown.
+- `TOXIC_MINT` now also fires on **top-holder concentration**: when the top-10
+  wallets control ≥ 60% of a token's supply (fetched via standard RPC
+  `getTokenLargestAccounts` + supply/decimals from Helius DAS or RPC).
+  Concentration ≥ 80% (or a present freeze authority) escalates the anomaly to
+  `high` severity. `MintRiskInfo.top10Pct` is computed, persisted in the mint
+  cache, and surfaced in the anomaly `reasons` and `evidence`.
 
 ### Changed
 - README reframed from "hackathon MVP" to **early-access (v0.1.x)**, with

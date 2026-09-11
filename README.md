@@ -59,7 +59,7 @@ watchlist ──> collector (Helius Enhanced Transactions, read-only)
 | `LARGE_SWAP` | Swap size > N× the wallet's own median swap size — compared **in USD** (see below) when prices are available, otherwise major-only raw quantities |
 | `CONCENTRATION` | Repeated swaps into the same token in a short window |
 | `NEW_PROTOCOL` | First interaction with an unseen program |
-| `TOXIC_MINT` | Swap involves a token with unrenounced mint authority or freeze authority |
+| `TOXIC_MINT` | Swap involves a token with unrenounced mint/freeze authority **or** extreme top-holder concentration (top-10 wallets control ≥ 60% of supply; `high` severity at ≥ 80% or with a freeze authority) |
 
 ### USD normalization
 
