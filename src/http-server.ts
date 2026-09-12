@@ -10,7 +10,7 @@ import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
-import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
+import { runTrustCheck, runTrustChecks, buildShortlist, formatTrustLine, type TrustResult, type TrustVerdict } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { Store } from "./store.js";
 import { watchOnce, watchLoop } from "./watch.js";
@@ -40,6 +40,8 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/poll", tool: "radar_poll", description: "Immediately re-check the whole monitoring watchlist for new activity and fire webhooks/Telegram on any new anomaly (re-check your copied wallet now). Requires the watch store + HELIUS_API_KEY (RADAR_WATCH=1)." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
+  { method: "GET", path: "/.well-known/agent.json", tool: "a2a_card", description: "A2A agent card (a2a-protocol.org) for the Wallet Radar Trust Gate agent — describes the screen-wallet skill and the /a2a RPC endpoint." },
+  { method: "POST", path: "/a2a", tool: "a2a", description: "A2A JSON-RPC endpoint. Send message/send with a wallet address (or POST {wallet}) to run the pre-flight trust gate: returns a safe/hold/unknown verdict, risk score, liquidity, and anomaly reasons." },
 ];
 
 class HttpError extends Error {
@@ -186,6 +188,124 @@ function healthPayload(): Record<string, unknown> {
   };
 }
 
+/**
+ * A2A (a2a-protocol.org) surface for the Wallet Radar Trust Gate agent.
+ * The agent's T3N/ERC-8004 card (hosted on T3N, did:t3n:11099118...) lists
+ * `/.well-known/agent.json` as its A2A endpoint; this is that card plus the
+ * `message/send` JSON-RPC handler that runs the pre-flight trust gate.
+ */
+const A2A_PUBLIC_URL = (process.env.RADAR_PUBLIC_URL ?? "http://95.158.59.243:7690").replace(/\/+$/, "");
+const A2A_AGENT_DID = process.env.RADAR_AGENT_DID ?? "did:t3n:11099118c31352cdb07c5c992f5da31426f2052f";
+
+function a2aCard(): Record<string, unknown> {
+  return {
+    name: "Wallet Radar Trust Gate",
+    description:
+      "Pre-flight trust gate for Solana wallets. Given a wallet address it screens the wallet via Wallet Radar (behavioral risk, payment capacity, top-holder concentration, mint toxicity, data freshness) and returns a deterministic safe/hold/unknown verdict with the reasons — so a paying agent can gate a transaction before it commits.",
+    url: `${A2A_PUBLIC_URL}/a2a`,
+    version: "0.3.0",
+    preferredTransport: "JSONRPC",
+    capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text", "application/json"],
+    agentId: A2A_AGENT_DID,
+    skills: [
+      {
+        id: "screen-wallet",
+        name: "Screen a Solana wallet",
+        description:
+          "Run the pre-flight trust check on one Solana wallet. Provide the wallet address (in the message text or as a structured wallet field); receive a safe/hold/unknown verdict, a 0-100 risk score, USD liquidity, and per-rule anomaly reasons.",
+        tags: ["solana", "risk", "trust-gate", "payments", "x402", "agent-to-agent"],
+        examples: [
+          "Screen wallet 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j",
+          "Is it safe to pay this wallet before I commit: <address>",
+        ],
+        inputModes: ["text"],
+        outputModes: ["text", "application/json"],
+      },
+    ],
+  };
+}
+
+function extractWallet(body: Record<string, unknown>): string | null {
+  if (typeof body.wallet === "string" && isBase58Address(body.wallet)) return body.wallet;
+  const msg =
+    body.message ??
+    (body.params && typeof body.params === "object" ? (body.params as Record<string, unknown>).message : undefined);
+  const fromText = (t: string): string | null => {
+    const m = t.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/);
+    return m ? m[0] : null;
+  };
+  const walk = (node: unknown): string | null => {
+    if (node == null) return null;
+    if (typeof node === "string") return fromText(node);
+    if (Array.isArray(node)) {
+      for (const it of node) {
+        const r = walk(it);
+        if (r) return r;
+      }
+      return null;
+    }
+    if (typeof node === "object") {
+      const o = node as Record<string, unknown>;
+      if (typeof o.wallet === "string" && isBase58Address(o.wallet)) return o.wallet;
+      if (typeof o.text === "string") {
+        const r = fromText(o.text);
+        if (r) return r;
+      }
+      for (const k of ["parts", "data", "message"]) {
+        const r = walk(o[k]);
+        if (r) return r;
+      }
+    }
+    return null;
+  };
+  return walk(msg) ?? walk(body);
+}
+
+async function handleA2A(res: http.ServerResponse, body: Record<string, unknown>): Promise<void> {
+  const isRpc = body.jsonrpc === "2.0";
+  const id = body.id !== undefined ? body.id : "1";
+  const wallet = extractWallet(body);
+  if (!wallet) {
+    if (isRpc) {
+      sendJson(res, 200, {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message: "No Solana wallet address found. Send it in the message text (e.g. 'Screen wallet <address>') or as body.wallet." },
+      });
+      return;
+    }
+    throw new HttpError(400, "Provide a Solana wallet address in the message text or as body.wallet.");
+  }
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey) {
+    if (isRpc) {
+      sendJson(res, 200, { jsonrpc: "2.0", id, error: { code: -32603, message: "HELIUS_API_KEY is not set on the server." } });
+      return;
+    }
+    throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+  }
+  const result: TrustResult = await runTrustCheck(apiKey, wallet, {
+    maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
+    minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
+    windowDays: typeof body.windowDays === "number" ? body.windowDays : undefined,
+  });
+  if (isRpc) {
+    sendJson(res, 200, {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        kind: "message",
+        role: "agent",
+        parts: [{ kind: "text", text: formatTrustLine(result) }, { kind: "data", data: result }],
+      },
+    });
+  } else {
+    sendJson(res, 200, result);
+  }
+}
+
 const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<unknown> | unknown> = {
   "/scan": toolScan,
   "/radar_scan": toolScan,
@@ -262,6 +382,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         sendJson(res, 200, { anomalies, count: anomalies.length });
         return;
       }
+      // A2A agent card (a2a-protocol.org well-known location).
+      if (p === "/.well-known/agent.json") {
+        sendJson(res, 200, a2aCard());
+        return;
+      }
       // Health-friendly: a GET on a tool path returns 200 with its descriptor.
       const info = ENDPOINTS.find((e) => e.path === p);
       if (info) {
@@ -313,6 +438,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           usePrices: typeof body.usePrices === "boolean" ? body.usePrices : true,
         });
         sendJson(res, 200, report);
+        return;
+      }
+
+      // A2A JSON-RPC trust-gate endpoint.
+      if (p === "/a2a") {
+        await handleA2A(res, body);
         return;
       }
 
