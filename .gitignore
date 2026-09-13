@@ -10,3 +10,6 @@ dist/
 radar.env
 dist.bak*
 .DS_Store
+
+# scratch / debug scripts
+_*.mjs
