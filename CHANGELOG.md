@@ -41,6 +41,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Concentration ≥ 80% (or a present freeze authority) escalates the anomaly to
   `high` severity. `MintRiskInfo.top10Pct` is computed, persisted in the mint
   cache, and surfaced in the anomaly `reasons` and `evidence`.
+- **On-Chain ZK Scan Ledger — The Oracle (`src/oracle`)**: ZK-compressed state
+  accounts (Light Protocol) storing immutable scan attestations rent-free
+  (~0.000005 SOL, ~400× cheaper than a PDA). Compact `RS01` binary
+  serialization (48-byte zero-copy header + JSON evidence payload).
+  `commitScan` / `readScanLedger` with Light RPC validity-proof fallback.
+- **Autonomous Agent SDK (`src/sdk`)**: TypeScript/JavaScript client
+  (`createRadarClient`) with automated x402 payment (signed Solana
+  transactions) and on-chain ZK attestation reading. Zero-dependency base58
+  encoder, ATA derivation, and SPL transfer instruction builders.
+- **Solana Actions & Blinks v1 (`src/blink`)**: Official Solana Actions
+  specification (`/actions.json` discovery, `ActionGetResponse` /
+  `ActionPostResponse` endpoints), one-tap Blink URL generators and deep
+  links for Dialect (`dial.to`), Phantom, and Solflare.
+- **Web Dashboard & ZK Ledger Viewer (`src/dashboard.ts`)**: Self-contained
+  monospace web dashboard (`GET /dashboard`) with hero verdict cards, slot
+  tracking, on-chain signature links, and historical timeline. `GET /api/ledger`
+  JSON API and CLI `radar ledger` / `radar dashboard --export` exporter.
+- **SPL Token-22 Transfer Hook (`programs/radar-transfer-hook`, `src/hook`)**:
+  Anchor program implementing `spl-transfer-hook-interface` for
+  scan-on-transfer risk gating. Client instruction builders
+  (`createRiskGatedTransferCheckedInstruction`) and deterministic risk
+  evaluator (`evaluateTransferRisk`).
+- **End-to-End Test Suite (`test/e2e.test.ts`)**: Full-circle verification
+  (scan → x402 auto-pay → ZK oracle commit → SDK read → dashboard render →
+  Token-22 hook gate), 25-concurrent load test with unique settlement
+  signatures, and anti-replay verification.
 
 ### Changed
 - README reframed from "hackathon MVP" to **early-access (v0.1.x)**, with

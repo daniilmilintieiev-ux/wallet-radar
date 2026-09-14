@@ -12,6 +12,14 @@ hackathon (Colosseum, fall 2026) and is now available as a live HTTP / MCP /
 x402 service. See [Status](#status), [Support](#support), and
 [Security](SECURITY.md).
 
+## Live Demo
+
+- **A2A trust gate:** [`http://95.158.59.243:7690`](http://95.158.59.243:7690) — `POST /a2a` (agent-to-agent), `GET /.well-known/agent.json` (A2A card)
+- **x402 pay-per-call:** [`http://95.158.59.243:4020`](http://95.158.59.243:4020) — `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC), `GET /selftest` (free)
+- **Web dashboard:** [`http://95.158.59.243:7690/dashboard`](http://95.158.59.243:7690/dashboard) — on-chain ZK ledger viewer
+- **Demo video:** [`docs/videos/wallet-radar-scope.mp4`](docs/videos/wallet-radar-scope.mp4)
+- **GitHub Pages:** [`https://daniilmilintieiev-ux.github.io/wallet-radar/`](https://daniilmilintieiev-ux.github.io/wallet-radar/)
+
 ## Quick start
 
 ```bash
