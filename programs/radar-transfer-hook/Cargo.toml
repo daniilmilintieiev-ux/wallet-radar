@@ -1,0 +1,25 @@
+[package]
+name = "radar-transfer-hook"
+version = "0.1.0"
+description = "SPL Token-22 Transfer Hook for Wallet Radar on-chain scan-on-transfer risk gating"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "radar_transfer_hook"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = { version = "0.30.1", features = ["init-if-needed"] }
+solana-program = "1.18"
+spl-transfer-hook-interface = "0.6.3"
+spl-tlv-account-resolution = "0.6.3"
+spl-type-length-value = "0.4.3"
+thiserror = "1.0"

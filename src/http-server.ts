@@ -18,6 +18,9 @@ import { makeSink, type AlertSink } from "./alerts.js";
 import type { MintRiskMap } from "./mint.js";
 import { homedir } from "node:os";
 import type { EnhancedTx } from "./types.js";
+import { commitScan, type ZKOracleClient } from "./oracle/index.js";
+import { computeVerdict } from "./htmlreport.js";
+import { handleDashboardHttpRequest } from "./dashboard.js";
 
 const SERVICE = "wallet-radar";
 
@@ -39,6 +42,8 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "GET", path: "/alerts", tool: "radar_alerts", description: "Recent recorded anomalies from the monitoring watchlist, most recent first. Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/poll", tool: "radar_poll", description: "Immediately re-check the whole monitoring watchlist for new activity and fire webhooks/Telegram on any new anomaly (re-check your copied wallet now). Requires the watch store + HELIUS_API_KEY (RADAR_WATCH=1)." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
+  { method: "GET", path: "/dashboard", tool: "radar_dashboard", description: "Minimal web dashboard reading the on-chain ZK scan ledger and rendering risk history + latest verdict." },
+  { method: "GET", path: "/api/ledger", tool: "radar_ledger", description: "JSON API reading historical on-chain ZK scan attestations for a given wallet." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
   { method: "GET", path: "/.well-known/agent.json", tool: "a2a_card", description: "A2A agent card (a2a-protocol.org) for the Wallet Radar Trust Gate agent — describes the screen-wallet skill and the /a2a RPC endpoint." },
   { method: "POST", path: "/a2a", tool: "a2a", description: "A2A JSON-RPC endpoint. Send message/send with a wallet address (or POST {wallet}) to run the pre-flight trust gate: returns a safe/hold/unknown verdict, risk score, liquidity, and anomaly reasons." },
@@ -97,20 +102,48 @@ async function toolScan(body: Record<string, unknown>): Promise<unknown> {
   const lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
   const windowStart = stamps.length > 0 ? Math.min(...stamps) : null;
   const nowSec = Math.floor(Date.now() / 1000);
-  return {
+  const riskScore = computeRiskScore(anomalies);
+  const verdict = computeVerdict(riskScore);
+  const result: Record<string, unknown> = {
     wallet,
     txCount: txs.length,
     lastSeenAt: baseline.lastSeenAt,
     pnl: baseline.pnl ?? null,
     pricesAvailable: prices !== null,
     priceCount: prices ? Object.keys(prices).length : 0,
-    riskScore: computeRiskScore(anomalies),
+    riskScore,
+    verdict,
     anomalies,
     reasons: anomalyReasons(anomalies),
     summary: anomalySummary(anomalies),
     digest: digestAnomalies(anomalies),
     freshness: buildFreshness(lastActivity, nowSec, windowStart, lastActivity),
   };
+
+  if (process.env.RADAR_ORACLE === "1") {
+    try {
+      const topRules = Array.from(new Set(anomalies.map((a) => a.type)));
+      const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
+      const commitRes = await commitScan({
+        wallet,
+        riskScore,
+        verdict,
+        timestamp: nowSec,
+        topRules,
+        txSignatures,
+      });
+      if (commitRes.signature) {
+        result.onchainLedgerSig = commitRes.signature;
+      }
+      result.oracle = commitRes;
+    } catch (err) {
+      if (process.env.RADAR_DEBUG === "1") {
+        console.error("[http-server] toolScan oracle commit failed:", err);
+      }
+    }
+  }
+
+  return result;
 }
 
 async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
@@ -323,6 +356,8 @@ export interface RequestContext {
   store?: Store;
   sink?: AlertSink;
   apiKey?: string;
+  rpcUrl?: string;
+  oracleClient?: ZKOracleClient;
   fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
   fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
   fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
@@ -355,6 +390,16 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   }
 
   try {
+    // Dashboard & ZK Ledger routes
+    if (p === "/dashboard" || p === "/api/ledger") {
+      const handled = await handleDashboardHttpRequest(req, res, {
+        store: ctx.store,
+        rpcUrl: ctx.rpcUrl,
+        oracleClient: ctx.oracleClient,
+      });
+      if (handled) return;
+    }
+
     if (method === "GET") {
       if (p === "/health") {
         sendJson(res, 200, healthPayload());
@@ -526,6 +571,10 @@ export interface ServerOptions {
   fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
   /** Injectable mint-risk source for the loop/poll (tests). */
   fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  /** Optional Solana RPC URL for on-chain queries */
+  rpcUrl?: string;
+  /** Injectable ZK oracle client */
+  oracleClient?: ZKOracleClient;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
@@ -535,6 +584,8 @@ export function createServer(options: ServerOptions = {}): http.Server {
     store: options.store,
     sink: options.sink,
     apiKey: options.apiKey,
+    rpcUrl: options.rpcUrl,
+    oracleClient: options.oracleClient,
     fetchTxs: options.fetchTxs,
     fetchPrices: options.fetchPrices,
     fetchMintRisk: options.fetchMintRisk,

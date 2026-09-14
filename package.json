@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "description": "Continuous wallet monitoring for Solana: baseline, diff, anomaly detection, LLM digest, alerts.",
   "type": "module",
+  "main": "./dist/src/sdk/index.js",
+  "types": "./dist/src/sdk/index.d.ts",
+  "exports": {
+    ".": "./dist/src/sdk/index.js",
+    "./sdk": "./dist/src/sdk/index.js",
+    "./blink": "./dist/src/blink/index.js",
+    "./oracle": "./dist/src/oracle/index.js",
+    "./dashboard": "./dist/src/dashboard.js",
+    "./hook": "./dist/src/hook/index.js"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -28,8 +38,9 @@
     "typescript": "^5.5.0"
   },
   "dependencies": {
+    "@lightprotocol/stateless.js": "^0.23.3",
     "@modelcontextprotocol/server": "^2.0.0",
-    "@solana/spl-token": "^0.4.15",
+    "@solana/actions": "^1.6.6",
     "@solana/web3.js": "^1.99.0",
     "zod": "^4.5.4"
   }

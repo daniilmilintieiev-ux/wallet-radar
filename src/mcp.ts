@@ -12,12 +12,23 @@ import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { Baseline, EnhancedTx } from "./types.js";
+import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
+import { computeVerdict } from "./htmlreport.js";
 
 function json(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
 }
 
-export function buildServer(): McpServer {
+export interface McpServerOptions {
+  oracleClient?: ZKOracleClient;
+  commitScanFn?: typeof commitScan;
+  enableOracle?: boolean;
+  fetchTxs?: typeof fetchWalletTransactions;
+  fetchPrices?: typeof fetchSwapPrices;
+  fetchMintRisk?: typeof fetchSwapMintRisk;
+}
+
+export function buildServer(options: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: "wallet-radar", version: "0.1.0" });
 
   server.registerTool(
@@ -30,7 +41,7 @@ export function buildServer(): McpServer {
       },
     },
     async ({ wallet }) => {
-      const apiKey = process.env.HELIUS_API_KEY;
+      const apiKey = process.env.HELIUS_API_KEY || (options.fetchTxs ? "mock-helius-key" : undefined);
       if (!apiKey) {
         return {
           content: [{ type: "text", text: "HELIUS_API_KEY is not set. Configure it in the server env, or use radar_analyze with a transactions fixture." }],
@@ -38,15 +49,22 @@ export function buildServer(): McpServer {
         };
       }
       try {
-        const txs = await fetchWalletTransactions(apiKey, wallet);
-        const prices = await fetchSwapPrices(txs);
-        const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
+        const fetchTxsFn = options.fetchTxs ?? fetchWalletTransactions;
+        const fetchPricesFn = options.fetchPrices ?? fetchSwapPrices;
+        const fetchMintRiskFn = options.fetchMintRisk ?? fetchSwapMintRisk;
+
+        const txs = await fetchTxsFn(apiKey, wallet);
+        const prices = await fetchPricesFn(txs);
+        const mintRisk = await fetchMintRiskFn(txs, { apiKey });
         const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
         const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+        const riskScore = computeRiskScore(anomalies);
+        const verdict = computeVerdict(riskScore);
         const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
         const lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
         const windowStart = stamps.length > 0 ? Math.min(...stamps) : null;
-        return json({
+
+        const payload: Record<string, unknown> = {
           wallet,
           txCount: txs.length,
           lastSeenAt: baseline.lastSeenAt,
@@ -54,13 +72,47 @@ export function buildServer(): McpServer {
           pricesAvailable: prices !== null,
           priceCount: prices ? Object.keys(prices).length : 0,
           prices,
-          riskScore: computeRiskScore(anomalies),
+          riskScore,
+          verdict,
           anomalies,
           reasons: anomalyReasons(anomalies),
           summary: anomalySummary(anomalies),
           digest: digestAnomalies(anomalies),
           freshness: buildFreshness(lastActivity, Math.floor(Date.now() / 1000), windowStart, lastActivity),
-        });
+        };
+
+        const isOracleEnabled =
+          options.enableOracle ??
+          (process.env.RADAR_ORACLE === "1" || options.oracleClient !== undefined);
+
+        if (isOracleEnabled) {
+          try {
+            const commitFn = options.commitScanFn ?? commitScan;
+            const topRules = Array.from(new Set(anomalies.map((a) => a.type)));
+            const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
+            const commitRes = await commitFn(
+              {
+                wallet,
+                riskScore,
+                verdict,
+                timestamp: Math.floor(Date.now() / 1000),
+                topRules,
+                txSignatures,
+              },
+              { client: options.oracleClient },
+            );
+            if (commitRes.signature) {
+              payload.onchainLedgerSig = commitRes.signature;
+            }
+            payload.oracle = commitRes;
+          } catch (err) {
+            if (process.env.RADAR_DEBUG === "1") {
+              console.error("[mcp] radar_scan oracle commit failed:", err);
+            }
+          }
+        }
+
+        return json(payload);
       } catch (err) {
         return {
           content: [{ type: "text", text: `Scan failed: ${err instanceof Error ? err.message : String(err)}` }],
@@ -222,5 +274,5 @@ const isDirectRun = Boolean(
 );
 
 if (isDirectRun) {
-  serveStdio(buildServer);
+  serveStdio(() => buildServer());
 }

@@ -176,6 +176,132 @@ Wallet Radar exposes a standalone HTTP service (`bin/x402-server` or `npm run x4
 - **Proof Format**: Provide tx signature and payer via HTTP headers: `X-Payment-Signature: <tx_sig>` and `X-Payment-Payer: <payer_address>` (or `Authorization: x402 <sig>:<payer>`, or `X-Payment: {"signature":"...","payer":"..."}`).
 - **Settlement & Anti-Replay**: On-chain verification confirms the USDC transfer to the recipient with amount >= price. Settled signatures are recorded in SQLite (`settled_payments`) to prevent replay attacks across calls.
 
+## On-Chain ZK Scan Ledger (The Oracle)
+
+Wallet Radar turns real-time anomaly assessments into an immutable, verifiable on-chain oracle (`src/oracle`) powered by **Light Protocol ZK compression**:
+
+- **~400x Cost Reduction**: Regular Solana PDAs require ~0.002039 SOL in rent deposit per account. By storing state in ZK-compressed state trees, Wallet Radar commits audit attestations for **~0.000005 SOL** (rent-free state), enabling affordable, continuous on-chain logging.
+- **Compact Binary Encoding (`RS01`)**: Scan records pack fixed 48-byte headers (`magic: RS01`, `wallet: 32B`, `risk_score: u8`, `verdict_code: u8`, `timestamp: u64LE`, `payload_len: u16LE`) with JSON evidence payloads for zero-copy deserialization in on-chain programs and off-chain indexers.
+- **Tamper-Evident Receipts**: State mutations append to on-chain merkle trees verified against Solana state roots.
+- **Autonomous Gating**: Smart contracts and AI agents query on-chain scan attestations before executing transactions, copy-trades, or token transfers.
+
+```typescript
+import { commitScan, readScanLedger } from "wallet-radar/oracle";
+
+// 1. Commit an audit attestation to Solana state compression
+const { signature, slot, compressedAddress } = await commitScan({
+  wallet: "TargetSolanaWallet1111111111111111111111111",
+  riskScore: 85,
+  verdict: "HIGH RISK",
+  topRules: ["DORMANT_ACTIVE", "LARGE_SWAP"],
+  txSignatures: ["txSig1..."],
+});
+
+// 2. Read historical attestations on-chain
+const records = await readScanLedger("TargetSolanaWallet1111111111111111111111111", { limit: 10 });
+console.log(`Latest on-chain score: ${records[0].riskScore} (${records[0].verdict}) at slot ${records[0].slot}`);
+```
+
+## Agent SDK (JS/TS)
+
+Autonomous agents, trading bots, and dApps can interact directly with Wallet Radar via the official client SDK (`src/sdk`):
+
+```typescript
+import { createRadarClient } from "./dist/src/sdk/index.js";
+import { Keypair } from "@solana/web3.js";
+
+const client = createRadarClient({
+  baseUrl: "http://127.0.0.1:4020", // or hosted API
+  rpc: "https://api.mainnet-beta.solana.com",
+  x402Payer: Keypair.fromSecretKey(...), // auto-pays 402 challenges
+  recipient: "RecipientUSDCWallet...",
+});
+
+// One-tap wallet scan with automated x402 payment & on-chain ZK ledger reading
+const { riskScore, verdict, evidence, onchainLedgerSig } = await client.scan("<target_wallet>");
+console.log(`Risk: ${riskScore} (${verdict}), Attestation Sig: ${onchainLedgerSig}`);
+
+// Read historical on-chain ZK scan attestations from Light Protocol
+const attestations = await client.readOnchainLedger("<target_wallet>", 5);
+```
+
+See [`src/sdk/README.md`](src/sdk/README.md) for full SDK API documentation, payment signer callbacks, and offline fixtures.
+
+## Solana Actions & Blinks
+
+Wallet Radar exposes official **Solana Actions & Blinks** (`src/blink`), turning wallet audits into interactive one-tap UI cards on Twitter/X, Discord, Phantom, Solflare, and Dialect:
+
+- **Actions Discovery**: `GET /actions.json` defines URL routing rules.
+- **Action Metadata**: `GET /api/actions/radar-scan[?wallet=<addr>]` returns standard `ActionGetResponse` with CORS headers.
+- **One-Tap Execution**: `POST /api/actions/radar-scan` builds and returns a signable transaction containing an audit memo instruction (`RadarScan:<target>:x402:0.005`) and 0.005 USDC micropayment transfer.
+- **Dialect Blinks Link**:
+  ```
+  https://dial.to/?action=solana-action:https://wallet-radar.app/api/actions/radar-scan
+  ```
+- **Phantom & Solflare Deep Links**:
+  ```
+  https://phantom.app/ul/browse/https%3A%2F%2Fwallet-radar.app%2Fapi%2Factions%2Fradar-scan?ref=wallet-radar
+  https://solflare.com/ul/v1/browse/https%3A%2F%2Fwallet-radar.app%2Fapi%2Factions%2Fradar-scan
+  ```
+
+See [`src/blink/README.md`](src/blink/README.md) for full specification, registration manifest, and programmatic usage.
+
+## Web Dashboard & ZK Ledger Viewer
+
+Wallet Radar provides a minimal, deterministic web dashboard (`src/dashboard.ts`) reading on-chain ZK scan ledger attestations (`readScanLedger`) and displaying per-wallet risk history alongside the latest oracle verdict:
+
+- **Browser Web Dashboard**: `GET /dashboard?wallet=<addr>` (served by both `http-server` and `x402-server`). Self-contained monospace terminal UI with hero score card, compressed PDA, on-chain signature explorer link, and historical attestation timeline.
+- **JSON Ledger API**: `GET /api/ledger?wallet=<addr>[&limit=N]` returns structured on-chain attestation history.
+- **CLI Ledger Inspection & HTML Export**:
+  ```bash
+  # View on-chain ZK scan attestations as a monospace terminal table
+  node dist/src/cli.js ledger <wallet>
+
+  # Output machine-readable JSON history
+  node dist/src/cli.js ledger <wallet> --json
+
+  # Export deterministic standalone HTML dashboard
+  node dist/src/cli.js ledger <wallet> --export wallet-ledger.html
+  node dist/src/cli.js dashboard --export overview.html
+  ```
+
+## Token-22 Transfer Hook (Scan-on-Transfer)
+
+Wallet Radar delivers autonomous on-chain risk gating via an SPL Token-22 transfer hook program (`programs/radar-transfer-hook` and `src/hook`).
+
+When an SPL Token-22 mint enables the `TransferHook` extension pointing to `radar-transfer-hook`, every `transfer_checked` automatically CPIs into the hook to verify the counterparty on-chain:
+
+- **Scan-on-Transfer Enforcement**: Resolves the destination wallet's Radar Scan Ledger record (`RS01` binary attestation).
+- **Threshold Gating**: Reverts the transaction if the destination's risk score exceeds `maxRiskScore` (default: 80 / 100) or carries a `HIGH RISK` verdict.
+- **Freshness Policy**: Configurable maximum attestation age in seconds (`maxAttestationAgeSec`).
+- **Policy for Unverified Wallets**: Configurable `allowUnverified: bool`.
+- **Instruction Builders & Client**:
+  ```typescript
+  import {
+    createRiskGatedTransferCheckedInstruction,
+    evaluateTransferRisk,
+  } from "wallet-radar/hook";
+
+  // Simulate/evaluate transfer risk off-chain before submitting
+  const evalResult = evaluateTransferRisk(destinationRecord, { maxRiskScore: 75 });
+  if (!evalResult.allowed) {
+    throw new Error(`Transfer blocked: ${evalResult.reason}`);
+  }
+
+  // Construct Token-22 TransferChecked instruction with hook extra accounts
+  const ix = createRiskGatedTransferCheckedInstruction({
+    source: senderAta,
+    mint: tokenMint,
+    destination: recipientAta,
+    owner: senderWallet.publicKey,
+    amount: 1_000_000n,
+    decimals: 6,
+    destinationWallet: recipientWallet.publicKey,
+  });
+  ```
+
+See [`programs/radar-transfer-hook/README.md`](programs/radar-transfer-hook/README.md) and [`src/hook/README.md`](src/hook/README.md) for complete specifications and deployment instructions.
+
 ## One-shot checks (stateless)
 
 ```bash
@@ -362,6 +488,42 @@ template without throwing into the continuous watch loop.
 - **Baseline drift / Sybil**: Baseline medians use a weighted blend between existing and new batches, so sustained micro-swap activity over time dilutes `LARGE_SWAP` sensitivity. Known venues and programs are append-only, meaning malicious pre-warming suppresses `NEW_VENUE` and `NEW_PROTOCOL`. Planned mitigations: sample floor before trusting medians, robust statistics, and recency decay.
 - **Helius credit consumption**: Continuous watching consumes 1 Enhanced Transactions request per polled wallet (free tier: ~100k credits/month). Exponential 429/5xx backoff and adaptive quiet-wallet pacing (stretching intervals up to 60m) mitigate credit exhaustion.
 - **Price feed dependency**: If Jupiter Price API is unreachable or tokens cannot be priced in USD, `LARGE_SWAP` falls back to major-only sizing (evaluating raw quantities on SOL, USDC, and USDT only).
+
+## Colosseum Hackathon (Fall 2026): Before / After Honesty Note
+
+In the spirit of complete transparency for hackathon judges and the Solana community, here is an exact breakdown of what existed before the hackathon and what was designed, developed, and verified **in-window** (Sep 14 – Oct 13, 2026):
+
+### What Existed Before the Hackathon Window (Foundation)
+- **Deterministic Anomaly Rules Engine**: The initial 7 behavioral anomaly rules (`DORMANT_ACTIVE`, `ACTIVITY_BURST`, `NEW_VENUE`, `LARGE_SWAP`, `CONCENTRATION`, `NEW_PROTOCOL`, `TOXIC_MINT`).
+- **Baseline Profiler**: Historical transaction baseline calculation using Helius Enhanced Transactions API and Jupiter Price API USD normalization.
+- **Local SQLite Store**: Watchlist storage, transaction deduplication, and anomaly logging (`~/.wallet-radar/radar.db`).
+- **Basic Stdio MCP Server**: Initial stdio tool wrapper (`radar_scan`, `radar_analyze`, `radar_trust`, `radar_selftest`).
+- **CLI Commands**: Basic offline replay, trust gate, and report commands (`radar scan`, `radar trust`).
+
+### What Was Built IN-WINDOW (Hackathon Innovations)
+1. **Light Protocol ZK Scan Ledger (The On-Chain Oracle) (`src/oracle`)**:
+   - Implemented ZK-compressed state accounts storing immutable scan attestations rent-free for ~0.000005 SOL (~400x cost reduction).
+   - Designed compact `RS01` binary serialization format (48-byte zero-copy header + dynamic JSON evidence payload).
+   - Integrated `commitScan` and `readScanLedger` with fallback to Light RPC validity proofs.
+2. **x402 Pay-per-Call Solana Settlement Engine (`src/x402server.ts`)**:
+   - Implemented standard [x402](https://x402.org) HTTP micropayment protocol for Solana.
+   - Built on-chain RPC transaction verification ensuring exact USDC payment amounts to designated recipient wallets.
+   - Designed SQLite-persisted anti-replay ledger (`settled_payments`) preventing transaction signature reuse.
+3. **Autonomous Agent SDK (`src/sdk`)**:
+   - Built standalone TypeScript/JavaScript SDK (`createRadarClient`) enabling AI agents to auto-pay 402 invoices via signed Solana transactions and query on-chain ZK attestations.
+   - Implemented zero-dependency base58 encoder, ATA derivation, and SPL transfer instruction builders.
+4. **Solana Actions & Blinks v1 (`src/blink`)**:
+   - Implemented official Solana Actions specification (`/actions.json` discovery rules and `ActionGetResponse` / `ActionPostResponse` endpoints).
+   - Built one-tap Blink URL generators and deep links for Dialect (`dial.to`), Phantom, and Solflare.
+5. **Interactive Web Dashboard & ZK Ledger Viewer (`src/dashboard.ts`)**:
+   - Built self-contained, deterministic monospace web dashboard (`GET /dashboard`) with hero verdict cards, slot tracking, on-chain signature links, and historical timeline tables.
+   - Added `GET /api/ledger` and CLI `radar ledger` / `radar dashboard --export` exporter.
+6. **SPL Token-22 Transfer Hook Program (`programs/radar-transfer-hook`, `src/hook`)**:
+   - Authored complete Anchor program implementing `spl-transfer-hook-interface` to enforce "scan-on-transfer" protocol risk gating.
+   - Created client instruction builders (`createRiskGatedTransferCheckedInstruction`) and deterministic risk evaluator (`evaluateTransferRisk`).
+7. **End-to-End Test Suite & Load Testing Harness (`test/e2e.test.ts`)**:
+   - Verified the complete full-circle loop: Scan &rarr; x402 auto-payment &rarr; ZK oracle commit &rarr; SDK on-chain read &rarr; Dashboard render &rarr; Token-22 transfer hook gating.
+   - Proved concurrent load capacity (25 concurrent paid scans with unique settlement signatures).
 
 ## Status
 

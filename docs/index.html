@@ -51,7 +51,8 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
   <div class="tag">Builds each Solana wallet's behavioral baseline — then flags the exact moment the behavior breaks.</div>
   <div class="chips">
     <span class="chip"><b>100%</b> TypeScript</span>
-    <span class="chip"><b>0</b> dependencies</span>
+    <span class="chip"><b>0-dep</b> core engine</span>
+    <span class="chip"><b>ZK</b> on-chain oracle</span>
     <span class="chip"><b>7</b> deterministic rules</span>
     <span class="chip"><b>24/7</b> live monitoring</span>
     <span class="chip"><b>MCP</b> server</span>
@@ -94,6 +95,17 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <p>The radar continuously polls each watched wallet (Helius), rebuilds its baseline, and alerts the moment a rule fires. The demo is a <b>replay of a real event</b>: wallet <code>8XeK5m…eYXU2j</code>, dormant for 173 days, waking with five ≥3×-median swaps on a brand-new venue.</p>
     <p>Because mainnet is immutable, re-running the detector on live data reproduces the same verdict — <code>radar replay 8XeK5m… --since 2026-03-11 --until 2026-08-31</code> → <span class="ok">RISK 100/100 · 8 anomalies · 1,307-tx baseline</span>.</p>
     <p>Reproduce it yourself with <code>scripts/verify-canon.sh</code>; full write-up in <code>LIVE-DATA.md</code>.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Built in-window: the Colosseum leap</h2>
+  <div class="sub">Beyond the gate — the radar now writes its verdicts on-chain (ZK-compressed), speaks x402, and exposes itself as an agent SDK, a one-tap Solana action, a live dashboard, and a Token-22 transfer hook.</div>
+  <div class="pipeline">
+    <div class="step"><div class="k">ZK ORACLE</div><b>On-chain scan ledger</b><span>Every scan committed to a ZK-compressed Light account (~400x cheaper than a PDA) — the verdict lives on-chain, not in a DB.</span></div>
+    <div class="step"><div class="k">AGENT SDK</div><b>createRadarClient()</b><span>A JS/TS client that calls the x402 server, auto-pays USDC, and returns the result with its on-chain ledger signature.</span></div>
+    <div class="step"><div class="k">BLINK</div><b>One-tap scan</b><span>A Solana Action / Blink — "Radar scan &lt;addr&gt;" — x402 pay, verdict back, straight from the wallet UI.</span></div>
+    <div class="step"><div class="k">HOOK</div><b>Scan-on-transfer</b><span>A Token-22 transfer hook scores the transfer on-chain (oracle PDA) — the gate at the moment of transfer.</span></div>
   </div>
 </section>
 

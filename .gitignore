@@ -7,9 +7,12 @@ dist/
 *.sqlite3
 *.db
 *.db-*
-radar.env
+radar.env*
 dist.bak*
 .DS_Store
 
 # scratch / debug scripts
 _*.mjs
+
+# Rust (programs/radar-transfer-hook)
+target/

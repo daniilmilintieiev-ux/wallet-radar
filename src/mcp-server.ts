@@ -93,7 +93,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
   }
 
   loadEnv();
-  serveStdio(buildServer);
+  serveStdio(() => buildServer());
 }
 
 const isDirectRun = Boolean(

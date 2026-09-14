@@ -12,6 +12,10 @@ import { fetchSwapMintRisk } from "./mint.js";
 import { Store } from "./store.js";
 import { getVersion, loadEnv } from "./mcp-server.js";
 import { Baseline, EnhancedTx, SettledPayment, USDC_MINT } from "./types.js";
+import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
+import { computeVerdict } from "./htmlreport.js";
+import { handleBlinkHttpRequest } from "./blink/index.js";
+import { handleDashboardHttpRequest } from "./dashboard.js";
 
 /** Pricing in USDC per endpoint matching AgenticTrade manifest. */
 export const X402_PRICING: Record<string, number> = {
@@ -58,6 +62,9 @@ export interface X402ServerOptions {
   scanHandler?: (wallet: string) => Promise<unknown>;
   analyzeHandler?: (wallet: string, txs: EnhancedTx[] | string) => Promise<unknown>;
   selftestHandler?: () => Promise<unknown>;
+  oracleClient?: ZKOracleClient;
+  commitScanFn?: typeof commitScan;
+  enableOracle?: boolean;
 }
 
 function getRpcUrl(): string {
@@ -321,6 +328,9 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
     const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
     const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
     const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+    const riskScore = computeRiskScore(anomalies);
+    const verdict = computeVerdict(riskScore);
+    const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
     return {
       wallet,
       txCount: txs.length,
@@ -329,9 +339,11 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       pricesAvailable: prices !== null,
       priceCount: prices ? Object.keys(prices).length : 0,
       prices,
-      riskScore: computeRiskScore(anomalies),
+      riskScore,
+      verdict,
       anomalies,
       digest: digestAnomalies(anomalies),
+      txSignatures,
     };
   };
 
@@ -364,6 +376,25 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       const pathname = url.pathname;
       const method = req.method?.toUpperCase() ?? "GET";
 
+      // 0. Solana Actions / Blinks routes (/actions.json, /api/actions/...)
+      if (pathname === "/actions.json" || pathname.startsWith("/api/actions")) {
+        const handled = await handleBlinkHttpRequest(req, res, {
+          recipient,
+          rpcUrl: options.rpcUrl,
+        });
+        if (handled) return;
+      }
+
+      // 0.5 Web dashboard and ZK scan ledger (/dashboard, /api/ledger)
+      if (pathname === "/dashboard" || pathname === "/api/ledger") {
+        const handled = await handleDashboardHttpRequest(req, res, {
+          store,
+          rpcUrl: options.rpcUrl,
+          oracleClient: options.oracleClient,
+        });
+        if (handled) return;
+      }
+
       if (pathname === "/" || pathname === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
@@ -379,6 +410,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
                 "/selftest": { method: "GET", priceUsdc: 0.0, description: "Free smoke test / health check" },
                 "/scan": { method: "POST", priceUsdc: 0.005, description: "Live wallet scan with Helius & Jupiter" },
                 "/analyze": { method: "POST", priceUsdc: 0.001, description: "Offline anomaly analysis over tx fixture" },
+                "/dashboard": { method: "GET", priceUsdc: 0.0, description: "Web dashboard for ZK scan ledger" },
+                "/api/ledger": { method: "GET", priceUsdc: 0.0, description: "JSON API for on-chain scan attestations" },
               },
             },
             null,
@@ -464,7 +497,56 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             res.end(JSON.stringify({ error: "Missing or invalid wallet parameter" }));
             return;
           }
-          const scanRes = await scanHandler(body.wallet);
+          const rawScanRes = (await scanHandler(body.wallet)) as Record<string, any>;
+          const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
+
+          if (scanRes && typeof scanRes === "object") {
+            const riskScore = typeof scanRes.riskScore === "number" ? scanRes.riskScore : 0;
+            const verdict =
+              typeof scanRes.verdict === "string" ? scanRes.verdict : computeVerdict(riskScore);
+            scanRes.verdict = verdict;
+
+            const isOracleEnabled =
+              options.enableOracle ??
+              (process.env.RADAR_ORACLE === "1" || options.oracleClient !== undefined);
+
+            if (isOracleEnabled) {
+              try {
+                const anomalies = Array.isArray(scanRes.anomalies) ? scanRes.anomalies : [];
+                const topRules = Array.from(
+                  new Set(anomalies.map((a: any) => a.type || a.rule).filter(Boolean)),
+                );
+                const txSignatures = Array.isArray(scanRes.txSignatures)
+                  ? scanRes.txSignatures
+                  : Array.isArray(scanRes.txs)
+                  ? scanRes.txs.map((t: any) => t.signature).filter(Boolean).slice(0, 10)
+                  : [];
+
+                const commitFn = options.commitScanFn ?? commitScan;
+                const commitRes = await commitFn(
+                  {
+                    wallet: body.wallet,
+                    riskScore,
+                    verdict,
+                    timestamp: Math.floor(Date.now() / 1000),
+                    topRules,
+                    txSignatures,
+                  },
+                  { client: options.oracleClient, rpcUrl: options.rpcUrl },
+                );
+
+                if (commitRes.signature) {
+                  scanRes.onchainLedgerSig = commitRes.signature;
+                }
+                scanRes.oracle = commitRes;
+              } catch (err) {
+                if (process.env.RADAR_DEBUG === "1") {
+                  console.error("[x402] oracle commitScan failed:", err);
+                }
+              }
+            }
+          }
+
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(scanRes, null, 2));
           return;

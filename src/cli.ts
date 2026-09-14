@@ -13,6 +13,8 @@ import { makeSink } from "./alerts.js";
 import { parseTime, replayWallet, ReplayResult } from "./replay.js";
 import { buildShortlist, formatShortlist, formatTrustLine, runTrustCheck, runTrustChecks } from "./trust.js";
 import { renderHtmlReport, formatHistoryText, computeVerdict, HtmlReportData } from "./htmlreport.js";
+import { renderDashboardHtml, formatLedgerTerminalTable } from "./dashboard.js";
+import { readScanLedger } from "./oracle/index.js";
 import { Anomaly, Baseline, EnhancedTx, DEFAULT_CONFIG } from "./types.js";
 
 function usage(): void {
@@ -25,6 +27,10 @@ usage:
   radar report <wallet>           baseline + recent anomalies for one wallet
   radar history <wallet> [--export [out.html]] [--live] [--json]
                                   historical profile + anomalies (HTML report with --export [file], or stdout with --export -)
+  radar ledger <wallet> [--export [out.html]] [--json]
+                                  query on-chain ZK scan attestations (render HTML dashboard with --export, or terminal table)
+  radar dashboard [wallet] [--export [out.html]]
+                                  alias for ledger / dashboard exporter
   radar alerts [limit]            recent anomalies across the watchlist
   radar scan <wallet>             one-shot scan (needs HELIUS_API_KEY; prices via Jupiter)
   radar analyze <wallet> <txs.json>  run anomaly rules over a tx fixture
@@ -258,6 +264,68 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(reportData, null, 2));
       } else {
         console.log(formatHistoryText(reportData));
+      }
+      return;
+    }
+    case "ledger":
+    case "dashboard": {
+      const wallet = args[0] && !args[0].startsWith("--") ? args[0] : "";
+      const exportIdx = args.indexOf("--export");
+      const hasExport = exportIdx !== -1;
+      let exportPath: string | undefined;
+      if (hasExport) {
+        const nextArg = args[exportIdx + 1];
+        if (nextArg && !nextArg.startsWith("--")) {
+          exportPath = nextArg;
+        }
+      }
+
+      const store = openStore();
+      let watchlist: string[] = [];
+      try {
+        watchlist = store.listWallets();
+      } catch {}
+      store.close();
+
+      const rpcUrl = process.env.SOLANA_RPC_URL;
+      const records = wallet ? await readScanLedger(wallet, { rpcUrl, limit: 50 }) : [];
+
+      if (hasExport) {
+        const html = renderDashboardHtml({
+          wallet,
+          records,
+          watchlist,
+          rpcUrl,
+        });
+        if (exportPath === "-") {
+          process.stdout.write(html + "\n");
+        } else {
+          const dest = exportPath || `${(wallet || "radar").slice(0, 8)}-dashboard.html`;
+          await import("node:fs/promises").then((fs) => fs.writeFile(dest, html, "utf8"));
+          console.log(`exported ledger dashboard to ${dest}`);
+        }
+      } else if (args.includes("--json")) {
+        console.log(
+          JSON.stringify(
+            {
+              wallet: wallet || null,
+              latest: records.length > 0 ? records[0] : null,
+              history: records,
+              count: records.length,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        if (!wallet) {
+          console.log("wallet-radar ZK scan ledger dashboard");
+          console.log(`Watchlist: ${watchlist.length} wallet(s)`);
+          console.log("Usage: radar ledger <wallet> [--export [out.html]] [--json]");
+          return;
+        }
+        console.log(`wallet-radar ZK scan ledger: ${wallet} (${records.length} attestations)`);
+        console.log(formatLedgerTerminalTable(records));
       }
       return;
     }
