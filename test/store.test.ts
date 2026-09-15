@@ -146,13 +146,13 @@ test("watchOnce: seed baseline silently, then alert on fresh activity", async ()
   assert.ok(w1);
   assert.equal(w1.seeded, false);
   assert.equal(w1.freshTxCount, 6);
-  // DORMANT_ACTIVE(30) + ACTIVITY_BURST(15) + NEW_VENUE(15) + NEW_PROTOCOL(5)
-  assert.equal(w1.anomalyCount, 4);
-  assert.equal(w1.riskScore, 65);
+  // DORMANT_ACTIVE(30) + ACTIVITY_BURST(15) + NEW_VENUE(15) + NEW_PROTOCOL(5) + REGIME_SHIFT(30)
+  assert.equal(w1.anomalyCount, 5);
+  assert.equal(w1.riskScore, 95);
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /risk 65\/100/);
+  assert.match(sent[0], /risk 95\/100/);
   assert.match(sent[0], /DORMANT_ACTIVE/);
-  assert.equal(store.recentAnomalies("W1").length, 4);
+  assert.equal(store.recentAnomalies("W1").length, 5);
   assert.equal(store.unalertedCount("W1"), 0); // marked alerted after send
 
   // Same txs again: signature dedupe -> nothing new, no new alerts.

@@ -354,13 +354,14 @@ test("watchOnce: fires TOXIC_MINT alert on fresh activity when mint has unrenoun
 
   const walletReport = report.wallets.find((w) => w.wallet === WALLET);
   assert.ok(walletReport);
-  assert.equal(walletReport.anomalyCount, 1);
-  assert.equal(walletReport.riskScore, 30); // high severity = 30 pts
+  assert.equal(walletReport.anomalyCount, 2);
+  assert.equal(walletReport.riskScore, 45); // TOXIC_MINT(30) + WARMING(15)
 
   const recorded = store.recentAnomalies(WALLET, 10);
-  assert.equal(recorded.length, 1);
-  assert.equal(recorded[0].type, "TOXIC_MINT");
-  assert.equal(recorded[0].severity, "high");
+  assert.equal(recorded.length, 2);
+  assert.ok(recorded.some((a) => a.type === "TOXIC_MINT"));
+  const toxic = recorded.find((a) => a.type === "TOXIC_MINT");
+  assert.equal(toxic?.severity, "high");
 
   assert.equal(sentAlerts.length, 1);
   assert.match(sentAlerts[0], /TOXIC_MINT/);

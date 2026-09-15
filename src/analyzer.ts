@@ -336,6 +336,46 @@ export function detectAnomalies(
     }
   }
 
+  // --- Anti-evasion: REGIME_SHIFT ---
+  // Meta-rule: 3+ distinct anomaly types firing in the same batch indicates
+  // the wallet is operating in a fundamentally different "mode" than usual.
+  // A single anomaly could be a one-off; a coordinated shift across multiple
+  // dimensions (new venue + new protocol + large swap + burst) suggests the
+  // wallet is executing a new strategy, not just having a rough day.
+  const distinctTypes = new Set(anomalies.map((a) => a.type));
+  if (distinctTypes.size >= 3) {
+    const types = Array.from(distinctTypes).join(", ");
+    anomalies.push({
+      type: "REGIME_SHIFT",
+      wallet,
+      severity: "high",
+      timestamp: Math.max(...txs.map(ts)),
+      evidence: { triggeredRules: Array.from(distinctTypes), count: distinctTypes.size },
+      text: `${distinctTypes.size} distinct anomaly types fired simultaneously (${types}). Wallet is in a new behavioral regime.`,
+    });
+  }
+
+  // --- Anti-evasion: WARMING ---
+  // Detects wallets that build a short "normal" baseline (few tx over a short
+  // period) then suddenly deviate. The baseline is MANUFACTURED: a few small
+  // trades to look established, then a large or unusual action.
+  // Signal: baseline has very few tx (< 5) AND the current batch contains
+  // at least one HIGH severity anomaly that is disproportionate to the
+  // thin baseline.
+  if (baseline && baseline.txCount > 0 && baseline.txCount < 5) {
+    const hasHigh = anomalies.some((a) => a.severity === "high");
+    if (hasHigh) {
+      anomalies.push({
+        type: "WARMING",
+        wallet,
+        severity: "medium",
+        timestamp: Math.max(...txs.map(ts)),
+        evidence: { baselineTxCount: baseline.txCount, currentAnomalies: anomalies.filter((a) => a.severity === "high").length },
+        text: `Baseline is thin (${baseline.txCount} tx) yet current activity triggers high-severity anomalies. Possible manufactured baseline ("warming").`,
+      });
+    }
+  }
+
   return anomalies;
 }
 

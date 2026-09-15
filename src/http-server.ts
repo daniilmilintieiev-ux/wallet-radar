@@ -13,6 +13,7 @@ import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist, formatTrustLine, type TrustResult, type TrustVerdict, type TrustBalances } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment, type SimulateInput } from "./simulate.js";
+import { runBenchmark } from "./benchmark.js";
 import { Store } from "./store.js";
 import { watchOnce, watchLoop } from "./watch.js";
 import { makeSink, type AlertSink } from "./alerts.js";
@@ -44,6 +45,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "GET", path: "/alerts", tool: "radar_alerts", description: "Recent recorded anomalies from the monitoring watchlist, most recent first. Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/poll", tool: "radar_poll", description: "Immediately re-check the whole monitoring watchlist for new activity and fire webhooks/Telegram on any new anomaly (re-check your copied wallet now). Requires the watch store + HELIUS_API_KEY (RADAR_WATCH=1)." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
+  { method: "POST", path: "/benchmark", tool: "radar_benchmark", description: "Reproducible quality proof: runs a versioned eval set of labeled test cases through the full detection pipeline and reports precision, recall, accuracy, and per-case results. Deterministic — same input, same numbers, every time. No network calls." },
   { method: "GET", path: "/dashboard", tool: "radar_dashboard", description: "Minimal web dashboard reading the on-chain ZK scan ledger and rendering risk history + latest verdict." },
   { method: "GET", path: "/api/ledger", tool: "radar_ledger", description: "JSON API reading historical on-chain ZK scan attestations for a given wallet." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
@@ -252,6 +254,10 @@ function toolSelftest(): unknown {
   return { ok: true, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies) };
 }
 
+function toolBenchmark(): unknown {
+  return runBenchmark();
+}
+
 function healthPayload(): Record<string, unknown> {
   return {
     ok: true,
@@ -395,6 +401,8 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<un
   "/radar_simulate": toolSimulate,
   "/selftest": toolSelftest,
   "/radar_selftest": toolSelftest,
+  "/benchmark": toolBenchmark,
+  "/radar_benchmark": toolBenchmark,
 };
 
 export interface RequestContext {

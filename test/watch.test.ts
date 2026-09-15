@@ -205,7 +205,7 @@ test("watchOnce: non-seed path unchanged (subsequent poll alerts on live anomaly
 
   assert.equal(seedCalledOnPoll2, false); // did not use seed history
   assert.equal(report2.wallets[0].seeded, false);
-  assert.equal(report2.wallets[0].anomalyCount, 1);
+  assert.equal(report2.wallets[0].anomalyCount, 2);
   assert.equal(sent.length, 1);
   assert.match(sent[0], /LARGE_SWAP/);
 

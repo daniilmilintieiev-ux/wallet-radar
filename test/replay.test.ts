@@ -63,21 +63,21 @@ test("splitTxs dedupes pagination overlap by signature", () => {
   assert.equal(burst.length, 1);
 });
 
-test("buildReplay reproduces the dormant-whale case: DORMANT_ACTIVE + LARGE_SWAP + NEW_VENUE + 3x NEW_PROTOCOL = 90/100", () => {
+test("buildReplay reproduces the dormant-whale case: DORMANT_ACTIVE + LARGE_SWAP + NEW_VENUE + 3x NEW_PROTOCOL + REGIME_SHIFT + WARMING", () => {
   const { baseline, anomalies, riskScore } = buildReplay(WALLET, HISTORY, BURST, PRICES);
   assert.equal(baseline.lastSeenAt, T0);
   assert.ok(Math.abs((baseline.medianSwapAmountUsd ?? 0) - 1000) < 1); // median of [1000, 1200, 1000]
   const types = anomalies.map((a) => a.type).sort();
-  assert.deepEqual(types, ["DORMANT_ACTIVE", "LARGE_SWAP", "NEW_PROTOCOL", "NEW_PROTOCOL", "NEW_PROTOCOL", "NEW_VENUE"]);
-  assert.equal(riskScore, 90); // 30 + 30 + 15 + 3x5
+  assert.deepEqual(types, ["DORMANT_ACTIVE", "LARGE_SWAP", "NEW_PROTOCOL", "NEW_PROTOCOL", "NEW_PROTOCOL", "NEW_VENUE", "REGIME_SHIFT", "WARMING"]);
+  assert.equal(riskScore, 100); // 30 + 30 + 30 + 15 + 3x5 + 30 (REGIME_SHIFT high) + 15 (WARMING medium) = 125, capped at 100
   const dormant = anomalies.find((a) => a.type === "DORMANT_ACTIVE");
   assert.equal(dormant?.evidence.daysSilent, 163.0);
 });
 
 test("buildReplay: burst without prices falls back to major-only sizing", () => {
   const { riskScore } = buildReplay(WALLET, HISTORY, BURST, null);
-  // DORMANT_ACTIVE + NEW_VENUE + 3x NEW_PROTOCOL + LARGE_SWAP (39.96 >= 3*10.67 major)
-  assert.equal(riskScore, 90);
+  // DORMANT_ACTIVE + NEW_VENUE + 3x NEW_PROTOCOL + LARGE_SWAP (39.96 >= 3*10.67 major) + REGIME_SHIFT + WARMING
+  assert.equal(riskScore, 100);
 });
 
 test("replayWallet: empty window throws", async () => {
@@ -102,13 +102,13 @@ test("replayWallet: end-to-end with injected fetcher, counts deduped, sink gets 
   });
   assert.equal(result.historyTxCount, 3);
   assert.equal(result.burstTxCount, 1);
-  assert.equal(result.riskScore, 90);
+  assert.equal(result.riskScore, 100);
   assert.equal(result.pricesAvailable, true);
   assert.equal(calls.length, 2);
   assert.ok(calls[0].gteTime === T0 + GAP);
   assert.ok(calls[1].ltTime === T0 + GAP);
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /risk 90\/100/);
+  assert.match(sent[0], /risk 100\/100/);
   assert.match(sent[0], /DORMANT_ACTIVE/);
 });
 

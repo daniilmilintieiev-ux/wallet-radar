@@ -324,6 +324,19 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     }
   );
 
+  server.registerTool(
+    "radar_benchmark",
+    {
+      description:
+        "Reproducible quality proof: runs a versioned eval set of labeled test cases (safe + risky) through the full detection pipeline and reports precision, recall, accuracy, and per-case results. Deterministic — same eval set + same code = same numbers, every time. No network, no API keys. Use to verify the scanner's quality or to compare before/after changes.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      const { runBenchmark } = await import("./benchmark.js");
+      return json(runBenchmark());
+    }
+  );
+
   return server;
 }
 

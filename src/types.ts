@@ -79,7 +79,9 @@ export type AnomalyType =
   | "LARGE_SWAP"
   | "CONCENTRATION"
   | "NEW_PROTOCOL"
-  | "TOXIC_MINT";
+  | "TOXIC_MINT"
+  | "REGIME_SHIFT"
+  | "WARMING";
 
 export interface MintRiskInfo {
   mint: string;

@@ -505,16 +505,16 @@ test("http-server: POST /poll re-checks the watchlist, fires the alert sink, and
     assert.equal(body.wallets.length, 1);
     assert.equal(body.wallets[0].wallet, wallet);
     assert.equal(body.wallets[0].seeded, false);
-    assert.equal(body.wallets[0].anomalyCount, 1);
+    assert.equal(body.wallets[0].anomalyCount, 2);
     assert.equal(sent.length, 1);
     assert.match(sent[0], /LARGE_SWAP/);
 
-    // GET /alerts reflects the recorded anomaly.
+    // GET /alerts reflects the recorded anomalies.
     const alertsRes = await fetch(`${r.base}/alerts`);
     assert.equal(alertsRes.status, 200);
     const alerts = (await alertsRes.json()) as { count: number; anomalies: Array<{ type: string }> };
-    assert.equal(alerts.count, 1);
-    assert.equal(alerts.anomalies[0].type, "LARGE_SWAP");
+    assert.equal(alerts.count, 2);
+    assert.ok(alerts.anomalies.some((a) => a.type === "LARGE_SWAP"));
   } finally {
     await r.close();
     store.close();
