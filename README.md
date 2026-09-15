@@ -89,7 +89,7 @@ one-sentence human-readable description, so both agents and humans can verify it
 
 Wallet Radar ships as an MCP server (`src/mcp.ts`), so any agent (Claude Code,
 Cursor, solana-agent-kit) can plug in one-shot risk checks with a single line of
-config. Five tools:
+config. Six tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -97,7 +97,50 @@ config. Five tools:
 | `radar_trust` | Gate before you copy / pay: risk + liquidity → `safe`/`hold`/`unknown`, with verdict reasons, per-rule `reasons`, `summary`, and `freshness` (needs `HELIUS_API_KEY`) |
 | `radar_batch` | Gate a whole copy-book at once: runs `radar_trust` over up to 20 wallets and returns a deterministic shortlist — `safe` ranked by risk then liquidity, plus `hold` and `unknown` buckets (needs `HELIUS_API_KEY`) |
 | `radar_analyze` | Run the rules over a transactions fixture you already have (no network) |
+| `radar_simulate` | Pre-trade what-if: "if I send X USDC to wallet Y, what happens?" Models liquidity impact, LARGE_SWAP trigger, risk delta → actionable decision (needs `HELIUS_API_KEY`) |
 | `radar_selftest` | Offline smoke test, no keys |
+
+### Decision Engine
+
+Wallet Radar doesn't just score risk — it tells you **what to do**. The Decision Engine transforms the trust gate output into actionable agent-facing verdicts:
+
+| Action Verdict | Meaning | When |
+| --- | --- | --- |
+| `allow` | Payment safe to execute | Low risk, sufficient liquidity |
+| `throttle` | Reduce payment size | Elevated risk or thin liquidity |
+| `block` | Do not pay | High-severity anomaly detected |
+| `manual_review` | Escalate to human | Unknown data or ambiguous signal |
+
+Each decision includes:
+- **confidence** (0–1) — how certain the system is
+- **riskFactors** — normalized per-signal contributions (sum ≈ 1)
+- **suggestedLimitUsd** — max safe payment size right now
+- **cooldownMs** — how long to wait before re-checking
+- **recommendation** — one-sentence action for the agent
+
+### Simulation Mode (pre-trade what-if)
+
+`POST /simulate` (or `radar_simulate` via MCP): the agent asks **before signing**:
+
+```json
+{
+  "wallet": "7xKX...",
+  "amountUsd": 250,
+  "balances": { "sol": 0, "usdc": 600, "usdt": 0 }
+}
+```
+
+Returns:
+- Would the payment **exceed liquidity**?
+- Would it **trigger a LARGE_SWAP** anomaly for the target?
+- What is the **projected risk score delta**?
+- **Actionable decision** + specific recommendation
+
+This is the "pre-trade risk layer" — the agent asks before funds are in motion.
+
+### Audit Trail (explainability)
+
+Pass `includeAudit: true` (or `?audit=true` on HTTP) to get a machine-readable proof of the verdict: every step from raw signal to final decision, with per-signal weights and thresholds. Any auditor (human or agent) can replay the logic.
 
 ```bash
 npm run build
