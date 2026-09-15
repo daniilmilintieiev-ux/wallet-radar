@@ -11,6 +11,7 @@ import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
+import { simulatePayment } from "./simulate.js";
 import { Baseline, EnhancedTx } from "./types.js";
 import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
@@ -242,6 +243,63 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       } catch (err) {
         return {
           content: [{ type: "text", text: `Batch trust check failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "radar_simulate",
+    {
+      description:
+        "Pre-trade what-if simulation: 'if I send X USDC/SOL to wallet Y, what happens?' Runs the full trust check against the target wallet, then models the proposed payment's impact: does it exceed liquidity, trigger a LARGE_SWAP anomaly, raise the risk score? Returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing, not after funds are in motion. Requires HELIUS_API_KEY.",
+      inputSchema: {
+        wallet: z.string().describe("Target Solana wallet address (base58)"),
+        amountUsd: z.number().positive().describe("Proposed payment amount in USD"),
+        token: z.enum(["usdc", "sol"]).optional().describe("Payment token (default: usdc)"),
+        balances: z
+          .object({
+            sol: z.number().min(0).optional(),
+            usdc: z.number().min(0).optional(),
+            usdt: z.number().min(0).optional(),
+          })
+          .describe("Known balances of the target wallet: { sol, usdc, usdt }"),
+        maxRisk: z.number().int().min(0).max(100).optional().describe("Max acceptable risk score (default 30)"),
+        minLiquidityUsd: z.number().min(0).optional().describe("Minimum acceptable liquidity in USD (default 50)"),
+      },
+    },
+    async ({ wallet, amountUsd, token, balances, maxRisk, minLiquidityUsd }) => {
+      const apiKey = process.env.HELIUS_API_KEY;
+      if (!apiKey) {
+        return {
+          content: [{ type: "text", text: "HELIUS_API_KEY is not set. Configure it in the server env." }],
+          isError: true,
+        };
+      }
+      try {
+        const trustResult = await runTrustCheck(apiKey, wallet, { maxRisk, minLiquidityUsd });
+        const result = simulatePayment({
+          wallet,
+          amountUsd,
+          token: token ?? "usdc",
+          balances: {
+            sol: balances?.sol ?? 0,
+            usdc: balances?.usdc ?? 0,
+            usdt: balances?.usdt ?? 0,
+          },
+          solPrice: trustResult.solPrice,
+          riskScore: trustResult.riskScore,
+          anomalies: trustResult.anomalies,
+          medianSwapAmountUsd: trustResult.riskScore !== null ? 100 : null,
+          legacyVerdict: trustResult.verdict,
+          maxRisk,
+          minLiquidityUsd,
+        });
+        return json(result);
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Simulation failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         };
       }
