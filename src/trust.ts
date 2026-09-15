@@ -4,7 +4,8 @@ import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
 import { fetchWalletHistory } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
-import { anomalyReasons, anomalySummary, buildFreshness, type AnomalyReason } from "./explain.js";
+import { anomalyReasons, anomalySummary, buildFreshness, buildAuditTrail, type AnomalyReason, type AuditTrail } from "./explain.js";
+import { computeDecision, type DecisionResult } from "./decision.js";
 
 /**
  * `radar trust <wallet>` — pre-flight check for agent payments (x402 and
@@ -108,6 +109,10 @@ export interface TrustResult {
   summary?: string;
   /** Recency of the behavioral data behind the verdict. */
   freshness?: Freshness;
+  /** Actionable decision for agents: allow/throttle/block/manual_review. */
+  action?: DecisionResult;
+  /** Full audit trail (opt-in via ?audit=true). */
+  audit?: AuditTrail;
   txCount: number;
   windowDays: number;
   generatedAt: number;
@@ -158,6 +163,8 @@ export interface TrustCheckOptions extends TrustOptions {
   noPrices?: boolean;
   /** RPC endpoint override (default: Helius RPC derived from HELIUS_API_KEY). */
   rpcUrl?: string;
+  /** Include the full audit trail in the response. */
+  includeAudit?: boolean;
 }
 
 /**
@@ -223,6 +230,28 @@ export async function runTrustCheck(
   };
   const { verdict, reasons, liquidityUsd } = computeTrustVerdict(inputs, opts);
 
+  // --- Decision Engine: actionable verdict for agents ---
+  const decision = computeDecision({
+    riskScore,
+    anomalies,
+    liquidityUsd,
+    legacyVerdict: verdict,
+    maxRisk: opts.maxRisk,
+    minLiquidityUsd: opts.minLiquidityUsd,
+  });
+
+  // --- Audit trail (opt-in) ---
+  let audit: AuditTrail | undefined;
+  if (opts.includeAudit) {
+    audit = buildAuditTrail(
+      anomalies,
+      riskScore ?? 0,
+      verdict,
+      decision.confidence,
+      generatedAt,
+    );
+  }
+
   return {
     wallet,
     verdict,
@@ -237,6 +266,8 @@ export async function runTrustCheck(
     solPrice,
     liquidityUsd,
     reasons,
+    action: decision,
+    audit,
     txCount,
     windowDays,
     generatedAt,

@@ -10,8 +10,9 @@ import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
-import { runTrustCheck, runTrustChecks, buildShortlist, formatTrustLine, type TrustResult, type TrustVerdict } from "./trust.js";
+import { runTrustCheck, runTrustChecks, buildShortlist, formatTrustLine, type TrustResult, type TrustVerdict, type TrustBalances } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
+import { simulatePayment, type SimulateInput } from "./simulate.js";
 import { Store } from "./store.js";
 import { watchOnce, watchLoop } from "./watch.js";
 import { makeSink, type AlertSink } from "./alerts.js";
@@ -36,6 +37,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls. Returns riskScore, anomalies, per-rule reasons, summary, and digest." },
   { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
   { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once." },
+  { method: "POST", path: "/simulate", tool: "radar_simulate", description: "Pre-trade what-if simulation: 'if I send X USDC/SOL to wallet Y, what happens?' Models liquidity impact, LARGE_SWAP trigger, risk score delta, and returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing." },
   { method: "GET", path: "/watch", tool: "radar_watch", description: "List the monitoring watchlist: each watched wallet with its seed status and unalerted-anomaly count. Requires the watch store (start the server with RADAR_WATCH=1)." },
   { method: "POST", path: "/watch", tool: "radar_watch", description: "Add a wallet to the monitoring watchlist so it is continuously re-checked for new anomalies (webhook/Telegram on detection). Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/unwatch", tool: "radar_unwatch", description: "Remove a wallet from the monitoring watchlist. Requires the watch store (RADAR_WATCH=1)." },
@@ -199,6 +201,47 @@ async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
   return buildShortlist(results);
 }
 
+async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
+  const wallet = body.wallet;
+  if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+  const amountUsd = body.amountUsd;
+  if (typeof amountUsd !== "number" || amountUsd <= 0) throw new HttpError(400, "body.amountUsd must be a positive number.");
+  const balances = body.balances as { sol?: number; usdc?: number; usdt?: number } | undefined;
+  if (!balances) throw new HttpError(400, "body.balances is required: { sol, usdc, usdt }.");
+  const token = typeof body.token === "string" ? body.token : "usdc";
+  if (token !== "usdc" && token !== "sol") throw new HttpError(400, "body.token must be 'usdc' or 'sol'.");
+
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+
+  // Fetch current risk data for the wallet
+  const trustResult = await runTrustCheck(apiKey, wallet, {
+    maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
+    minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
+    includeAudit: typeof body.audit === "boolean" ? body.audit : false,
+  });
+
+  const simInput: SimulateInput = {
+    wallet,
+    amountUsd,
+    token,
+    balances: {
+      sol: balances.sol ?? 0,
+      usdc: balances.usdc ?? 0,
+      usdt: balances.usdt ?? 0,
+    },
+    solPrice: trustResult.solPrice,
+    riskScore: trustResult.riskScore,
+    anomalies: trustResult.anomalies,
+    medianSwapAmountUsd: trustResult.riskScore !== null ? 100 : null,
+    legacyVerdict: trustResult.verdict,
+    maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
+    minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
+  };
+
+  return simulatePayment(simInput);
+}
+
 function toolSelftest(): unknown {
   const wallet = "DemoWallet11111111111111111111111111111111";
   const txs: EnhancedTx[] = [
@@ -348,6 +391,8 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<un
   "/radar_trust": toolTrust,
   "/batch": toolBatch,
   "/radar_batch": toolBatch,
+  "/simulate": toolSimulate,
+  "/radar_simulate": toolSimulate,
   "/selftest": toolSelftest,
   "/radar_selftest": toolSelftest,
 };
