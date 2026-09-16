@@ -13,6 +13,7 @@ export class Store {
     this.db = new DatabaseSync(dbPath);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS wallets (
         address TEXT PRIMARY KEY,
         added_at INTEGER NOT NULL,
@@ -61,6 +62,17 @@ export class Store {
         fetched_at INTEGER NOT NULL,
         ttl_sec INTEGER NOT NULL DEFAULT 14400
       );
+      CREATE TABLE IF NOT EXISTS cost_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        unit_price_usd REAL NOT NULL,
+        total_usd REAL NOT NULL,
+        detail TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events(ts);
+      CREATE INDEX IF NOT EXISTS idx_settled_payments_settled_at ON settled_payments(settled_at);
     `);
     // Migration: add top10_pct to mint_cache for databases created before it existed.
     const mintCols = this.db.prepare("PRAGMA table_info(mint_cache)").all() as Array<{ name: string }>;
@@ -303,6 +315,78 @@ export class Store {
   cleanExpiredMintCache(nowSec: number = Math.floor(Date.now() / 1000)): number {
     const res = this.db.prepare("DELETE FROM mint_cache WHERE ? > fetched_at + ttl_sec").run(nowSec);
     return Number(res.changes);
+  }
+
+  /**
+   * Record a unit-economics cost event (tracked API spend). `ts` is unix seconds.
+   */
+  recordCostEvent(evt: {
+    ts?: number;
+    category: "helius" | "llm" | "compute";
+    quantity: number;
+    unitPriceUsd: number;
+    totalUsd?: number;
+    detail?: string;
+  }): void {
+    const ts = evt.ts ?? Math.floor(Date.now() / 1000);
+    const totalUsd = evt.totalUsd ?? Math.round(evt.quantity * evt.unitPriceUsd * 1e6) / 1e6;
+    this.db
+      .prepare(
+        "INSERT INTO cost_events (ts, category, quantity, unit_price_usd, total_usd, detail) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(ts, evt.category, evt.quantity, evt.unitPriceUsd, totalUsd, evt.detail ?? null);
+  }
+
+  getCostSummary(): { totalUsd: number; byCategory: Record<string, number>; events: number } {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS c, COALESCE(SUM(total_usd), 0) AS total FROM cost_events")
+      .get() as { c: number; total: number };
+    const byCat = this.db
+      .prepare("SELECT category, COALESCE(SUM(total_usd), 0) AS total FROM cost_events GROUP BY category")
+      .all() as Array<{ category: string; total: number }>;
+    const byCategory: Record<string, number> = {};
+    for (const r of byCat) byCategory[r.category] = Math.round(r.total * 1e6) / 1e6;
+    return { totalUsd: Math.round(row.total * 1e6) / 1e6, byCategory, events: row.c };
+  }
+
+  getRevenueSummary(): {
+    totalUsdc: number;
+    payments: number;
+    byEndpoint: Record<string, { count: number; amountUsdc: number }>;
+  } {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS c, COALESCE(SUM(amount), 0) AS total FROM settled_payments")
+      .get() as { c: number; total: number };
+    const byEp = this.db
+      .prepare(
+        "SELECT endpoint, COUNT(*) AS c, COALESCE(SUM(amount), 0) AS total FROM settled_payments GROUP BY endpoint",
+      )
+      .all() as Array<{ endpoint: string; c: number; total: number }>;
+    const byEndpoint: Record<string, { count: number; amountUsdc: number }> = {};
+    for (const r of byEp) byEndpoint[r.endpoint] = { count: r.c, amountUsdc: Math.round(r.total * 1e6) / 1e6 };
+    return { totalUsdc: Math.round(row.total * 1e6) / 1e6, payments: row.c, byEndpoint };
+  }
+
+  getRevenuePerDay(days: number): Array<{ day: string; revenueUsdc: number; payments: number }> {
+    const since = Math.floor(Date.now() / 1000) - days * 86400;
+    const rows = this.db
+      .prepare(
+        "SELECT date(settled_at, 'unixepoch') AS day, COUNT(*) AS c, COALESCE(SUM(amount), 0) AS total " +
+          "FROM settled_payments WHERE settled_at >= ? GROUP BY day ORDER BY day ASC",
+      )
+      .all(since) as Array<{ day: string; c: number; total: number }>;
+    return rows.map((r) => ({ day: r.day, revenueUsdc: Math.round(r.total * 1e6) / 1e6, payments: r.c }));
+  }
+
+  getCostPerDay(days: number): Array<{ day: string; costUsd: number; events: number }> {
+    const since = Math.floor(Date.now() / 1000) - days * 86400;
+    const rows = this.db
+      .prepare(
+        "SELECT date(ts, 'unixepoch') AS day, COUNT(*) AS c, COALESCE(SUM(total_usd), 0) AS total " +
+          "FROM cost_events WHERE ts >= ? GROUP BY day ORDER BY day ASC",
+      )
+      .all(since) as Array<{ day: string; c: number; total: number }>;
+    return rows.map((r) => ({ day: r.day, costUsd: Math.round(r.total * 1e6) / 1e6, events: r.c }));
   }
 }
 

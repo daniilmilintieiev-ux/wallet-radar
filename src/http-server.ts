@@ -23,6 +23,7 @@ import type { EnhancedTx } from "./types.js";
 import { commitScan, type ZKOracleClient } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
+import { computeEconomics, recordHeliusCost } from "./economics.js";
 
 const SERVICE = "wallet-radar";
 
@@ -48,6 +49,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/benchmark", tool: "radar_benchmark", description: "Reproducible quality proof: runs a versioned eval set of labeled test cases through the full detection pipeline and reports precision, recall, accuracy, and per-case results. Deterministic — same input, same numbers, every time. No network calls." },
   { method: "GET", path: "/dashboard", tool: "radar_dashboard", description: "Minimal web dashboard reading the on-chain ZK scan ledger and rendering risk history + latest verdict." },
   { method: "GET", path: "/api/ledger", tool: "radar_ledger", description: "JSON API reading historical on-chain ZK scan attestations for a given wallet." },
+  { method: "GET", path: "/economics", tool: "radar_economics", description: "Live unit economics (the agent's P&L): on-chain revenue (USDC settled via x402) vs. tracked operating cost (Helius/LLM), net, margin, self-sustaining status, per-day trend, and per-paid-scan unit economics." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
   { method: "GET", path: "/.well-known/agent.json", tool: "a2a_card", description: "A2A agent card (a2a-protocol.org) for the Wallet Radar Trust Gate agent — describes the screen-wallet skill and the /a2a RPC endpoint." },
   { method: "POST", path: "/a2a", tool: "a2a", description: "A2A JSON-RPC endpoint. Send message/send with a wallet address (or POST {wallet}) to run the pre-flight trust gate: returns a safe/hold/unknown verdict, risk score, liquidity, and anomaly reasons." },
@@ -345,7 +347,11 @@ function extractWallet(body: Record<string, unknown>): string | null {
   return walk(msg) ?? walk(body);
 }
 
-async function handleA2A(res: http.ServerResponse, body: Record<string, unknown>): Promise<void> {
+async function handleA2A(
+  res: http.ServerResponse,
+  body: Record<string, unknown>,
+  recordCost?: (detail?: string) => void,
+): Promise<void> {
   const isRpc = body.jsonrpc === "2.0";
   const id = body.id !== undefined ? body.id : "1";
   const wallet = extractWallet(body);
@@ -373,6 +379,7 @@ async function handleA2A(res: http.ServerResponse, body: Record<string, unknown>
     minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
     windowDays: typeof body.windowDays === "number" ? body.windowDays : undefined,
   });
+  recordCost?.("/a2a");
   if (isRpc) {
     sendJson(res, 200, {
       jsonrpc: "2.0",
@@ -404,6 +411,18 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<un
   "/benchmark": toolBenchmark,
   "/radar_benchmark": toolBenchmark,
 };
+
+/** Endpoints that hit Helius (fetch real wallet history) — each incurs a tracked API cost. */
+const LIVE_HELIUS_PATHS = new Set([
+  "/scan",
+  "/radar_scan",
+  "/trust",
+  "/radar_trust",
+  "/simulate",
+  "/radar_simulate",
+  "/batch",
+  "/radar_batch",
+]);
 
 export interface RequestContext {
   store?: Store;
@@ -456,6 +475,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     if (method === "GET") {
       if (p === "/health") {
         sendJson(res, 200, healthPayload());
+        return;
+      }
+      if (p === "/economics") {
+        if (!ctx.store) throw new HttpError(503, "economics store not available (start the server with a shared RADAR_DB).");
+        sendJson(res, 200, computeEconomics(ctx.store));
         return;
       }
       if (p === "/" || p === "") {
@@ -541,14 +565,17 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
       // A2A JSON-RPC trust-gate endpoint.
       if (p === "/a2a") {
-        await handleA2A(res, body);
+        const a2aStore = ctx.store;
+        await handleA2A(res, body, a2aStore ? (d?: string) => recordHeliusCost(a2aStore, d) : undefined);
         return;
       }
 
       // Path dispatch (primary).
       const byPath = TOOL_BY_PATH[p];
       if (byPath) {
-        sendJson(res, 200, await byPath(body));
+        const out = await byPath(body);
+        if (ctx.store && LIVE_HELIUS_PATHS.has(p)) recordHeliusCost(ctx.store, p);
+        sendJson(res, 200, out);
         return;
       }
 
@@ -720,10 +747,14 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
   // and runs the watch loop, firing WEBHOOK_URL / Telegram alerts on new anomalies.
   const watchEnabled = process.env.RADAR_WATCH === "1" || args.includes("--watch");
   const options: ServerOptions = {};
+  // Always open the shared store so /economics (and the watch endpoints) can
+  // read on-chain revenue (settled_payments) + tracked cost (cost_events).
+  // This store shares the RADAR_DB file with the x402 server. The continuous
+  // watch LOOP still only starts when RADAR_WATCH=1.
+  const dbPath = process.env.RADAR_DB ?? path.join(homedir(), ".wallet-radar", "radar.db");
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  options.store = new Store(dbPath);
   if (watchEnabled) {
-    const dbPath = process.env.RADAR_DB ?? path.join(homedir(), ".wallet-radar", "radar.db");
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    options.store = new Store(dbPath);
     options.sink = makeSink();
     options.watch = true;
     const pollMsRaw = process.env.RADAR_POLL_MS;
@@ -733,6 +764,8 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
     }
     const sinkName = process.env.WEBHOOK_URL ? "webhook" : process.env.TG_BOT_TOKEN ? "telegram" : "console";
     console.log(`${SERVICE} monitoring enabled — store ${dbPath}, alert sink: ${sinkName}`);
+  } else {
+    console.log(`${SERVICE} economics store ready — ${dbPath} (set RADAR_WATCH=1 to also run the live watch loop).`);
   }
 
   const server = startServer(port, host, options);

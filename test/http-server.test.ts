@@ -553,3 +553,45 @@ test("http-server: in-process watch loop runs and stops on server close", async 
   store.close();
   cleanup(dir);
 });
+
+test("http-server: GET /economics returns the P&L report (200)", async () => {
+  const { store, dir } = tmpStore();
+  const now = Math.floor(Date.now() / 1000);
+  store.recordSettledPayment({ signature: "e1", payer: "P", recipient: "R", amount: 0.005, endpoint: "/scan" }, now);
+  store.recordCostEvent({ ts: now, category: "helius", quantity: 1, unitPriceUsd: 0.0005, totalUsd: 0.0005 });
+  const server = createServer({ store, rateLimitPerMin: 0 });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    const res = await fetch(`${base}/economics`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Record<string, any>;
+    assert.equal(body.service, "wallet-radar");
+    assert.equal(body.revenue.totalUsdc, 0.005);
+    assert.equal(body.cost.totalUsd, 0.0005);
+    assert.equal(body.net.selfSustaining, true);
+    assert.ok(Array.isArray(body.perDay));
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("http-server: GET /economics is 503 with no store", async () => {
+  const server = createServer({ rateLimitPerMin: 0 });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    const res = await fetch(`${base}/economics`);
+    assert.equal(res.status, 503);
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});

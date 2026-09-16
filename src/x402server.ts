@@ -16,6 +16,7 @@ import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js"
 import { computeVerdict } from "./htmlreport.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
+import { recordHeliusCost } from "./economics.js";
 
 /** Pricing in USDC per endpoint matching AgenticTrade manifest. */
 export const X402_PRICING: Record<string, number> = {
@@ -516,6 +517,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             return;
           }
           const rawScanRes = (await scanHandler(body.wallet)) as Record<string, any>;
+          recordHeliusCost(store, "/scan");
           const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
 
           if (scanRes && typeof scanRes === "object") {
