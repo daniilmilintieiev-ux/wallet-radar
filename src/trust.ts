@@ -6,6 +6,15 @@ import { fetchWalletHistory } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
 import { anomalyReasons, anomalySummary, buildFreshness, buildAuditTrail, type AnomalyReason, type AuditTrail } from "./explain.js";
 import { computeDecision, type DecisionResult } from "./decision.js";
+import {
+  aggregateConsensus,
+  behaviorAgent,
+  solvencyAgent,
+  identityAgent,
+  llmAgent,
+  type AgentVote,
+  type ConsensusResult,
+} from "./consensus.js";
 
 /**
  * `radar trust <wallet>` — pre-flight check for agent payments (x402 and
@@ -138,6 +147,8 @@ export interface TrustResult {
   freshness?: Freshness;
   /** Actionable decision for agents: allow/throttle/block/manual_review. */
   action?: DecisionResult;
+  /** Multi-agent consensus (Pillar 2): per-agent votes, agreement, dissent. */
+  consensus?: ConsensusResult;
   /** Full audit trail (opt-in via ?audit=true). */
   audit?: AuditTrail;
   txCount: number;
@@ -207,6 +218,15 @@ export interface TrustCheckOptions extends TrustOptions {
   rpcUrl?: string;
   /** Include the full audit trail in the response. */
   includeAudit?: boolean;
+  /**
+   * Optional advisory LLM verdict for the consensus panel (Pillar 2). When set,
+   * an LLM agent joins the panel as a conservative fourth voter — it can cast a
+   * hold-veto but can never override a deterministic hold. Omit to run the
+   * three deterministic agents only.
+   */
+  llmVerdict?: "safe" | "hold" | "unknown";
+  /** Free-text note attached to the LLM vote (for transparency). */
+  llmVerdictNote?: string;
 }
 
 /** Minimum prior-window samples before "change" signals are trusted. */
@@ -318,12 +338,39 @@ export async function runTrustCheck(
   };
   const { verdict, reasons, liquidityUsd } = computeTrustVerdict(inputs, opts);
 
+  // --- Multi-agent consensus (Pillar 2) ---
+  // The same evidence is re-expressed as a panel of specialized voters. With
+  // the default unanimous-safe rule and no LLM voter this reproduces
+  // computeTrustVerdict exactly; the LLM voter (when provided) can only make
+  // the consensus more conservative.
+  const maxRisk = opts.maxRisk ?? TRUST_DEFAULTS.maxRisk;
+  const minLiquidityUsd = opts.minLiquidityUsd ?? TRUST_DEFAULTS.minLiquidityUsd;
+  const votes: AgentVote[] = [
+    behaviorAgent(riskScore, maxRisk),
+    solvencyAgent(balances, liquidityUsd, minLiquidityUsd),
+    identityAgent(accountAuthority),
+  ];
+  const llm = llmAgent(opts.llmVerdict, opts.llmVerdictNote);
+  if (llm) votes.push(llm);
+  const consensus = aggregateConsensus(votes);
+
+  // The consensus drives the verdict. It equals the legacy verdict unless the
+  // LLM voter cast a hold-veto, in which case the LLM reason is surfaced.
+  const finalVerdict = consensus.verdict;
+  const finalReasons = [...reasons];
+  if (finalVerdict !== verdict) {
+    const llmHold = consensus.votes.find((v) => v.agent === "llm" && v.verdict === "hold");
+    for (const r of llmHold?.reasons ?? []) {
+      if (!finalReasons.includes(r)) finalReasons.push(r);
+    }
+  }
+
   // --- Decision Engine: actionable verdict for agents ---
   const decision = computeDecision({
     riskScore,
     anomalies,
     liquidityUsd,
-    legacyVerdict: verdict,
+    legacyVerdict: finalVerdict,
     maxRisk: opts.maxRisk,
     minLiquidityUsd: opts.minLiquidityUsd,
   });
@@ -334,7 +381,7 @@ export async function runTrustCheck(
     audit = buildAuditTrail(
       anomalies,
       riskScore ?? 0,
-      verdict,
+      finalVerdict,
       decision.confidence,
       generatedAt,
     );
@@ -342,7 +389,7 @@ export async function runTrustCheck(
 
   return {
     wallet,
-    verdict,
+    verdict: finalVerdict,
     riskScore,
     anomalyCount: anomalies.length,
     anomalies,
@@ -354,8 +401,9 @@ export async function runTrustCheck(
     solPrice,
     accountAuthority,
     liquidityUsd,
-    reasons,
+    reasons: finalReasons,
     action: decision,
+    consensus,
     audit,
     txCount,
     windowDays,

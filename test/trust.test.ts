@@ -10,6 +10,7 @@ import {
   TrustResult,
 } from "../src/trust.js";
 import type { EnhancedTx } from "../src/types.js";
+import { aggregateConsensus, behaviorAgent, solvencyAgent, identityAgent } from "../src/consensus.js";
 
 const DAY = 86_400;
 function txAt(ts: number): EnhancedTx {
@@ -238,3 +239,48 @@ test("selectScoring: no prior history at all -> everything is the window", () =>
   assert.equal(evalTxs.length, 4);
   assert.ok(baselineTxs === evalTxs);
 });
+
+// --- Pillar 2: the multi-agent panel must reproduce the legacy gate ---
+// The consensus panel (behavior + solvency + identity, unanimous-safe rule) is
+// a strict superset of computeTrustVerdict: with no LLM voter it must agree
+// with the legacy verdict on every gate scenario, so introducing the panel is
+// behavior-preserving.
+function panelVerdict(inputs: TrustInputs, opts: { maxRisk?: number; minLiquidityUsd?: number } = {}): string {
+  const maxRisk = opts.maxRisk ?? TRUST_DEFAULTS.maxRisk;
+  const minLiquidityUsd = opts.minLiquidityUsd ?? TRUST_DEFAULTS.minLiquidityUsd;
+  const liquidityUsd = liquidityOf(inputs);
+  const votes = [
+    behaviorAgent(inputs.riskScore, maxRisk),
+    solvencyAgent(inputs.balances, liquidityUsd, minLiquidityUsd),
+    identityAgent(inputs.accountAuthority),
+  ];
+  return aggregateConsensus(votes).verdict;
+}
+
+test("consensus panel reproduces the legacy verdict on every gate scenario", () => {
+  const scenarios: Array<[string, TrustInputs, { maxRisk?: number; minLiquidityUsd?: number }]> = [
+    ["base safe", BASE, {}],
+    ["risk==max and liquidity==min", { ...BASE, riskScore: TRUST_DEFAULTS.maxRisk }, { minLiquidityUsd: 80 }],
+    ["risk over max", { ...BASE, riskScore: 75 }, {}],
+    ["liquidity under min", { ...BASE, balances: { sol: 0, usdc: 10, usdt: 0 } }, {}],
+    ["both thresholds missed", { ...BASE, riskScore: 90, balances: { sol: 0, usdc: 1, usdt: 0 } }, {}],
+    [
+      "non-system owner (PDA)",
+      { ...BASE, accountAuthority: { owner: "SomeProgram11111111111111111111111111111111", isSystemAccount: false } },
+      {},
+    ],
+    ["system owner", { ...BASE, accountAuthority: { owner: "11111111111111111111111111111111", isSystemAccount: true } }, {}],
+    ["unknown authority (RPC unavailable)", { ...BASE, accountAuthority: { owner: null, isSystemAccount: null } }, {}],
+    ["no history to score", { ...BASE, riskScore: null }, {}],
+    ["balance data unavailable", { ...BASE, balances: null }, {}],
+    ["both missing", { riskScore: null, balances: null, solPriced: false, solPrice: null }, {}],
+    ["sol unpriced, stablecoins insufficient", { ...BASE, solPriced: false, solPrice: null }, {}],
+    ["sol unpriced, stablecoins suffice", { ...BASE, balances: { sol: 5, usdc: 40, usdt: 20 }, solPriced: false, solPrice: null }, {}],
+    ["custom thresholds", BASE, { maxRisk: 5, minLiquidityUsd: 200 }],
+    ["zero-activity wallet with capacity", { ...BASE, riskScore: 0 }, {}],
+  ];
+  for (const [name, inputs, opts] of scenarios) {
+    assert.equal(panelVerdict(inputs, opts), computeTrustVerdict(inputs, opts).verdict, name);
+  }
+});
+
