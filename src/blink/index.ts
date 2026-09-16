@@ -91,7 +91,7 @@ export function buildRadarScanActionGet(
 ): ActionGetResponse {
   const icon =
     config.iconUrl ||
-    "https://raw.githubusercontent.com/sendaifun/wallet-radar/master/docs/assets/radar-icon.png";
+    "https://raw.githubusercontent.com/daniilmilintieiev-ux/wallet-radar/main/docs/assets/radar-icon.png";
   const price = typeof config.priceUsdc === "number" ? config.priceUsdc : 0.005;
   const endpointUrl = config.endpointUrl || "/api/actions/radar-scan";
 

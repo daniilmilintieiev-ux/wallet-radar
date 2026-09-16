@@ -340,7 +340,7 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
         <a href="/dashboard">Dashboard</a>
         <a href="/health">Health</a>
         <a href="/actions.json">Blink Rules</a>
-        <a href="https://github.com/sendaifun/wallet-radar" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/daniilmilintieiev-ux/wallet-radar" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </header>
 
