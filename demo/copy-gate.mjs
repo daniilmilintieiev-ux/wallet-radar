@@ -15,8 +15,8 @@
 //   node demo/copy-gate.mjs --x402 [target ...]
 //   RADAR_PAYER_KEYPAIR=<base58> node demo/copy-gate.mjs --pay [target ...]
 
-const BASE = process.env.RADAR_BASE_URL ?? "http://95.158.59.243:7690";
-const X402_BASE = process.env.RADAR_X402_URL ?? "http://95.158.59.243:4020";
+const BASE = process.env.RADAR_BASE_URL ?? "https://radar.cbellory.xyz";
+const X402_BASE = process.env.RADAR_X402_URL ?? "https://pay.cbellory.xyz";
 
 // Default copy-book: a historically high-risk whale + a quiet trader.
 const DEFAULT_TARGETS = [

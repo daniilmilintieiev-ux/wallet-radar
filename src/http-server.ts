@@ -276,7 +276,7 @@ function healthPayload(): Record<string, unknown> {
  * `/.well-known/agent.json` as its A2A endpoint; this is that card plus the
  * `message/send` JSON-RPC handler that runs the pre-flight trust gate.
  */
-const A2A_PUBLIC_URL = (process.env.RADAR_PUBLIC_URL ?? "http://95.158.59.243:7690").replace(/\/+$/, "");
+const A2A_PUBLIC_URL = (process.env.RADAR_PUBLIC_URL ?? "https://radar.cbellory.xyz").replace(/\/+$/, "");
 const A2A_AGENT_DID = process.env.RADAR_AGENT_DID ?? "did:t3n:11099118c31352cdb07c5c992f5da31426f2052f";
 
 function a2aCard(): Record<string, unknown> {
