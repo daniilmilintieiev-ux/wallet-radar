@@ -1,0 +1,16 @@
+[Unit]
+Description=Wallet Radar Canary Agent
+After=network-online.target radar-watch.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orangepi
+WorkingDirectory=/mnt/storage/projects/wallet-radar
+EnvironmentFile=-/mnt/storage/projects/wallet-radar/radar.env
+ExecStart=/usr/bin/node dist/scripts/canary-agent.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
