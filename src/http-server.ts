@@ -96,7 +96,7 @@ async function toolScan(body: Record<string, unknown>): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
   const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
   const txs = await fetchWalletTransactions(apiKey, wallet);
   const prices = await fetchSwapPrices(txs);
   const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
@@ -174,7 +174,7 @@ async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
   const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
   return runTrustCheck(apiKey, wallet, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
     minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
@@ -194,7 +194,7 @@ async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
     if (!isBase58Address(w)) throw new HttpError(400, "body.wallets must all be Solana base58 addresses: " + String(w));
   }
   const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
   const results = await runTrustChecks(apiKey, wallets, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
     minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
@@ -214,7 +214,7 @@ async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
   if (token !== "usdc" && token !== "sol") throw new HttpError(400, "body.token must be 'usdc' or 'sol'.");
 
   const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
 
   // Fetch current risk data for the wallet
   const trustResult = await runTrustCheck(apiKey, wallet, {
@@ -527,7 +527,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (p === "/poll") {
         const store = requireStore(ctx);
         const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
-        if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+        if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
         const report = await watchOnce(store, apiKey, {
           sink: ctx.sink,
           fetchTxs: ctx.fetchTxs,

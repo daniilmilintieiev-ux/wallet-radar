@@ -1,7 +1,7 @@
 import {
   Anomaly,
   Baseline,
-  DEFAULT_CONFIG,
+  loadConfig,
   EnhancedTx,
   MintRiskMap,
   RadarConfig,
@@ -129,7 +129,7 @@ export function detectAnomalies(
   wallet: string,
   txs: EnhancedTx[],
   baseline: Baseline | null,
-  config: RadarConfig = DEFAULT_CONFIG,
+  config: RadarConfig = loadConfig(),
   prices: UsdPriceMap | null = null,
   mintRisk: MintRiskMap | null = null,
 ): Anomaly[] {

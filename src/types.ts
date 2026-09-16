@@ -147,6 +147,26 @@ export const DEFAULT_CONFIG: RadarConfig = {
   maxPollMs: 3_600_000,
 };
 
+/**
+ * Apply per-deployment threshold scaling via RADAR_THRESHOLD_SCALE env var.
+ * A value of 0.5 makes thresholds 2x stricter (harder to trigger anomalies).
+ * A value of 2.0 makes thresholds 2x more permissive.
+ * Default: 1.0 (no scaling).
+ */
+export function loadConfig(): RadarConfig {
+  const scale = parseFloat(process.env.RADAR_THRESHOLD_SCALE ?? "1.0");
+  if (!Number.isFinite(scale) || scale <= 0) return { ...DEFAULT_CONFIG };
+  return {
+    ...DEFAULT_CONFIG,
+    dormantDays: Math.round(DEFAULT_CONFIG.dormantDays * scale),
+    burstWindowMin: Math.round(DEFAULT_CONFIG.burstWindowMin / scale),
+    burstThreshold: Math.max(2, Math.round(DEFAULT_CONFIG.burstThreshold / scale)),
+    largeSwapMultiplier: +(DEFAULT_CONFIG.largeSwapMultiplier / scale).toFixed(2),
+    concentrationWindowMin: Math.round(DEFAULT_CONFIG.concentrationWindowMin / scale),
+    concentrationCount: Math.max(2, Math.round(DEFAULT_CONFIG.concentrationCount / scale)),
+  };
+}
+
 export interface SettledPayment {
   signature: string;
   payer: string;

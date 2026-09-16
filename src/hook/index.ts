@@ -67,7 +67,7 @@ export interface TransferHookConfig {
   mint: PublicKey;
   /** Maximum allowed risk score (0..100). Default: 80 */
   maxRiskScore: number;
-  /** Allow transfers to wallets with no on-chain scan record. Default: true */
+  /** Allow transfers to wallets with no on-chain scan record. Default: false (secure by default; set true for permissive mode) */
   allowUnverified: boolean;
   /** Maximum attestation age in seconds (0 = disabled). Default: 0 */
   maxAttestationAgeSec: number;
@@ -137,7 +137,7 @@ export function buildInitializeExtraAccountMetaListInstruction(params: {
   const [configPda] = deriveRadarConfigPda(params.mint, programId);
 
   const maxRisk = Math.max(0, Math.min(100, params.maxRiskScore ?? 80));
-  const allowUnverified = params.allowUnverified ?? true;
+  const allowUnverified = params.allowUnverified ?? false;
   const maxAge = BigInt(Math.max(0, params.maxAttestationAgeSec ?? 0));
 
   // Instruction data: 8 bytes discriminator + 1 byte maxRisk + 1 byte allowUnverified + 8 bytes maxAge
@@ -260,7 +260,7 @@ export function evaluateTransferRisk(
   nowSec: number = Math.floor(Date.now() / 1000),
 ): TransferRiskEvaluation {
   const maxRisk = config?.maxRiskScore ?? 80;
-  const allowUnverified = config?.allowUnverified ?? true;
+  const allowUnverified = config?.allowUnverified ?? false;
   const maxAge = config?.maxAttestationAgeSec ?? 0;
 
   // 1. Missing or unverified record

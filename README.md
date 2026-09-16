@@ -12,6 +12,12 @@ hackathon (Colosseum, fall 2026) and is now available as a live HTTP / MCP /
 x402 service. See [Status](#status), [Support](#support), and
 [Security](SECURITY.md).
 
+> **Security note:** The on-chain Transfer Hook and ZK Oracle modules are
+> **experimental and unaudited**. They are not yet recommended for production
+> use with significant funds. The core scan/trust/watch pipeline is stable.
+> Thresholds are configurable per-deployment via `RADAR_THRESHOLD_SCALE` env var
+> (see [Configuration](#configuration)).
+
 ## Live Demo
 
 - **A2A trust gate:** [`http://95.158.59.243:7690`](http://95.158.59.243:7690) — `POST /a2a` (agent-to-agent), `GET /.well-known/agent.json` (A2A card)
@@ -38,6 +44,15 @@ npm test
 ```
 
 `npm run radar` is an alias for the CLI (`node dist/src/cli.js`).
+
+## Configuration
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `HELIUS_API_KEY` | — | Required for live scans. Without it, `/selftest` and `/analyze` (offline) still work. |
+| `RADAR_THRESHOLD_SCALE` | `1.0` | Multiplier on all detection thresholds. `<1.0` = stricter (harder to trigger), `>1.0` = more permissive. Example: `0.5` makes burst require 10 tx instead of 5. |
+| `RADAR_WATCH` | `0` | Set to `1` to enable the HTTP monitoring endpoints (`/watch`, `/alerts`, `/poll`). |
+| `RADAR_RATE_LIMIT_PER_MIN` | `60` | Per-IP request rate limit (exempt: `/health`, `/metrics`). |
 
 ## How it works
 

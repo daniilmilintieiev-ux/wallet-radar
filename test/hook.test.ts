@@ -246,12 +246,17 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     });
 
     test("handles unverified / missing scan records per allowUnverified policy", () => {
-      // 1. allowUnverified: true (default)
+      // 1. Default: allowUnverified is false (secure by default)
+      const defaultRes = evaluateTransferRisk(null);
+      assert.equal(defaultRes.allowed, false);
+      assert.equal(defaultRes.errorCode, RadarHookErrorCode.UnverifiedCounterparty);
+
+      // 2. allowUnverified: true (explicit permissive mode)
       const allowedRes = evaluateTransferRisk(null, { allowUnverified: true });
       assert.equal(allowedRes.allowed, true);
       assert.ok(allowedRes.reason?.includes("unverified policy"));
 
-      // 2. allowUnverified: false (strict security mode)
+      // 3. allowUnverified: false (strict security mode, explicit)
       const rejectedRes = evaluateTransferRisk(null, { allowUnverified: false });
       assert.equal(rejectedRes.allowed, false);
       assert.equal(rejectedRes.errorCode, RadarHookErrorCode.UnverifiedCounterparty);
