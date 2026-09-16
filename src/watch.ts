@@ -95,6 +95,13 @@ export interface WatchReport {
 }
 
 /**
+ * Wallets currently being handled by a concurrent watchOnce in this process
+ * (overlapping daemon + manual run). Guards against double-processing — and
+ * double-alerting — the same fresh txs.
+ */
+const inFlightWallets = new Set<string>();
+
+/**
  * One polling iteration over the whole watchlist.
  *
  * First-seed semantics: a wallet without a baseline gets its profile built
@@ -133,8 +140,10 @@ export async function watchOnce(
     const prev = store.getBaseline(wallet);
     const seeded = prev === null;
 
-    const backoff = store.getBackoff(wallet);
-    if (backoff && nowSec < backoff.backoffUntil) {
+    // Concurrency guard: if another watchOnce is already handling this wallet
+    // (overlapping daemon + manual run), skip it this tick. Signature dedupe +
+    // the next tick pick up anything new without double-processing/alerting.
+    if (inFlightWallets.has(wallet)) {
       report.wallets.push({
         wallet,
         freshTxCount: 0,
@@ -142,109 +151,126 @@ export async function watchOnce(
         anomalyCount: 0,
         riskScore: 0,
         skipped: true,
-        backoffUntil: backoff.backoffUntil,
       });
       continue;
     }
-
-    const pacing = store.getPacing(wallet);
-    if (pacing && pacing.quietStreak >= quietThreshold && nowSec < pacing.nextPollAt) {
-      report.wallets.push({
-        wallet,
-        freshTxCount: 0,
-        seeded,
-        anomalyCount: 0,
-        riskScore: 0,
-        skipped: true,
-        quiet: true,
-        nextPollAt: pacing.nextPollAt,
-      });
-      continue;
-    }
-
-    let txs: EnhancedTx[];
+    inFlightWallets.add(wallet);
     try {
-      txs = seeded
-        ? await fetchSeedHistory(wallet, seedPages)
-        : await fetchTxs(wallet);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`Watch fetch failed for ${wallet}: ${errMsg}`);
-
-      const status = typeof (err as any)?.status === "number" ? (err as any).status : undefined;
-      const isRateOrServerError = status === 429 || (status !== undefined && status >= 500 && status < 600);
-
-      let backoffUntil: number | undefined;
-      if (isRateOrServerError) {
-        const b = store.recordBackoff(wallet, nowSec);
-        backoffUntil = b.backoffUntil;
+      const backoff = store.getBackoff(wallet);
+      if (backoff && nowSec < backoff.backoffUntil) {
+        report.wallets.push({
+          wallet,
+          freshTxCount: 0,
+          seeded,
+          anomalyCount: 0,
+          riskScore: 0,
+          skipped: true,
+          backoffUntil: backoff.backoffUntil,
+        });
+        continue;
       }
 
+      const pacing = store.getPacing(wallet);
+      if (pacing && pacing.quietStreak >= quietThreshold && nowSec < pacing.nextPollAt) {
+        report.wallets.push({
+          wallet,
+          freshTxCount: 0,
+          seeded,
+          anomalyCount: 0,
+          riskScore: 0,
+          skipped: true,
+          quiet: true,
+          nextPollAt: pacing.nextPollAt,
+        });
+        continue;
+      }
+
+      let txs: EnhancedTx[];
+      try {
+        txs = seeded
+          ? await fetchSeedHistory(wallet, seedPages)
+          : await fetchTxs(wallet);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`Watch fetch failed for ${wallet}: ${errMsg}`);
+
+        const status = typeof (err as any)?.status === "number" ? (err as any).status : undefined;
+        const isRateOrServerError = status === 429 || (status !== undefined && status >= 500 && status < 600);
+
+        let backoffUntil: number | undefined;
+        if (isRateOrServerError) {
+          const b = store.recordBackoff(wallet, nowSec);
+          backoffUntil = b.backoffUntil;
+        }
+
+        report.wallets.push({
+          wallet,
+          freshTxCount: 0,
+          seeded,
+          anomalyCount: 0,
+          riskScore: 0,
+          error: errMsg,
+          backoffUntil,
+        });
+        continue;
+      }
+
+      // Successful fetch: reset backoff
+      store.clearBackoff(wallet);
+
+      const fresh = txs.filter((t) => t.signature && !store.allSeen(wallet, [t.signature]));
+      if (fresh.length === 0) {
+        const prevStreak = pacing?.quietStreak ?? 0;
+        const newStreak = prevStreak + 1;
+        const intervalSec = calculateAdaptiveInterval(basePollSec, maxPollSec, newStreak, quietThreshold);
+        store.recordPacing(wallet, newStreak, nowSec + intervalSec);
+        continue;
+      }
+
+      // fresh.length > 0: active wallet, reset quiet streak to base interval
+      store.recordPacing(wallet, 0, nowSec + basePollSec);
+
+      const prices = usePrices ? await fetchPrices(fresh) : null;
+      const baseline = updateBaseline(wallet, prev, fresh, nowSec, prices);
+      store.saveBaseline(baseline);
+
+      let anomalyCount = 0;
+      let riskScore = 0;
+      if (!seeded) {
+        const mintRisk = await fetchMintRisk(fresh);
+        const anomalies = detectAnomalies(wallet, fresh, prev, undefined, prices, mintRisk);
+        if (anomalies.length > 0) {
+          store.recordAnomalies(anomalies, nowSec);
+          riskScore = computeRiskScore(anomalies);
+          const { digest, source } = await bestEffortDigest(
+            wallet,
+            riskScore,
+            anomalies,
+            llmConfigFromEnv(),
+          );
+          if (sink) {
+            await sink.send(
+              formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined),
+              { wallet, risk: riskScore, anomalies },
+            );
+            store.markAllAlerted(wallet);
+          }
+        }
+        anomalyCount = anomalies.length;
+      }
+
+      store.markSeen(wallet, fresh.map((t) => ({ sig: t.signature, ts: t.timestamp })));
       report.wallets.push({
         wallet,
-        freshTxCount: 0,
+        freshTxCount: fresh.length,
         seeded,
-        anomalyCount: 0,
-        riskScore: 0,
-        error: errMsg,
-        backoffUntil,
+        anomalyCount,
+        riskScore,
+        pnl: baseline.pnl,
       });
-      continue;
+    } finally {
+      inFlightWallets.delete(wallet);
     }
-
-    // Successful fetch: reset backoff
-    store.clearBackoff(wallet);
-
-    const fresh = txs.filter((t) => t.signature && !store.allSeen(wallet, [t.signature]));
-    if (fresh.length === 0) {
-      const prevStreak = pacing?.quietStreak ?? 0;
-      const newStreak = prevStreak + 1;
-      const intervalSec = calculateAdaptiveInterval(basePollSec, maxPollSec, newStreak, quietThreshold);
-      store.recordPacing(wallet, newStreak, nowSec + intervalSec);
-      continue;
-    }
-
-    // fresh.length > 0: active wallet, reset quiet streak to base interval
-    store.recordPacing(wallet, 0, nowSec + basePollSec);
-
-    const prices = usePrices ? await fetchPrices(fresh) : null;
-    const baseline = updateBaseline(wallet, prev, fresh, nowSec, prices);
-    store.saveBaseline(baseline);
-
-    let anomalyCount = 0;
-    let riskScore = 0;
-    if (!seeded) {
-      const mintRisk = await fetchMintRisk(fresh);
-      const anomalies = detectAnomalies(wallet, fresh, prev, undefined, prices, mintRisk);
-      if (anomalies.length > 0) {
-        store.recordAnomalies(anomalies, nowSec);
-        riskScore = computeRiskScore(anomalies);
-        const { digest, source } = await bestEffortDigest(
-          wallet,
-          riskScore,
-          anomalies,
-          llmConfigFromEnv(),
-        );
-        if (sink) {
-          await sink.send(
-            formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined),
-            { wallet, risk: riskScore, anomalies },
-          );
-          store.markAllAlerted(wallet);
-        }
-      }
-      anomalyCount = anomalies.length;
-    }
-
-    store.markSeen(wallet, fresh.map((t) => ({ sig: t.signature, ts: t.timestamp })));
-    report.wallets.push({
-      wallet,
-      freshTxCount: fresh.length,
-      seeded,
-      anomalyCount,
-      riskScore,
-      pnl: baseline.pnl,
-    });
   }
 
   return report;
@@ -262,8 +288,17 @@ export async function watchLoop(
   const pollMs = opts.pollMs ?? DEFAULT_CONFIG.pollMs;
   for (;;) {
     if (opts.signal?.aborted) return;
-    const report = await watchOnce(store, apiKey, opts);
-    onIteration?.(report);
+    try {
+      const report = await watchOnce(store, apiKey, opts);
+      onIteration?.(report);
+    } catch (err) {
+      // A transient error (RPC hiccup, price/mint fetch, sink failure) must
+      // not kill the whole monitor: log and retry on the next tick instead of
+      // rejecting the loop and silently stopping all monitoring.
+      if (process.env.RADAR_DEBUG === "1") {
+        console.error(`watch iteration failed (will retry): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (opts.signal?.aborted) return;
     await sleep(pollMs);
   }

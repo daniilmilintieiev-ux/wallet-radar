@@ -143,6 +143,8 @@ export interface TrustResult {
   txCount: number;
   windowDays: number;
   generatedAt: number;
+  /** Median swap size (USD) over the scored baseline window, when known. */
+  medianSwapAmountUsd: number | null;
 }
 
 /** Solana JSON-RPC call (getBalance / getTokenAccountsByOwner). */
@@ -207,9 +209,33 @@ export interface TrustCheckOptions extends TrustOptions {
   includeAudit?: boolean;
 }
 
+/** Minimum prior-window samples before "change" signals are trusted. */
+const MIN_PRIOR_SAMPLES = 3;
+
 /**
- * Run the trust check: behavioral risk over the window (one-shot, replay
- * semantics) + payment capacity + deterministic verdict.
+ * Split fetched history into the baseline source and the scored set. With enough
+ * prior-window history the baseline is the wallet's established behavior and only
+ * the recent window is scored; otherwise the whole window is scored as a snapshot
+ * (no "before" to be new relative to, so change-signals stay muted).
+ */
+export function selectScoring(
+  txs: EnhancedTx[],
+  windowStart: number,
+  minPriorSamples: number = MIN_PRIOR_SAMPLES,
+): { baselineTxs: EnhancedTx[]; evalTxs: EnhancedTx[] } {
+  const priorTxs = txs.filter((t) => (t.timestamp ?? 0) < windowStart);
+  const recentTxs = txs.filter((t) => (t.timestamp ?? 0) >= windowStart);
+  if (priorTxs.length >= minPriorSamples) {
+    return { baselineTxs: priorTxs, evalTxs: recentTxs };
+  }
+  return { baselineTxs: txs, evalTxs: txs };
+}
+
+/**
+ * Run the trust check: behavioral risk over the requested window, scored
+ * against the wallet's equal prior window (so change-over-time signals like
+ * NEW_VENUE / NEW_PROGRAM / DORMANT_ACTIVE actually mean something), + payment
+ * capacity + deterministic verdict.
  */
 export async function runTrustCheck(
   apiKey: string,
@@ -218,25 +244,33 @@ export async function runTrustCheck(
 ): Promise<TrustResult> {
   const windowDays = opts.windowDays ?? TRUST_DEFAULTS.windowDays;
   const generatedAt = Math.floor(Date.now() / 1000);
-  const sinceSec = generatedAt - windowDays * 86_400;
+  const windowStart = generatedAt - windowDays * 86_400;
+  const priorStart = generatedAt - 2 * windowDays * 86_400;
 
-  // --- behavioral risk (one-shot over the window) ---
+  // --- behavioral risk (one-shot: requested window scored vs prior behavior) ---
   let riskScore: number | null = null;
   let anomalies: Anomaly[] = [];
   let txCount = 0;
   let lastActivity: number | null = null;
+  let medianSwapAmountUsd: number | null = null;
   try {
+    // Fetch two windows: the requested window (to score) plus the equal prior
+    // window (to establish "normal" behavior). This is what makes the
+    // change-over-time signals meaningful — a reactivated wallet using a venue
+    // it has never touched is exactly the scam pattern this gate exists to catch.
     const txs: EnhancedTx[] = await fetchWalletHistory(apiKey, wallet, {
-      gteTime: sinceSec,
-      limit: 100,
-      maxPages: 1,
+      gteTime: priorStart,
+      limit: 200,
+      maxPages: 2,
     });
-    txCount = txs.length;
     const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
     lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
     const prices = opts.noPrices ? null : await fetchSwapPrices(txs);
-    const baseline = updateBaseline(wallet, null, txs, generatedAt, prices);
-    anomalies = detectAnomalies(wallet, txs, baseline, undefined, prices);
+    const { baselineTxs, evalTxs } = selectScoring(txs, windowStart);
+    const baseline = updateBaseline(wallet, null, baselineTxs, generatedAt, prices);
+    txCount = evalTxs.length;
+    medianSwapAmountUsd = baseline.medianSwapAmountUsd ?? null;
+    anomalies = detectAnomalies(wallet, evalTxs, baseline, undefined, prices);
     riskScore = computeRiskScore(anomalies);
   } catch (err) {
     console.error(`history fetch failed, risk unknown: ${err instanceof Error ? err.message : String(err)}`);
@@ -314,7 +348,7 @@ export async function runTrustCheck(
     anomalies,
     anomalyReasons: anomalyReasons(anomalies),
     summary: anomalySummary(anomalies),
-    freshness: buildFreshness(lastActivity, generatedAt, sinceSec, generatedAt),
+    freshness: buildFreshness(lastActivity, generatedAt, windowStart, generatedAt),
     balances,
     solPriced: solPrice !== null,
     solPrice,
@@ -326,6 +360,7 @@ export async function runTrustCheck(
     txCount,
     windowDays,
     generatedAt,
+    medianSwapAmountUsd,
   };
 }
 
@@ -376,6 +411,7 @@ export async function runTrustChecks(
         txCount: 0,
         windowDays: opts.windowDays ?? TRUST_DEFAULTS.windowDays,
         generatedAt: genAt,
+        medianSwapAmountUsd: null,
       });
     }
   }

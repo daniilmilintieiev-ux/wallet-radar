@@ -138,7 +138,10 @@ export function computeDecision(inputs: DecisionInputs): DecisionResult {
       recommendation = "Wallet is safe but liquidity is thin. Limit payment to available balance.";
     } else {
       verdict = "allow";
-      confidence = Math.min(0.95, 0.75 + ((maxRisk - (riskScore ?? 0)) / maxRisk) * 0.2);
+      // Guard maxRisk:0 (explicitly allowed) — otherwise (maxRisk-risk)/maxRisk
+      // is 0/0 = NaN and the API would return confidence: null.
+      const riskMargin = maxRisk > 0 ? (maxRisk - (riskScore ?? 0)) / maxRisk : 1;
+      confidence = Math.min(0.95, 0.75 + riskMargin * 0.2);
       recommendation = "Approved. Payment within suggested limit is safe to execute.";
     }
   }

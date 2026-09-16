@@ -302,6 +302,9 @@ export function detectAnomalies(
   // CONCENTRATION: multiple swaps into the same token in a short window.
   const byToken = new Map<string, SwapEvent[]>();
   for (const s of swaps) {
+    // Skip unparseable swaps (empty output mint) — otherwise several of them
+    // bucket under "" and form a false CONCENTRATION group.
+    if (!s.tokenOut.mint) continue;
     const list = byToken.get(s.tokenOut.mint) ?? [];
     list.push(s);
     byToken.set(s.tokenOut.mint, list);

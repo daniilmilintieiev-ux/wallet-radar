@@ -185,7 +185,9 @@ export function computePnlLite(
   const remainingOpenLots: Record<string, OpenLot[]> = {};
   for (const [pair, queue] of buyQueues.entries()) {
     if (queue.length > 0) {
-      remainingOpenLots[pair] = queue.slice(-20).map((lot) => ({
+      // Report every open lot (not just the last 20) so the reported open
+      // position matches the actual unmatched buy queue used for cost basis.
+      remainingOpenLots[pair] = queue.map((lot) => ({
         amount: Math.round(lot.amount * 1e9) / 1e9,
         pricePerUnit: Math.round(lot.pricePerUnit * 1e6) / 1e6,
       }));

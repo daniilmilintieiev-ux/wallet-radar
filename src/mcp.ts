@@ -291,7 +291,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           solPrice: trustResult.solPrice,
           riskScore: trustResult.riskScore,
           anomalies: trustResult.anomalies,
-          medianSwapAmountUsd: trustResult.riskScore !== null ? 100 : null,
+          medianSwapAmountUsd: trustResult.medianSwapAmountUsd,
           legacyVerdict: trustResult.verdict,
           maxRisk,
           minLiquidityUsd,

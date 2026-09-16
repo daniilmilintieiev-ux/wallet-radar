@@ -481,6 +481,24 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           return;
         }
 
+        // 3.5. Validate endpoint params BEFORE settling, so a validly-paid
+        // request that is missing its parameters 400s without marking the
+        // signature settled (which would force the client to pay again for a
+        // replay that now reads "already settled").
+        if (pathname === "/scan") {
+          if (!body?.wallet || typeof body.wallet !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Missing or invalid wallet parameter" }));
+            return;
+          }
+        } else if (pathname === "/analyze") {
+          if (!body?.wallet || typeof body.wallet !== "string" || !body.txs) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+            return;
+          }
+        }
+
         // 4. Settle signature in store
         store.recordSettledPayment({
           signature: proof.signature,

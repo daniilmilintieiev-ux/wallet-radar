@@ -235,7 +235,7 @@ async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
     solPrice: trustResult.solPrice,
     riskScore: trustResult.riskScore,
     anomalies: trustResult.anomalies,
-    medianSwapAmountUsd: trustResult.riskScore !== null ? 100 : null,
+    medianSwapAmountUsd: trustResult.medianSwapAmountUsd,
     legacyVerdict: trustResult.verdict,
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
     minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,

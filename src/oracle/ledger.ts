@@ -331,11 +331,24 @@ export class LightZKOracleClient implements ZKOracleClient {
     }
 
     const payload = serializeScanRecord(record);
-    const activePayer = payer || Keypair.generate();
+    if (!payer) {
+      throw new Error(
+        "oracle.commit: no payer keypair provided (configure RADAR_ORACLE_PAYER) — a random throwaway payer has no funds to pay the tx fee",
+      );
+    }
+    const activePayer = payer;
 
     // Attestation memo transaction anchored to recent blockhash
     const { blockhash } = await rpc.getLatestBlockhash();
-    const memoData = Buffer.concat([Buffer.from("RADAR_ORACLE:"), payload]);
+    const memoPrefix = Buffer.from("RADAR_ORACLE:");
+    // Memo program caps data at 512 bytes; truncate the payload portion so the
+    // attestation memo never exceeds the limit (it is a best-effort anchor —
+    // the canonical record lives in the compressed account + local store).
+    const payloadForMemo =
+      memoPrefix.length + payload.length > 512
+        ? payload.subarray(0, 512 - memoPrefix.length)
+        : payload;
+    const memoData = Buffer.concat([memoPrefix, payloadForMemo]);
     const ix = new TransactionInstruction({
       keys: [{ pubkey: activePayer.publicKey, isSigner: true, isWritable: true }],
       programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),

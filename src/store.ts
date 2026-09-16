@@ -234,7 +234,9 @@ export class Store {
   ): void {
     this.db
       .prepare(
-        "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at) VALUES (?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(signature) DO UPDATE SET payer = excluded.payer, recipient = excluded.recipient, " +
+          "amount = excluded.amount, endpoint = excluded.endpoint, settled_at = excluded.settled_at",
       )
       .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt);
   }

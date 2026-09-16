@@ -4,10 +4,17 @@ import {
   buildShortlist,
   computeTrustVerdict,
   liquidityOf,
+  selectScoring,
   TRUST_DEFAULTS,
   TrustInputs,
   TrustResult,
 } from "../src/trust.js";
+import type { EnhancedTx } from "../src/types.js";
+
+const DAY = 86_400;
+function txAt(ts: number): EnhancedTx {
+  return { signature: `sig_${ts}`, timestamp: ts };
+}
 
 const BASE: TrustInputs = {
   riskScore: 10,
@@ -145,6 +152,7 @@ function mkResult(wallet: string, verdict: "safe" | "hold" | "unknown", riskScor
     txCount: 1,
     windowDays: 7,
     generatedAt: 0,
+    medianSwapAmountUsd: null,
   };
 }
 
@@ -194,4 +202,39 @@ test("buildShortlist: is deterministic across repeated calls", () => {
   const a = buildShortlist(results, 7);
   const b = buildShortlist(results, 7);
   assert.deepEqual(a, b);
+});
+
+test("selectScoring: enough prior history -> baseline=prior, eval=recent window only", () => {
+  const now = 1_000_000;
+  const windowStart = now - 7 * DAY;
+  // Three txs in the prior window (8-10 days ago), two in the recent window.
+  const prior = [now - 10 * DAY, now - 9 * DAY, now - 8 * DAY].map(txAt);
+  const recent = [now - 2 * DAY, now - 1 * DAY].map(txAt);
+  const { baselineTxs, evalTxs } = selectScoring([...prior, ...recent], windowStart);
+  assert.equal(baselineTxs.length, 3);
+  assert.equal(evalTxs.length, 2);
+  assert.ok(evalTxs.every((t) => t.timestamp >= windowStart));
+  assert.ok(baselineTxs.every((t) => t.timestamp < windowStart));
+});
+
+test("selectScoring: thin prior history -> snapshot (baseline=eval=whole window)", () => {
+  const now = 1_000_000;
+  const windowStart = now - 7 * DAY;
+  // Only two prior txs (< MIN_PRIOR_SAMPLES=3): fall back to snapshot scoring.
+  const prior = [now - 9 * DAY, now - 8 * DAY].map(txAt);
+  const recent = [now - 1 * DAY].map(txAt);
+  const { baselineTxs, evalTxs } = selectScoring([...prior, ...recent], windowStart);
+  assert.equal(baselineTxs.length, 3);
+  assert.equal(evalTxs.length, 3);
+  assert.ok(baselineTxs === evalTxs);
+});
+
+test("selectScoring: no prior history at all -> everything is the window", () => {
+  const now = 1_000_000;
+  const windowStart = now - 7 * DAY;
+  const all = [now - 3 * DAY, now - 2 * DAY, now - 1 * DAY, now - DAY / 2].map(txAt);
+  const { baselineTxs, evalTxs } = selectScoring(all, windowStart);
+  assert.equal(baselineTxs.length, 4);
+  assert.equal(evalTxs.length, 4);
+  assert.ok(baselineTxs === evalTxs);
 });
