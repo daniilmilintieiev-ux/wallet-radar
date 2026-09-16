@@ -19,6 +19,21 @@ import { computeDecision, type DecisionResult } from "./decision.js";
 
 export type TrustVerdict = "safe" | "hold" | "unknown";
 
+/** Solana System Program — the owner of a normal (keypair-created) account. */
+export const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+
+/**
+ * Result of the account-authority check. `owner` is the account's owner
+ * program id (null = account does not exist / not found). `isSystemAccount` is
+ * `false` when the account is owned by a program other than the System Program
+ * (i.e. a PDA / derived account) — a red flag for a counterparty you're about
+ * to pay. `null` = unknown (check not run or RPC failed).
+ */
+export interface AccountAuthority {
+  owner: string | null;
+  isSystemAccount: boolean | null;
+}
+
 export interface TrustBalances {
   sol: number;
   usdc: number;
@@ -43,6 +58,8 @@ export interface TrustInputs {
   /** false = SOL price feed unavailable; SOL is excluded from liquidity. */
   solPriced: boolean;
   solPrice: number | null;
+  /** Account-authority check; null/omitted = not run. A non-system owner forces "hold". */
+  accountAuthority?: AccountAuthority | null;
 }
 
 export interface TrustVerdictResult {
@@ -87,6 +104,14 @@ export function computeTrustVerdict(inputs: TrustInputs, opts: TrustOptions = {}
   }
   // Note: `solPriced: false` is carried by the result field (informational);
   // it narrows liquidity but does not by itself force "hold".
+  // Account-authority check: a counterparty that is NOT a normal system
+  // account (i.e. a program-derived / PDA account) can hold and move funds in
+  // non-obvious ways — never call it "safe", at best "hold". Unknown (null)
+  // does not block; only a confirmed non-system owner does.
+  const authority = inputs.accountAuthority;
+  if (authority && authority.owner !== null && authority.isSystemAccount === false) {
+    reasons.push(`account owner ${authority.owner} is not the system program (not a normal account)`);
+  }
 
   return { verdict: reasons.length > 0 ? "hold" : "safe", reasons, liquidityUsd };
 }
@@ -101,6 +126,8 @@ export interface TrustResult {
   balances: TrustBalances | null;
   solPriced: boolean;
   solPrice: number | null;
+  /** Account-authority check (best-effort); null when the RPC was unavailable. */
+  accountAuthority: AccountAuthority;
   liquidityUsd: number;
   reasons: string[];
   /** Per-rule behavioral breakdown (human-first), when anomalies were detected. */
@@ -129,6 +156,19 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
   const body = (await res.json()) as { result?: unknown; error?: { message?: string } };
   if (body.error) throw new Error(`RPC ${method}: ${body.error.message ?? "unknown error"}`);
   return body.result;
+}
+
+/**
+ * Resolve the owner program of a Solana account via getAccountInfo (base64).
+ * Returns the owner program id, or null when the account does not exist.
+ * The caller compares against SYSTEM_PROGRAM to tell normal accounts from
+ * program-derived (PDA) accounts.
+ */
+export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise<string | null> {
+  const res = (await rpcCall(rpcUrl, "getAccountInfo", [wallet, { encoding: "base64" }])) as
+    | { value: { owner: string } | null }
+    | null;
+  return res?.value?.owner ?? null;
 }
 
 /**
@@ -222,11 +262,25 @@ export async function runTrustCheck(
     }
   }
 
+  // --- account-authority check (best-effort) ---
+  // Is the counterparty a normal system account, or a program-derived (PDA)
+  // account that can hold/move funds in non-obvious ways? A confirmed
+  // non-system owner downgrades the verdict to at most "hold".
+  let accountAuthority: AccountAuthority = { owner: null, isSystemAccount: null };
+  try {
+    const owner = await fetchAccountOwner(rpcUrl, wallet);
+    accountAuthority = { owner, isSystemAccount: owner === SYSTEM_PROGRAM };
+  } catch (err) {
+    console.error(`account authority check failed (best-effort): ${err instanceof Error ? err.message : String(err)}`);
+    accountAuthority = { owner: null, isSystemAccount: null };
+  }
+
   const inputs: TrustInputs = {
     riskScore,
     balances,
     solPriced: solPrice !== null,
     solPrice,
+    accountAuthority,
   };
   const { verdict, reasons, liquidityUsd } = computeTrustVerdict(inputs, opts);
 
@@ -264,6 +318,7 @@ export async function runTrustCheck(
     balances,
     solPriced: solPrice !== null,
     solPrice,
+    accountAuthority,
     liquidityUsd,
     reasons,
     action: decision,
@@ -315,6 +370,7 @@ export async function runTrustChecks(
         balances: null,
         solPriced: false,
         solPrice: null,
+        accountAuthority: { owner: null, isSystemAccount: null },
         liquidityUsd: 0,
         reasons: [`check failed: ${msg}`],
         txCount: 0,

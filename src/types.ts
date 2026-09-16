@@ -40,6 +40,12 @@ export interface EnhancedTx {
     amount?: number;
   }>;
   instructions?: Array<{ programId?: string }>;
+  /**
+   * Counterparty user-accounts the tx interacted with (explicit form). When
+   * absent, counterparties are derived from the token/native transfer lists.
+   * Used for the COUNTERPARTY_CLUSTER soft signal.
+   */
+  counterparties?: string[];
 }
 
 export interface OpenLot {
@@ -66,6 +72,14 @@ export interface Baseline {
   pnl?: PnlSummary;
   /** Open buy lots per token pair for incremental cross-batch FIFO matching. */
   openLots?: Record<string, OpenLot[]>;
+  /**
+   * Most-recent major-mint swap sizes (UI units), most-recent last, bounded to
+   * `RECENT_SWAP_WINDOW`. Used for the recency-decayed LARGE_SWAP reference so
+   * a one-off historical outlier cannot poison the "normal" size forever.
+   */
+  recentSwapAmounts?: number[];
+  /** Most-recent USD swap values, most-recent last (bounded), when prices exist. */
+  recentSwapAmountsUsd?: number[];
   medianTps: number;
   activeHours: number[];
   lastSeenAt: number | null;
@@ -79,6 +93,7 @@ export type AnomalyType =
   | "LARGE_SWAP"
   | "CONCENTRATION"
   | "NEW_PROTOCOL"
+  | "COUNTERPARTY_CLUSTER"
   | "TOXIC_MINT"
   | "REGIME_SHIFT"
   | "WARMING";

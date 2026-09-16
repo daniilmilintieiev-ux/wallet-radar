@@ -28,6 +28,14 @@ export interface BenchmarkCase {
   hasBaseline: boolean;
   /** Baseline tx count (for WARMING detection). */
   baselineTxCount?: number;
+  /**
+   * Override the synthetic baseline's most-recent major-mint swap sizes (the
+   * recency-decay reference for LARGE_SWAP). Lets a case express "poisoned"
+   * history: a high full-history median with small recent activity.
+   */
+  baselineRecentSwapAmounts?: number[];
+  /** Override the synthetic baseline's full-history median major-mint swap size. */
+  baselineMedianSwapAmount?: number;
 }
 
 export interface BenchmarkResult {
@@ -318,10 +326,48 @@ export const EVAL_SET: BenchmarkCase[] = [
     hasBaseline: true,
     baselineTxCount: 5,
   },
+  {
+    id: "risky-011",
+    description: "Coordinated activity: counterparty concentration (wash) on a brand-new venue",
+    expected: "risky",
+    txs: [
+      { signature: "sig1", timestamp: 1_700_000_000, source: "RAYDIO", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["WashPartner111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+      { signature: "sig2", timestamp: 1_700_002_400, source: "RAYDIO", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["WashPartner111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+      { signature: "sig3", timestamp: 1_700_004_800, source: "RAYDIO", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["WashPartner111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+      { signature: "sig4", timestamp: 1_700_007_200, source: "RAYDIO", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["WashPartner111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+    ],
+    hasBaseline: true,
+    baselineTxCount: 10,
+  },
+  {
+    id: "safe-012",
+    description: "Counterparty concentration alone is a soft signal (low risk, not enough to flag risky)",
+    expected: "safe",
+    txs: [
+      { signature: "sig1", timestamp: 1_700_000_000, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["OneAddress11111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+      { signature: "sig2", timestamp: 1_700_002_400, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["OneAddress11111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+      { signature: "sig3", timestamp: 1_700_004_800, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["OneAddress11111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+      { signature: "sig4", timestamp: 1_700_007_200, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["OneAddress11111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "1500000", decimals: 6 } }] } },
+    ],
+    hasBaseline: true,
+    baselineTxCount: 10,
+  },
+  {
+    id: "risky-012",
+    description: "Poisoned-baseline evasion: big old swaps inflated the median, but recent activity is small; a 10x-recent swap is caught via recency-decay",
+    expected: "risky",
+    txs: [
+      { signature: "sig1", timestamp: 1_700_000_000, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], counterparties: ["TradePartner111111111111111111111111111111111"], swap: { tokenInputs: [{ mint: "So11111111111111111111111111111111111111112", rawTokenAmount: { tokenAmount: "10000000000", decimals: 9 } }], tokenOutputs: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", rawTokenAmount: { tokenAmount: "15000000", decimals: 6 } }] } },
+    ],
+    hasBaseline: true,
+    baselineTxCount: 10,
+    baselineMedianSwapAmount: 1000,
+    baselineRecentSwapAmounts: Array.from({ length: 32 }, () => 1),
+  },
 ];
 
 /** Eval set version — bump when cases are added/changed. */
-export const EVAL_VERSION = "2.0.0";
+export const EVAL_VERSION = "2.1.0";
 
 /** Risk score threshold: >= 15 (one medium anomaly) = "risky" for benchmark purposes. */
 const RISKY_THRESHOLD = 15;
@@ -363,7 +409,12 @@ export function runBenchmark(): BenchmarkSummary {
           },
         };
       });
-      baseline = updateBaseline(wallet, null, syntheticTxs, firstTxTime - 3600, null);
+       baseline = updateBaseline(wallet, null, syntheticTxs, firstTxTime - 3600, null);
+       // Optional overrides so a case can express a "poisoned" baseline
+       // (high full-history median but small recent window) without the
+       // synthetic builder deriving both from the same txs.
+       if (c.baselineRecentSwapAmounts) baseline.recentSwapAmounts = c.baselineRecentSwapAmounts;
+       if (c.baselineMedianSwapAmount !== undefined) baseline.medianSwapAmount = c.baselineMedianSwapAmount;
     }
 
     const anomalies = detectAnomalies(wallet, c.txs, baseline);

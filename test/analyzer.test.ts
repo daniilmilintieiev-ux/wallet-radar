@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectAnomalies, extractSwap, computeRiskScore, SOL_MINT, USDC_MINT, MAJOR_MINTS } from "../src/analyzer.js";
+import { detectAnomalies, extractSwap, computeRiskScore, txCounterparties, SOL_MINT, USDC_MINT, MAJOR_MINTS } from "../src/analyzer.js";
 import { updateBaseline } from "../src/baseline.js";
 import { EnhancedTx, Baseline, Anomaly, DEFAULT_CONFIG } from "../src/types.js";
 
@@ -593,5 +593,106 @@ test("DORMANT_ACTIVE: boundary conditions (exact dormantDays fires, just below s
   // 1 second before 7 days -> silent
   const belowTxs = [swapTx("dBelow", base + dormantSec - 1, "JUPITER", 10)];
   assert.equal(detectAnomalies(WALLET, belowTxs, baseline).some((a) => a.type === "DORMANT_ACTIVE"), false);
+});
+
+test("LARGE_SWAP (poisoning defense): uses the recent-window median, not a poisoned full-history median", () => {
+  // History was dominated by big 1000-unit swaps (full-history median 1000),
+  // but the recent window has been all 1-unit swaps. A 10-unit swap is 10x the
+  // recent median -> must fire, even though it's tiny vs the old full median.
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 1000,
+    recentSwapAmounts: Array.from({ length: 32 }, () => 1),
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 72,
+  };
+  const txs = [swapTx("poison", 1_700_000_600, "JUPITER", 10)];
+  const anomalies = detectAnomalies(WALLET, txs, baseline);
+  assert.ok(anomalies.some((a) => a.type === "LARGE_SWAP"), "10-unit swap should fire against a 1-unit recent median");
+});
+
+test("LARGE_SWAP (poisoning defense): raw-path sample floor suppresses a thin baseline", () => {
+  // Only 2 major-mint samples (< MIN_BASELINE_SAMPLES=3) -> the raw fallback
+  // path must not trust the median, so no LARGE_SWAP even for a 100x swap.
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 1,
+    recentSwapAmounts: [1, 1],
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 2,
+  };
+  const txs = [swapTx("thin", 1_700_000_600, "JUPITER", 100)];
+  assert.equal(detectAnomalies(WALLET, txs, baseline).some((a) => a.type === "LARGE_SWAP"), false);
+});
+
+test("COUNTERPARTY_CLUSTER fires on concentrated counterparty interactions", () => {
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 10,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 10,
+  };
+  const cp = "Counterparty1111111111111111111111111111111111";
+  const other = "OtherWallet1111111111111111111111111111111111111";
+  const txs = Array.from({ length: 6 }, (_, i) => ({
+    signature: `cp_${i}`,
+    timestamp: 1_700_000_000 + i,
+    source: "JUPITER",
+    programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    feePayer: WALLET,
+    counterparties: i < 5 ? [cp] : [other],
+  }));
+  const cluster = detectAnomalies(WALLET, txs, baseline).find((a) => a.type === "COUNTERPARTY_CLUSTER");
+  assert.ok(cluster, "expected COUNTERPARTY_CLUSTER");
+  assert.equal(cluster.severity, "low");
+  assert.equal((cluster.evidence as Record<string, unknown>).topCounterparty, cp);
+});
+
+test("COUNTERPARTY_CLUSTER does not fire when interactions are evenly spread", () => {
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 10,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 10,
+  };
+  const txs = Array.from({ length: 8 }, (_, i) => ({
+    signature: `even_${i}`,
+    timestamp: 1_700_000_000 + i,
+    source: "JUPITER",
+    programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    feePayer: WALLET,
+    counterparties: [`CP${i % 4}11111111111111111111111111111111111`],
+  }));
+  assert.equal(detectAnomalies(WALLET, txs, baseline).some((a) => a.type === "COUNTERPARTY_CLUSTER"), false);
+});
+
+test("txCounterparties derives the counterparty from transfer lists (self excluded)", () => {
+  const tx: EnhancedTx = {
+    signature: "t1",
+    timestamp: 1_700_000_000,
+    feePayer: WALLET,
+    tokenTransfers: [{ fromUserAccount: WALLET, toUserAccount: "Payee11111111111111111111111111111111111", tokenAmount: 5 }],
+  };
+  assert.deepEqual(txCounterparties(tx), ["Payee11111111111111111111111111111111111"]);
 });
 

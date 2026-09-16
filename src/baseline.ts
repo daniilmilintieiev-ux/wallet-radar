@@ -5,11 +5,24 @@ import { computePnlLite, mergePnl } from "./pnl.js";
 
 export { computePnlLite, mergePnl };
 
+/**
+ * How many most-recent swap sizes to retain for the recency-decayed
+ * LARGE_SWAP reference. Old samples drop off the window instead of being
+ * blended in forever, so a wallet's *current* behavior defines "normal".
+ */
+export const RECENT_SWAP_WINDOW = 32;
+
 function median(nums: number[]): number {
   if (nums.length === 0) return 0;
   const s = [...nums].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
+}
+
+/** Append values to a most-recent window, keeping only the last `windowSize`. */
+function pushWindow(prev: number[] | undefined, values: number[], windowSize: number): number[] {
+  const next = [...(prev ?? []), ...values];
+  return next.length > windowSize ? next.slice(next.length - windowSize) : next;
 }
 
 /**
@@ -98,6 +111,8 @@ export function updateBaseline(
     openLots,
     medianTps: prevB.medianTps,
     activeHours: prevB.activeHours,
+    recentSwapAmounts: pushWindow(prevB.recentSwapAmounts, swapSizes, RECENT_SWAP_WINDOW),
+    recentSwapAmountsUsd: pushWindow(prevB.recentSwapAmountsUsd, swapSizesUsd, RECENT_SWAP_WINDOW),
     lastSeenAt: lastSeen,
     txCount: prevB.txCount + txs.length,
   };

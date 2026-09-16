@@ -50,6 +50,30 @@ test("hold: both thresholds missed -> both reasons, deterministic order", () => 
   ]);
 });
 
+test("hold: non-system account owner (PDA) forces hold even with clean risk/liquidity", () => {
+  const r = computeTrustVerdict({
+    ...BASE,
+    accountAuthority: { owner: "SomeProgram11111111111111111111111111111111", isSystemAccount: false },
+  });
+  assert.equal(r.verdict, "hold");
+  assert.ok(r.reasons.some((x) => /not the system program/.test(x)));
+});
+
+test("safe: system-account owner does not add a hold reason", () => {
+  const r = computeTrustVerdict({
+    ...BASE,
+    accountAuthority: { owner: "11111111111111111111111111111111", isSystemAccount: true },
+  });
+  assert.equal(r.verdict, "safe");
+  assert.deepEqual(r.reasons, []);
+});
+
+test("safe: unknown account authority (RPC unavailable) does not block", () => {
+  const r = computeTrustVerdict({ ...BASE, accountAuthority: { owner: null, isSystemAccount: null } });
+  assert.equal(r.verdict, "safe");
+  assert.deepEqual(r.reasons, []);
+});
+
 test("unknown: no history to score", () => {
   const r = computeTrustVerdict({ ...BASE, riskScore: null });
   assert.equal(r.verdict, "unknown");
@@ -115,6 +139,7 @@ function mkResult(wallet: string, verdict: "safe" | "hold" | "unknown", riskScor
     balances: verdict === "unknown" ? null : { sol: 0, usdc: liquidityUsd, usdt: 0 },
     solPriced: true,
     solPrice: 100,
+    accountAuthority: { owner: null, isSystemAccount: null },
     liquidityUsd,
     reasons: verdict === "safe" ? [] : ["test reason"],
     txCount: 1,

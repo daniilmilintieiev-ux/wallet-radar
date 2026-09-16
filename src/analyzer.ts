@@ -28,8 +28,31 @@ export { SOL_MINT, USDC_MINT, USDT_MINT };
  */
 export const MAJOR_MINTS = [SOL_MINT, USDC_MINT, USDT_MINT];
 
+/**
+ * Baseline-poisoning defense: a swap-size reference built from fewer than this
+ * many samples is too thin to be trusted for LARGE_SWAP (a wallet that makes
+ * one or two trades then a big one would otherwise set its own "normal").
+ */
+export const MIN_BASELINE_SAMPLES = 3;
+
+/**
+ * COUNTERPARTY_CLUSTER soft-signal thresholds: at least this many counterparty
+ * interactions in the batch, and the top counterparty accounting for at least
+ * this % of them, flags concentrated/coordinated activity (wash trading).
+ */
+export const COUNTERPARTY_MIN_TXS = 4;
+export const COUNTERPARTY_CLUSTER_PCT = 50;
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** Median of a numeric list (0 for empty). Local copy — analyzer is a leaf module. */
+function median(nums: number[]): number {
+  if (nums.length === 0) return 0;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
 }
 
 function fmtUsd(n: number): string {
@@ -122,6 +145,29 @@ export function txPrograms(tx: EnhancedTx): string[] {
 }
 
 /**
+ * Counterparty user-accounts a tx interacted with. Prefers the explicit
+ * `counterparties` field; otherwise derives the "other side" from the
+ * token/native transfer lists relative to the fee payer (self is excluded).
+ */
+export function txCounterparties(tx: EnhancedTx): string[] {
+  if (tx.counterparties && tx.counterparties.length > 0) return tx.counterparties;
+  const me = tx.feePayer;
+  const out: string[] = [];
+  const from = (u?: string) => (u && u !== me ? u : undefined);
+  for (const t of tx.tokenTransfers ?? []) {
+    const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
+    const o = from(other);
+    if (o) out.push(o);
+  }
+  for (const t of tx.nativeTransfers ?? []) {
+    const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
+    const o = from(other);
+    if (o) out.push(o);
+  }
+  return out;
+}
+
+/**
  * Deterministic anomaly detection: compare a fresh batch of transactions
  * against the wallet's learned baseline. Pure function — no I/O, no LLM.
  */
@@ -200,12 +246,17 @@ export function detectAnomalies(
   }
 
   // LARGE_SWAP: swap size > N x the wallet's median swap size.
-  // With a USD price map, sizes are compared in USD across ALL mints
-  // (normalization makes different tokens comparable). Without prices,
-  // fall back to major-only raw quantities — comparing 1 SOL vs 50M BONK
-  // as raw numbers produces false alarms.
+  // The reference median is the RECENT-window median when one is available
+  // (recency decay: a one-off historical outlier drops off instead of
+  // permanently inflating "normal"). With a USD price map, sizes are compared
+  // in USD across ALL mints; without prices, fall back to major-only raw
+  // quantities. A sample floor guards against a poisoned thin baseline.
   if (baseline) {
-    const usdMedian = baseline.medianSwapAmountUsd ?? 0;
+    const usdRecent = baseline.recentSwapAmountsUsd;
+    const usdMedian = usdRecent && usdRecent.length > 0 ? median(usdRecent) : baseline.medianSwapAmountUsd ?? 0;
+    const rawRecent = baseline.recentSwapAmounts;
+    const rawMedian = rawRecent && rawRecent.length > 0 ? median(rawRecent) : baseline.medianSwapAmount;
+    const rawSamples = rawRecent && rawRecent.length > 0 ? rawRecent.length : baseline.txCount;
     if (prices && usdMedian > 0) {
       for (const s of swaps) {
         const usd = swapUsdValue(s, prices);
@@ -226,11 +277,11 @@ export function detectAnomalies(
           });
         }
       }
-    } else if (baseline.medianSwapAmount > 0) {
+    } else if (rawMedian > 0 && rawSamples >= MIN_BASELINE_SAMPLES) {
       for (const s of swaps) {
         if (!MAJOR_MINTS.includes(s.tokenIn.mint)) continue;
         const size = s.tokenIn.amount;
-        if (size >= baseline.medianSwapAmount * config.largeSwapMultiplier) {
+        if (size >= rawMedian * config.largeSwapMultiplier) {
           anomalies.push({
             type: "LARGE_SWAP",
             wallet,
@@ -238,10 +289,10 @@ export function detectAnomalies(
             timestamp: s.timestamp,
             evidence: {
               size: Number(size.toFixed(4)),
-              median: Number(baseline.medianSwapAmount.toFixed(4)),
+              median: Number(rawMedian.toFixed(4)),
               sig: s.signature,
             },
-            text: `Swap of ${size.toFixed(4)} is ${config.largeSwapMultiplier}x the wallet's median.`,
+            text: `Swap of ${size.toFixed(4)} is ${config.largeSwapMultiplier}x the wallet's median (~${rawMedian.toFixed(4)}).`,
           });
         }
       }
@@ -269,6 +320,42 @@ export function detectAnomalies(
         evidence: { token: mint, count: list.length },
         text: `${list.length} swaps into ${mint} within ${config.concentrationWindowMin} min.`,
       });
+    }
+  }
+
+  // COUNTERPARTY_CLUSTER: soft signal — the wallet's counterparty interactions
+  // are concentrated on a single address (wash-trading / coordinated-activity
+  // indicator). Low severity: it adds context and a little risk but never
+  // blocks on its own.
+  {
+    const freq = new Map<string, number>();
+    let total = 0;
+    for (const tx of txs) {
+      for (const cp of txCounterparties(tx)) {
+        freq.set(cp, (freq.get(cp) ?? 0) + 1);
+        total += 1;
+      }
+    }
+    if (total >= COUNTERPARTY_MIN_TXS) {
+      let top = "";
+      let topCount = 0;
+      for (const [cp, c] of freq) {
+        if (c > topCount) {
+          topCount = c;
+          top = cp;
+        }
+      }
+      const pct = Math.round((topCount / total) * 100);
+      if (pct >= COUNTERPARTY_CLUSTER_PCT) {
+        anomalies.push({
+          type: "COUNTERPARTY_CLUSTER",
+          wallet,
+          severity: "low",
+          timestamp: Math.max(...txs.map(ts)),
+          evidence: { topCounterparty: top, topCount, total, pct, distinct: freq.size },
+          text: `${pct}% of ${total} counterparty interactions go to one wallet (${top}). Possible coordinated activity.`,
+        });
+      }
     }
   }
 
