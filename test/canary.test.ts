@@ -103,24 +103,35 @@ describe("Canary Agent Integration Tests", () => {
     const logFile = makeTmpLog();
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        const proc = spawn("node", [scriptPath, "--once"], {
-          cwd: rootDir,
-          env: {
-            ...process.env,
-            // Pin a dummy key so the "no API key, using selftest only" warning line
-            // (canary-agent.ts) is deterministic: the test asserts exactly 1 log line.
-            // The missing-key warning itself is covered by the dedicated test below.
-            HELIUS_API_KEY: "test-canary-key",
-            CANARY_SCAN_URL: mock.url,
-            CANARY_X402_URL: mock.url,
-            CANARY_LOG: logFile,
-            CANARY_WALLET: "TestCanaryWallet111111111111111111111111111",
-          },
+      const spawnEnv = {
+        ...process.env,
+        // Pin a dummy key so the "no API key, using selftest only" warning line
+        // (canary-agent.ts) is deterministic: the test asserts exactly 1 log line.
+        // The missing-key warning itself is covered by the dedicated test below.
+        HELIUS_API_KEY: "test-canary-key",
+        CANARY_SCAN_URL: mock.url,
+        CANARY_X402_URL: mock.url,
+        CANARY_LOG: logFile,
+        CANARY_WALLET: "TestCanaryWallet111111111111111111111111111",
+      };
+      // node spawning node on Windows can flakily crash during PE/DLL init with an
+      // NT status code (0xC0000142 = 3221226505) before the child does any work — a
+      // normal node exit is 0-255, so treat >255 as that crash and retry a couple of
+      // times. windowsHide gives the child a hidden console (also required below for
+      // clean SIGINT delivery on Windows). The CLI itself is fine when run standalone.
+      let exitCode = 0;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        exitCode = await new Promise<number>((resolve, reject) => {
+          const proc = spawn("node", [scriptPath, "--once"], {
+            cwd: rootDir,
+            env: spawnEnv,
+            windowsHide: true,
+          });
+          proc.on("error", reject);
+          proc.on("close", (code) => resolve(code ?? 0));
         });
-        proc.on("error", reject);
-        proc.on("close", (code) => resolve(code ?? 0));
-      });
+        if (exitCode <= 255) break;
+      }
 
       assert.equal(exitCode, 0);
 
@@ -218,45 +229,75 @@ describe("Canary Agent Integration Tests", () => {
     const logFile = makeTmpLog();
 
     try {
-      const exitResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-        (resolve, reject) => {
-          const proc = spawn("node", [scriptPath], {
-            cwd: rootDir,
-            env: {
-              ...process.env,
-              CANARY_INTERVAL_SEC: "60",
-              CANARY_SCAN_URL: mock.url,
-              CANARY_X402_URL: mock.url,
-              CANARY_LOG: logFile,
-              CANARY_WALLET: "TestCanaryWallet111111111111111111111111111",
-            },
-          });
+      const spawnEnv = {
+        ...process.env,
+        CANARY_INTERVAL_SEC: "60",
+        CANARY_SCAN_URL: mock.url,
+        CANARY_X402_URL: mock.url,
+        CANARY_LOG: logFile,
+        CANARY_WALLET: "TestCanaryWallet111111111111111111111111111",
+      };
+      // On Windows, proc.kill("SIGINT") terminates a spawned node child *by signal*
+      // without running its JS SIGINT handler (a console-signal limitation), so the
+      // canary stops with signal==="SIGINT" (exit null) rather than a clean code 0.
+      // On other platforms the handler runs: clean exit 0 and "canary stopped" logged.
+      // windowsHide gives the child a hidden console (best-effort signal routing); a
+      // Windows node-spawns-node PE/DLL init crash (0xC0000142) can also kill the child
+      // before it writes "iter=1", so retry with a fresh log file on each attempt.
+      const isWin = process.platform === "win32";
+      let exitResult: { code: number | null; signal: NodeJS.Signals | null } = {
+        code: null,
+        signal: null,
+      };
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          fs.rmSync(logFile, { force: true });
+        } catch {}
+        exitResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+          (resolve, reject) => {
+            const proc = spawn("node", [scriptPath], {
+              cwd: rootDir,
+              env: spawnEnv,
+              windowsHide: true,
+            });
 
-          proc.on("error", reject);
+            proc.on("error", reject);
 
-          // Wait until the child process has executed its first step and written to log
-          const interval = setInterval(() => {
-            if (fs.existsSync(logFile)) {
-              const content = fs.readFileSync(logFile, "utf8");
-              if (content.includes("iter=1")) {
-                clearInterval(interval);
-                // Send SIGINT for clean shutdown
-                proc.kill("SIGINT");
+            // Wait until the child process has executed its first step and written to log
+            const interval = setInterval(() => {
+              if (fs.existsSync(logFile)) {
+                const content = fs.readFileSync(logFile, "utf8");
+                if (content.includes("iter=1")) {
+                  clearInterval(interval);
+                  // Send SIGINT for clean shutdown
+                  proc.kill("SIGINT");
+                }
               }
-            }
-          }, 50);
+            }, 50);
 
-          proc.on("close", (code, signal) => {
-            clearInterval(interval);
-            resolve({ code, signal });
-          });
-        },
-      );
+            proc.on("close", (code, signal) => {
+              clearInterval(interval);
+              resolve({ code, signal });
+            });
+          },
+        );
+        const stopped = isWin ? exitResult.signal === "SIGINT" : exitResult.code === 0;
+        if (stopped) break;
+      }
 
-      assert.equal(exitResult.code, 0, "SIGINT should trigger exit code 0");
+      if (isWin) {
+        // The child was running its loop; SIGINT must be what stopped it.
+        assert.equal(
+          exitResult.signal,
+          "SIGINT",
+          "SIGINT should stop the canary (child terminated by the signal on Windows)",
+        );
+      } else {
+        assert.equal(exitResult.code, 0, "SIGINT should trigger exit code 0");
 
-      const finalLog = fs.readFileSync(logFile, "utf8");
-      assert.ok(finalLog.includes("canary stopped"), "Log file should record 'canary stopped'");
+        const finalLog = fs.readFileSync(logFile, "utf8");
+        assert.ok(finalLog.includes("canary stopped"), "Log file should record 'canary stopped'");
+      }
     } finally {
       await mock.close();
       try {

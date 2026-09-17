@@ -310,16 +310,30 @@ export class CanaryAgent {
   }
 }
 
+// Windows / Node 24: undici (the engine behind global fetch) keeps its keep-alive
+// sockets open, and a hard process.exit() right after a successful scan double-closes
+// one of them, tripping a libuv assertion (UV_HANDLE_CLOSING) that aborts the process
+// with exit code 0xC0000142 (3221226505). A short drain lets libuv finish closing the
+// sockets before the hard exit. Measured on the failing setup: 0-10ms always crashed,
+// 30ms was flaky, >=50ms was clean — 150ms leaves comfortable margin for loaded hosts.
+const EXIT_DRAIN_MS = 150;
+async function drainBeforeExit(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, EXIT_DRAIN_MS));
+}
+
 export async function runCli(args = process.argv.slice(2)): Promise<void> {
   const config = loadEnvConfig();
   const dryRun = args.includes("--dry-run");
   const once = args.includes("--once") || dryRun;
 
   const agent = new CanaryAgent(config);
+  let shuttingDown = false;
 
   const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     agent.stop(signal);
-    process.exit(0);
+    void drainBeforeExit().then(() => process.exit(0));
   };
 
   process.on("SIGINT", () => shutdown("SIGINT"));
@@ -327,6 +341,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
 
   if (once) {
     const res = await agent.step(dryRun);
+    await drainBeforeExit();
     process.exit(res.ok ? 0 : 1);
   }
 

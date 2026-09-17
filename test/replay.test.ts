@@ -96,14 +96,21 @@ test("replayWallet: end-to-end with injected fetcher, counts deduped, sink gets 
   };
   const sent: string[] = [];
   const sink: AlertSink = { send: async (t) => { sent.push(t); } };
+  // Keep the test hermetic: inject the mint-risk fetcher and skip the live Jupiter
+  // price feed. Otherwise replayWallet makes real fetch calls whose undici keep-alive
+  // sockets are still open when the test process exits, tripping a libuv double-close
+  // assertion (UV_HANDLE_CLOSING / 0xC0000142) on Windows that fails the file even
+  // though every subtest passes.
   const result = await replayWallet("key", WALLET, { sinceSec: T0 + GAP, untilSec: T0 + GAP + 600 }, {
     fetchHistory,
     sink,
+    fetchMintRisk: async () => ({}),
+    usePrices: false,
   });
   assert.equal(result.historyTxCount, 3);
   assert.equal(result.burstTxCount, 1);
   assert.equal(result.riskScore, 100);
-  assert.equal(result.pricesAvailable, true);
+  assert.equal(result.pricesAvailable, false);
   assert.equal(calls.length, 2);
   assert.ok(calls[0].gteTime === T0 + GAP);
   assert.ok(calls[1].ltTime === T0 + GAP);
