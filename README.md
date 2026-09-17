@@ -557,39 +557,71 @@ template without throwing into the continuous watch loop.
 
 ## Colosseum Hackathon (Fall 2026): Before / After Honesty Note
 
-In the spirit of complete transparency for hackathon judges and the Solana community, here is an exact breakdown of what existed before the hackathon and what was designed, developed, and verified **in-window** (Sep 14 – Oct 13, 2026):
+In the spirit of complete transparency for hackathon judges and the Solana
+community, here is an exact breakdown of the project's timeline relative to the
+hackathon window, which opened **2026-09-14 15:00 UTC** and closed 2026-10-13.
+`git log` on `main` is the authoritative record of what landed when.
 
-### What Existed Before the Hackathon Window (Foundation)
-- **Deterministic Anomaly Rules Engine**: The initial 7 behavioral anomaly rules (`DORMANT_ACTIVE`, `ACTIVITY_BURST`, `NEW_VENUE`, `LARGE_SWAP`, `CONCENTRATION`, `NEW_PROTOCOL`, `TOXIC_MINT`).
-- **Baseline Profiler**: Historical transaction baseline calculation using Helius Enhanced Transactions API and Jupiter Price API USD normalization.
-- **Local SQLite Store**: Watchlist storage, transaction deduplication, and anomaly logging (`~/.wallet-radar/radar.db`).
-- **Basic Stdio MCP Server**: Initial stdio tool wrapper (`radar_scan`, `radar_analyze`, `radar_trust`, `radar_selftest`).
-- **CLI Commands**: Basic offline replay, trust gate, and report commands (`radar scan`, `radar trust`).
+### What Existed Before the Window (the `v0.0.0` foundation)
+The working product that preceded the hackathon (commits `20a965f` … `3e0e0ad`,
+frozen as the `v0.0.0-pre-hackathon` baseline):
+- **Deterministic Anomaly Rules Engine** — the 7 behavioral rules
+  (`DORMANT_ACTIVE`, `ACTIVITY_BURST`, `NEW_VENUE`, `LARGE_SWAP`, `CONCENTRATION`,
+  `NEW_PROTOCOL`, `TOXIC_MINT`).
+- **Baseline Profiler** — Helius Enhanced Transactions + Jupiter USD
+  normalization; per-wallet behavioral baseline in **SQLite**.
+- **Trust gate & explainability** — the `trust` verdict (`safe`/`hold`/`unknown`)
+  with per-rule `reasons`, summary, and data `freshness`; the
+  **gate-before-you-copy** wedge; the **batch** trust-gate (`POST /batch`);
+  **TOXIC_MINT** top-holder concentration.
+- **x402 pay-per-call** Solana settlement + **HTTP service** + **continuous
+  monitoring** (watchlist, adaptive polling, Telegram/Webhook alerts) +
+  **AgenticTrade** packaging + **A2A** agent surface + **stdio MCP server** + CLI.
 
-### What Was Built IN-WINDOW (Hackathon Innovations)
-1. **Light Protocol ZK Scan Ledger (The On-Chain Oracle) (`src/oracle`)**:
-   - Implemented ZK-compressed state accounts storing immutable scan attestations rent-free for ~0.000005 SOL (~400x cost reduction).
-   - Designed compact `RS01` binary serialization format (48-byte zero-copy header + dynamic JSON evidence payload).
-   - Integrated `commitScan` and `readScanLedger` with fallback to Light RPC validity proofs.
-2. **x402 Pay-per-Call Solana Settlement Engine (`src/x402server.ts`)**:
-   - Implemented standard [x402](https://x402.org) HTTP micropayment protocol for Solana.
-   - Built on-chain RPC transaction verification ensuring exact USDC payment amounts to designated recipient wallets.
-   - Designed SQLite-persisted anti-replay ledger (`settled_payments`) preventing transaction signature reuse.
-3. **Autonomous Agent SDK (`src/sdk`)**:
-   - Built standalone TypeScript/JavaScript SDK (`createRadarClient`) enabling AI agents to auto-pay 402 invoices via signed Solana transactions and query on-chain ZK attestations.
-   - Implemented zero-dependency base58 encoder, ATA derivation, and SPL transfer instruction builders.
-4. **Solana Actions & Blinks v1 (`src/blink`)**:
-   - Implemented official Solana Actions specification (`/actions.json` discovery rules and `ActionGetResponse` / `ActionPostResponse` endpoints).
-   - Built one-tap Blink URL generators and deep links for Dialect (`dial.to`), Phantom, and Solflare.
-5. **Interactive Web Dashboard & ZK Ledger Viewer (`src/dashboard.ts`)**:
-   - Built self-contained, deterministic monospace web dashboard (`GET /dashboard`) with hero verdict cards, slot tracking, on-chain signature links, and historical timeline tables.
-   - Added `GET /api/ledger` and CLI `radar ledger` / `radar dashboard --export` exporter.
-6. **SPL Token-22 Transfer Hook Program (`programs/radar-transfer-hook`, `src/hook`)**:
-   - Authored complete Anchor program implementing `spl-transfer-hook-interface` to enforce "scan-on-transfer" protocol risk gating.
-   - Created client instruction builders (`createRiskGatedTransferCheckedInstruction`) and deterministic risk evaluator (`evaluateTransferRisk`).
-7. **End-to-End Test Suite & Load Testing Harness (`test/e2e.test.ts`)**:
-   - Verified the complete full-circle loop: Scan &rarr; x402 auto-payment &rarr; ZK oracle commit &rarr; SDK on-chain read &rarr; Dashboard render &rarr; Token-22 transfer hook gating.
-   - Proved concurrent load capacity (25 concurrent paid scans with unique settlement signatures).
+### The pre-window "Leap", committed at the boundary (`f2bc219`)
+A large feature leap was completed **immediately before** the window and landed
+as a **single snapshot commit** —
+[`f2bc219`](https://github.com/daniilmilintieiev-ux/wallet-radar/commit/f2bc219)
+(`"feat(leap): …"`, **2026-09-14 11:05 UTC**, 35 files, +9,438 / −262) — at the
+window boundary rather than as a stream of small commits. It bundles:
+- **ZK Scan Ledger / The Oracle** (`src/oracle`) — Light Protocol
+  ZK-compressed attestations (~0.000005 SOL, ~400× cheaper than a PDA), `RS01`
+  binary format.
+- **Autonomous Agent SDK** (`src/sdk`) — `createRadarClient`, automated x402
+  payment, on-chain attestation reads.
+- **Solana Actions & Blinks** (`src/blink`), **Web Dashboard & ZK Ledger Viewer**
+  (`src/dashboard.ts`), **SPL Token-22 Transfer Hook**
+  (`programs/radar-transfer-hook`, `src/hook`), and the **End-to-End Test Suite**
+  (`test/e2e.test.ts`).
+
+This is the "commit bomb": one big consolidation of **prior** work, **not** 35
+separate in-window changes.
+
+### What Was Built IN-WINDOW (2026-09-14 15:00 UTC → 10-13) — 18 incremental commits
+The genuine in-window development is a real stream of focused commits that follow
+`f2bc219` in `main`:
+
+| Commit | Date (UTC) | In-window work |
+| --- | --- | --- |
+| `64e1a8a` | 9/14 15:00 | Hackathon kickoff (live-demo links, CHANGELOG leap entries) |
+| `16b35f3` · `ccfc534` · `aebe35d` | 9/15 | **Decision Engine** (actionable verdicts), **pre-trade Simulation Mode**, enhanced explainability (MCP `radar_simulate`, audit trail) |
+| `0d8a4dd` | 9/15 | **Anti-evasion** rules (`REGIME_SHIFT`, `WARMING`) + reproducible **benchmark/eval** endpoint |
+| `6b92523` · `c980a35` · `ae1dd8c` | 9/16 | Security-critique quick wins; TLS domains (`radar.`/`pay.cbellory.xyz`); link fixes |
+| `232b01e` | 9/16 | **Autonomous canary agent** (self-paying 24/7) + load test + systemd unit |
+| `3e3150b` | 9/16 | Benchmark eval set 6→21 (100% accuracy / precision / recall) |
+| `990bb36` | 9/16 | **Hardening**: baseline-poisoning defense, counterparty clustering, account-authority check |
+| `b200406` | 9/16 | Trust **baseline redesign** + x402/watch/pnl/oracle/store hardening |
+| `72ea65f` | 9/16 | **Pillar 1 — Self-Funding Loop**: P&L engine, `/economics`, Helius cost tracking |
+| `d7cc3cc` | 9/16 | **Pillar 2 — Multi-Agent Consensus**: agent panel, weighted aggregation, optional LLM voter |
+| `8f0226e` | 9/16 | x402server promoted to a systemd unit (survives ssh-close + reboot) |
+| `16ed9a4` | 9/17 | **Pillar 3 — Active Defense**: autonomous per-wallet stance (armed→alerting→gated→blocked), enforcement, audit trail |
+| `6a379b5` · `e46cc4d` | 9/17 | **Reliable-green CI**: `/scan` honors injected deps + `--test-force-exit`; deterministic canary |
+
+**In short:** a pre-window `v0.0.0` foundation → one pre-window leap snapshot
+(`f2bc219`) at the boundary → 18 real incremental in-window commits (decision
+engine, simulation, anti-evasion + benchmark, hardening, trust redesign, canary,
+and the three pillars: self-funding economics, multi-agent consensus, and active
+defense).
 
 ## Status
 

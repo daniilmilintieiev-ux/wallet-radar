@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+> **Git-history note (hackathon transparency):** the pre-window "leap" feature
+> set (ZK oracle, Agent SDK, Solana Actions/Blinks, web dashboard, Token-22 hook,
+> E2E suite) landed as a single snapshot commit
+> [`f2bc219`](https://github.com/daniilmilintieiev-ux/wallet-radar/commit/f2bc219)
+> (2026-09-14 11:05 UTC, 35 files, +9,438) at the window boundary, while the
+> genuine in-window work (from 2026-09-14 15:00 UTC) is a series of 18
+> incremental commits (decision engine, pre-trade simulation, anti-evasion +
+> benchmark, hardening, trust baseline redesign, autonomous canary, and the three
+> pillars: self-funding economics, multi-agent consensus, active defense). The
+> full before/after breakdown is in the [README](README.md) — "Colosseum
+> Hackathon (Fall 2026): Before / After Honesty Note".
+
 ### Added
 - Per-IP rate limiting on the HTTP service (default `120` requests/minute,
   configurable via `RADAR_RATE_LIMIT_PER_MIN`; `429` + `Retry-After` when exceeded,
