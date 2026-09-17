@@ -108,6 +108,10 @@ describe("Canary Agent Integration Tests", () => {
           cwd: rootDir,
           env: {
             ...process.env,
+            // Pin a dummy key so the "no API key, using selftest only" warning line
+            // (canary-agent.ts) is deterministic: the test asserts exactly 1 log line.
+            // The missing-key warning itself is covered by the dedicated test below.
+            HELIUS_API_KEY: "test-canary-key",
             CANARY_SCAN_URL: mock.url,
             CANARY_X402_URL: mock.url,
             CANARY_LOG: logFile,
