@@ -15,6 +15,7 @@ import {
   type AgentVote,
   type ConsensusResult,
 } from "./consensus.js";
+import type { DefenseView } from "./defense.js";
 
 /**
  * `radar trust <wallet>` — pre-flight check for agent payments (x402 and
@@ -149,6 +150,8 @@ export interface TrustResult {
   action?: DecisionResult;
   /** Multi-agent consensus (Pillar 2): per-agent votes, agreement, dissent. */
   consensus?: ConsensusResult;
+  /** Active-defense posture (Pillar 3), attached when the wallet has a stance. */
+  defense?: DefenseView;
   /** Full audit trail (opt-in via ?audit=true). */
   audit?: AuditTrail;
   txCount: number;

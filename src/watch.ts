@@ -6,7 +6,8 @@ import { fetchSwapMintRisk, MintRiskMap } from "./mint.js";
 import { Store } from "./store.js";
 import { AlertSink, formatAlert } from "./alerts.js";
 import { bestEffortDigest, llmConfigFromEnv } from "./llmdigest.js";
-import { DEFAULT_CONFIG, EnhancedTx, PnlSummary } from "./types.js";
+import { computeDefenseAction, DefenseAction, DefenseStateInfo } from "./defense.js";
+import { Anomaly, DEFAULT_CONFIG, EnhancedTx, PnlSummary } from "./types.js";
 
 export function defaultSeedPages(): number {
   const raw = process.env.RADAR_SEED_PAGES;
@@ -87,6 +88,8 @@ export interface WalletReport {
   quiet?: boolean;
   backoffUntil?: number;
   nextPollAt?: number;
+  /** Active-defense action taken this tick (Pillar 3), when evaluated. */
+  defense?: DefenseAction;
 }
 
 export interface WatchReport {
@@ -100,6 +103,48 @@ export interface WatchReport {
  * double-alerting — the same fresh txs.
  */
 const inFlightWallets = new Set<string>();
+
+/**
+ * Run the active-defense state machine for one wallet on one tick and persist
+ * the result (stance + audit event). Pure decision lives in computeDefenseAction;
+ * this only adds the store I/O. A freshly-armed wallet that stays quiet does not
+ * accumulate rows (nothing to record until it escalates).
+ */
+function evaluateDefense(
+  store: Store,
+  wallet: string,
+  nowSec: number,
+  active: boolean,
+  riskScore: number,
+  anomalies: Anomaly[],
+  quietStreak: number,
+): DefenseAction | null {
+  const current = store.getDefenseState(wallet);
+  const hasHighSeverity = anomalies.some((a) => a.severity === "high");
+  const action = computeDefenseAction({ riskScore, hasHighSeverity, active, current, quietStreak, nowSec });
+  if (current === null && !action.changed) return action;
+  const prev = current?.state ?? "armed";
+  const next: DefenseStateInfo = {
+    state: action.state,
+    riskAt: active ? riskScore : current?.riskAt ?? 0,
+    setAt: nowSec,
+    quietStreak: active ? 0 : quietStreak,
+    actions: (current?.actions ?? 0) + (action.changed ? 1 : 0),
+  };
+  store.setDefenseState(wallet, next);
+  if (action.changed) {
+    store.recordDefenseEvent({
+      wallet,
+      ts: nowSec,
+      fromState: prev,
+      toState: action.state,
+      action: action.action,
+      risk: riskScore,
+      reason: action.reason,
+    });
+  }
+  return action;
+}
 
 /**
  * One polling iteration over the whole watchlist.
@@ -224,6 +269,20 @@ export async function watchOnce(
         const newStreak = prevStreak + 1;
         const intervalSec = calculateAdaptiveInterval(basePollSec, maxPollSec, newStreak, quietThreshold);
         store.recordPacing(wallet, newStreak, nowSec + intervalSec);
+        // Active defense: sustained quiet relaxes the stance (de-escalate/clear).
+        const defense = evaluateDefense(store, wallet, nowSec, false, 0, [], newStreak);
+        if (defense?.changed) {
+          report.wallets.push({
+            wallet,
+            freshTxCount: 0,
+            seeded,
+            anomalyCount: 0,
+            riskScore: 0,
+            quiet: true,
+            nextPollAt: nowSec + intervalSec,
+            defense,
+          });
+        }
         continue;
       }
 
@@ -236,12 +295,19 @@ export async function watchOnce(
 
       let anomalyCount = 0;
       let riskScore = 0;
+      let defense: DefenseAction | null = null;
       if (!seeded) {
         const mintRisk = await fetchMintRisk(fresh);
         const anomalies = detectAnomalies(wallet, fresh, prev, undefined, prices, mintRisk);
         if (anomalies.length > 0) {
           store.recordAnomalies(anomalies, nowSec);
           riskScore = computeRiskScore(anomalies);
+        }
+        // Active defense: evaluate the stance on every active tick — escalate on
+        // risk, or hold (and reset the quiet streak so a still-transacting wallet
+        // does not relax while it keeps moving money).
+        defense = evaluateDefense(store, wallet, nowSec, true, riskScore, anomalies, 0);
+        if (anomalies.length > 0) {
           const { digest, source } = await bestEffortDigest(
             wallet,
             riskScore,
@@ -249,8 +315,9 @@ export async function watchOnce(
             llmConfigFromEnv(),
           );
           if (sink) {
+            const defenseLine = defense?.changed ? `\nDEFENSE: ${defense.reason}` : "";
             await sink.send(
-              formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined),
+              formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined) + defenseLine,
               { wallet, risk: riskScore, anomalies },
             );
             store.markAllAlerted(wallet);
@@ -267,6 +334,7 @@ export async function watchOnce(
         anomalyCount,
         riskScore,
         pnl: baseline.pnl,
+        defense: defense ?? undefined,
       });
     } finally {
       inFlightWallets.delete(wallet);

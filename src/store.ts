@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { Anomaly, Baseline, MintRiskInfo, SettledPayment } from "./types.js";
+import type { DefenseState, DefenseStateInfo } from "./defense.js";
 
 /**
  * SQLite persistence for the watch loop (node:sqlite, zero deps).
@@ -73,6 +74,25 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events(ts);
       CREATE INDEX IF NOT EXISTS idx_settled_payments_settled_at ON settled_payments(settled_at);
+      CREATE TABLE IF NOT EXISTS defense_states (
+        address TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        risk_at INTEGER NOT NULL DEFAULT 0,
+        set_at INTEGER NOT NULL,
+        quiet_streak INTEGER NOT NULL DEFAULT 0,
+        actions INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS defense_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        wallet TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        from_state TEXT NOT NULL,
+        to_state TEXT NOT NULL,
+        action TEXT NOT NULL,
+        risk INTEGER NOT NULL,
+        reason TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_defense_events_wallet_ts ON defense_events(wallet, ts);
     `);
     // Migration: add top10_pct to mint_cache for databases created before it existed.
     const mintCols = this.db.prepare("PRAGMA table_info(mint_cache)").all() as Array<{ name: string }>;
@@ -96,6 +116,8 @@ export class Store {
     this.db.prepare("DELETE FROM seen_txs WHERE wallet = ?").run(address);
     this.db.prepare("DELETE FROM wallet_backoff WHERE address = ?").run(address);
     this.db.prepare("DELETE FROM wallet_pacing WHERE address = ?").run(address);
+    this.db.prepare("DELETE FROM defense_states WHERE address = ?").run(address);
+    this.db.prepare("DELETE FROM defense_events WHERE wallet = ?").run(address);
   }
 
   listWallets(): string[] {
@@ -388,6 +410,90 @@ export class Store {
       .all(since) as Array<{ day: string; c: number; total: number }>;
     return rows.map((r) => ({ day: r.day, costUsd: Math.round(r.total * 1e6) / 1e6, events: r.c }));
   }
+
+  getDefenseState(address: string): DefenseStateInfo | null {
+    const row = this.db
+      .prepare("SELECT state, risk_at, set_at, quiet_streak, actions FROM defense_states WHERE address = ?")
+      .get(address) as
+      | { state: string; risk_at: number; set_at: number; quiet_streak: number; actions: number }
+      | undefined;
+    if (!row) return null;
+    return {
+      state: row.state as DefenseState,
+      riskAt: Number(row.risk_at),
+      setAt: Number(row.set_at),
+      quietStreak: Number(row.quiet_streak),
+      actions: Number(row.actions),
+    };
+  }
+
+  setDefenseState(address: string, info: DefenseStateInfo): void {
+    this.db
+      .prepare(
+        "INSERT INTO defense_states (address, state, risk_at, set_at, quiet_streak, actions) VALUES (?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(address) DO UPDATE SET state = excluded.state, risk_at = excluded.risk_at, " +
+          "set_at = excluded.set_at, quiet_streak = excluded.quiet_streak, actions = excluded.actions",
+      )
+      .run(address, info.state, info.riskAt, info.setAt, info.quietStreak, info.actions);
+  }
+
+  recordDefenseEvent(evt: DefenseEvent): void {
+    this.db
+      .prepare(
+        "INSERT INTO defense_events (wallet, ts, from_state, to_state, action, risk, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(evt.wallet, evt.ts, evt.fromState, evt.toState, evt.action, evt.risk, evt.reason);
+  }
+
+  recentDefenseEvents(wallet: string, limit = 20): DefenseEvent[] {
+    const rows = this.db
+      .prepare("SELECT * FROM defense_events WHERE wallet = ? ORDER BY ts DESC, id DESC LIMIT ?")
+      .all(wallet, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      wallet: r.wallet as string,
+      ts: Number(r.ts),
+      fromState: r.from_state as string,
+      toState: r.to_state as string,
+      action: r.action as string,
+      risk: Number(r.risk),
+      reason: r.reason as string,
+    }));
+  }
+
+  listDefenseStates(): Array<{ wallet: string; state: DefenseStateInfo }> {
+    const rows = this.db
+      .prepare(
+        "SELECT address, state, risk_at, set_at, quiet_streak, actions FROM defense_states ORDER BY set_at DESC",
+      )
+      .all() as Array<{
+      address: string;
+      state: string;
+      risk_at: number;
+      set_at: number;
+      quiet_streak: number;
+      actions: number;
+    }>;
+    return rows.map((r) => ({
+      wallet: r.address,
+      state: {
+        state: r.state as DefenseState,
+        riskAt: Number(r.risk_at),
+        setAt: Number(r.set_at),
+        quietStreak: Number(r.quiet_streak),
+        actions: Number(r.actions),
+      },
+    }));
+  }
+}
+
+export interface DefenseEvent {
+  wallet: string;
+  ts: number;
+  fromState: string;
+  toState: string;
+  action: string;
+  risk: number;
+  reason: string;
 }
 
 export interface WalletPacing {

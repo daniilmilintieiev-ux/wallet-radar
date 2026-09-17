@@ -40,6 +40,8 @@ export interface DecisionResult {
   legacyVerdict: "safe" | "hold" | "unknown";
   /** Original risk score (0-100), null if unknown. */
   riskScore: number | null;
+  /** True when the active-defense stance (Pillar 3) tightened this verdict. */
+  enforcedByDefense?: boolean;
 }
 
 export interface DecisionInputs {

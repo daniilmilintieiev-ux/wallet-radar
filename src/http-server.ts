@@ -16,6 +16,9 @@ import { simulatePayment, type SimulateInput } from "./simulate.js";
 import { runBenchmark } from "./benchmark.js";
 import { Store } from "./store.js";
 import { watchOnce, watchLoop } from "./watch.js";
+import { enforcementFor, enforceVerdict } from "./defense.js";
+import type { DefenseStateInfo, DefenseView } from "./defense.js";
+import type { ActionVerdict } from "./decision.js";
 import { makeSink, type AlertSink } from "./alerts.js";
 import type { MintRiskMap } from "./mint.js";
 import { homedir } from "node:os";
@@ -44,6 +47,9 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/watch", tool: "radar_watch", description: "Add a wallet to the monitoring watchlist so it is continuously re-checked for new anomalies (webhook/Telegram on detection). Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/unwatch", tool: "radar_unwatch", description: "Remove a wallet from the monitoring watchlist. Requires the watch store (RADAR_WATCH=1)." },
   { method: "GET", path: "/alerts", tool: "radar_alerts", description: "Recent recorded anomalies from the monitoring watchlist, most recent first. Requires the watch store (RADAR_WATCH=1)." },
+  { method: "GET", path: "/defense", tool: "radar_defense", description: "Active-defense posture (Pillar 3): the current defense stance per watched wallet (armed/alerting/gated/blocked) with the enforcement each stance implies. The radar acts, not just reports." },
+  { method: "GET", path: "/defense/:wallet", tool: "radar_defense_wallet", description: "One wallet's defense stance plus its audited transition trail (armed -> alerting -> gated -> blocked -> ...). Requires the watch store (RADAR_WATCH=1)." },
+  { method: "POST", path: "/defense/:wallet/clear", tool: "radar_defense_clear", description: "Manually reset a wallet's defense stance back to armed (operator override), recorded as an audit event. Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/poll", tool: "radar_poll", description: "Immediately re-check the whole monitoring watchlist for new activity and fire webhooks/Telegram on any new anomaly (re-check your copied wallet now). Requires the watch store + HELIUS_API_KEY (RADAR_WATCH=1)." },
   { method: "POST", path: "/selftest", tool: "radar_selftest", description: "Free offline smoke test over a built-in fixture. Returns riskScore, anomalies, per-rule reasons, and summary." },
   { method: "POST", path: "/benchmark", tool: "radar_benchmark", description: "Reproducible quality proof: runs a versioned eval set of labeled test cases through the full detection pipeline and reports precision, recall, accuracy, and per-case results. Deterministic — same input, same numbers, every time. No network calls." },
@@ -347,10 +353,61 @@ function extractWallet(body: Record<string, unknown>): string | null {
   return walk(msg) ?? walk(body);
 }
 
+function defenseView(wallet: string, st: DefenseStateInfo): DefenseView {
+  return {
+    wallet,
+    state: st.state,
+    riskAt: st.riskAt,
+    setAt: st.setAt,
+    quietStreak: st.quietStreak,
+    actions: st.actions,
+    enforcement: enforcementFor(st.state),
+  };
+}
+
+/**
+ * Active-defense enforcement (Pillar 3): when a wallet has an active stance,
+ * attach it to the response and, when the stance gates payments (gated/blocked),
+ * tighten the actionable verdict — the more conservative of fresh vs. stance wins.
+ * No-op for wallets with no stance (the common case).
+ */
+function applyDefense(store: Store, body: Record<string, unknown>, out: Record<string, unknown>): void {
+  const wallet = typeof body.wallet === "string" ? body.wallet : undefined;
+  if (!wallet) return;
+  const st = store.getDefenseState(wallet);
+  if (!st) return;
+  const view = defenseView(wallet, st);
+  if (view.enforcement.gating) {
+    const action = out.action;
+    if (action && typeof action === "object" && "verdict" in (action as Record<string, unknown>)) {
+      (action as Record<string, unknown>).verdict = enforceVerdict(
+        (action as Record<string, unknown>).verdict as ActionVerdict,
+        st.state,
+      );
+    }
+  }
+  out.defense = view;
+}
+
+/** Defense enforcement for the A2A surface (operates on a TrustResult). */
+function applyDefenseToTrust(store: Store, result: TrustResult): TrustResult {
+  const st = store.getDefenseState(result.wallet);
+  if (!st) return result;
+  const action = result.action;
+  if (!action) return { ...result, defense: defenseView(result.wallet, st) };
+  const enforced = enforceVerdict(action.verdict, st.state);
+  return {
+    ...result,
+    action: { ...action, verdict: enforced, enforcedByDefense: enforced !== action.verdict },
+    defense: defenseView(result.wallet, st),
+  };
+}
+
 async function handleA2A(
   res: http.ServerResponse,
   body: Record<string, unknown>,
   recordCost?: (detail?: string) => void,
+  store?: Store,
 ): Promise<void> {
   const isRpc = body.jsonrpc === "2.0";
   const id = body.id !== undefined ? body.id : "1";
@@ -374,12 +431,13 @@ async function handleA2A(
     }
     throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
   }
-  const result: TrustResult = await runTrustCheck(apiKey, wallet, {
+  let result: TrustResult = await runTrustCheck(apiKey, wallet, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
     minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
     windowDays: typeof body.windowDays === "number" ? body.windowDays : undefined,
   });
   recordCost?.("/a2a");
+  if (store) result = applyDefenseToTrust(store, result);
   if (isRpc) {
     sendJson(res, 200, {
       jsonrpc: "2.0",
@@ -504,6 +562,30 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         sendJson(res, 200, { anomalies, count: anomalies.length });
         return;
       }
+      // Active defense (Pillar 3): stance list + per-wallet stance & audit trail.
+      if (p === "/defense") {
+        const store = requireStore(ctx);
+        const states = store.listDefenseStates();
+        sendJson(res, 200, {
+          count: states.length,
+          states: states.map((s) => defenseView(s.wallet, s.state)),
+        });
+        return;
+      }
+      const defenseMatch = p.match(/^\/defense\/([A-Za-z0-9]{1,64})$/);
+      if (defenseMatch) {
+        const store = requireStore(ctx);
+        const wallet = defenseMatch[1];
+        const st = store.getDefenseState(wallet);
+        const events = store.recentDefenseEvents(wallet, 20);
+        sendJson(res, 200, {
+          wallet,
+          state: st,
+          enforcement: st ? enforcementFor(st.state) : null,
+          events,
+        });
+        return;
+      }
       // A2A agent card (a2a-protocol.org well-known location).
       if (p === "/.well-known/agent.json") {
         sendJson(res, 200, a2aCard());
@@ -548,6 +630,27 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() });
         return;
       }
+      const defenseClearMatch = p.match(/^\/defense\/([A-Za-z0-9]{1,64})\/clear$/);
+      if (defenseClearMatch) {
+        const store = requireStore(ctx);
+        const wallet = defenseClearMatch[1];
+        const st = store.getDefenseState(wallet);
+        if (!st) throw new HttpError(404, "no defense state for this wallet (it has not been escalated).");
+        const nowSec = Math.floor(Date.now() / 1000);
+        const next = { state: "armed" as const, riskAt: st.riskAt, setAt: nowSec, quietStreak: st.quietStreak, actions: st.actions + 1 };
+        store.setDefenseState(wallet, next);
+        store.recordDefenseEvent({
+          wallet,
+          ts: nowSec,
+          fromState: st.state,
+          toState: "armed",
+          action: "clear",
+          risk: st.riskAt,
+          reason: "Manual clear: operator reset the defense stance to armed.",
+        });
+        sendJson(res, 200, { wallet, cleared: true, from: st.state, state: next });
+        return;
+      }
       if (p === "/poll") {
         const store = requireStore(ctx);
         const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
@@ -566,14 +669,15 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       // A2A JSON-RPC trust-gate endpoint.
       if (p === "/a2a") {
         const a2aStore = ctx.store;
-        await handleA2A(res, body, a2aStore ? (d?: string) => recordHeliusCost(a2aStore, d) : undefined);
+        await handleA2A(res, body, a2aStore ? (d?: string) => recordHeliusCost(a2aStore, d) : undefined, ctx.store);
         return;
       }
 
       // Path dispatch (primary).
       const byPath = TOOL_BY_PATH[p];
       if (byPath) {
-        const out = await byPath(body);
+        let out = await byPath(body);
+        if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
         if (ctx.store && LIVE_HELIUS_PATHS.has(p)) recordHeliusCost(ctx.store, p);
         sendJson(res, 200, out);
         return;
@@ -585,7 +689,9 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const norm = sel.replace(/^radar_/, "").toLowerCase();
         const target = TOOL_BY_PATH[`/${norm}`];
         if (target) {
-          sendJson(res, 200, await target(body));
+          let out = await target(body);
+          if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
+          sendJson(res, 200, out);
           return;
         }
         throw new HttpError(400, 'POST / requires body.tool or body.action to be one of: scan, analyze, trust, selftest.');
