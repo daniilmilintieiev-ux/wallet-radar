@@ -100,14 +100,14 @@ function isBase58Address(v: unknown): v is string {
   return typeof v === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v);
 }
 
-async function toolScan(body: Record<string, unknown>): Promise<unknown> {
+async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
-  const apiKey = process.env.HELIUS_API_KEY;
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
-  const txs = await fetchWalletTransactions(apiKey, wallet);
-  const prices = await fetchSwapPrices(txs);
-  const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
+  const txs = ctx.fetchTxs ? await ctx.fetchTxs(wallet) : await fetchWalletTransactions(apiKey, wallet);
+  const prices = ctx.fetchPrices ? await ctx.fetchPrices(txs) : await fetchSwapPrices(txs);
+  const mintRisk = ctx.fetchMintRisk ? await ctx.fetchMintRisk(txs) : await fetchSwapMintRisk(txs, { apiKey });
   const baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
   const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
   const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
@@ -453,7 +453,7 @@ async function handleA2A(
   }
 }
 
-const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>) => Promise<unknown> | unknown> = {
+const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>, ctx: RequestContext) => Promise<unknown> | unknown> = {
   "/scan": toolScan,
   "/radar_scan": toolScan,
   "/analyze": toolAnalyze,
@@ -676,7 +676,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       // Path dispatch (primary).
       const byPath = TOOL_BY_PATH[p];
       if (byPath) {
-        let out = await byPath(body);
+        let out = await byPath(body, ctx);
         if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
         if (ctx.store && LIVE_HELIUS_PATHS.has(p)) recordHeliusCost(ctx.store, p);
         sendJson(res, 200, out);
@@ -689,7 +689,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const norm = sel.replace(/^radar_/, "").toLowerCase();
         const target = TOOL_BY_PATH[`/${norm}`];
         if (target) {
-          let out = await target(body);
+          let out = await target(body, ctx);
           if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
           sendJson(res, 200, out);
           return;

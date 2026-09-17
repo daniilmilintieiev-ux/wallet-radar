@@ -26,7 +26,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test \"dist/test/**/*.test.js\"",
+    "test": "node --test --test-force-exit \"dist/test/**/*.test.js\"",
     "radar": "node dist/src/cli.js",
     "mcp": "node dist/src/mcp.js",
     "mcp:server": "node dist/src/mcp-server.js",
