@@ -22,6 +22,8 @@ export class ConsoleSink implements AlertSink {
  * Telegram bot alerts. Best-effort: a failed send is logged to stderr and
  * swallowed — alerting must never break the watch loop.
  */
+const ALERT_FETCH_TIMEOUT_MS = 10_000;
+
 export class TelegramSink implements AlertSink {
   constructor(
     private token: string,
@@ -35,6 +37,7 @@ export class TelegramSink implements AlertSink {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: this.chatId, text }),
+        signal: AbortSignal.timeout(ALERT_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -66,6 +69,7 @@ export class WebhookSink implements AlertSink {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(ALERT_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");

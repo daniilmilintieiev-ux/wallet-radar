@@ -102,4 +102,32 @@ describe("simulatePayment", () => {
     assert.equal(result.exceedsLiquidity, true);
     assert.equal(result.decision.suggestedLimitUsd, null);
   });
+
+  it("payment driving projected risk over maxRisk flips legacyVerdict to hold and throttles", () => {
+    // Initial risk 25 (safe under maxRisk 30), but 3x median swap triggers LARGE_SWAP (+20 risk -> 45)
+    const result = simulatePayment(makeInput({
+      riskScore: 25,
+      legacyVerdict: "safe",
+      amountUsd: 150,
+      medianSwapAmountUsd: 50,
+      maxRisk: 30,
+    }));
+    assert.equal(result.projectedRiskScore, 45);
+    assert.equal(result.decision.legacyVerdict, "hold");
+    assert.notEqual(result.decision.verdict, "allow");
+    assert.equal(result.safeToExecute, false);
+  });
+
+  it("payment draining liquidity below minLiquidityUsd flips legacyVerdict to hold", () => {
+    const result = simulatePayment(makeInput({
+      riskScore: 10,
+      legacyVerdict: "safe",
+      balances: { sol: 0, usdc: 100, usdt: 0 },
+      amountUsd: 70, // Leaves $30 liquidity, below minLiquidityUsd 50
+      minLiquidityUsd: 50,
+    }));
+    assert.equal(result.liquidityAfterUsd, 30);
+    assert.equal(result.decision.legacyVerdict, "hold");
+    assert.notEqual(result.decision.verdict, "allow");
+  });
 });

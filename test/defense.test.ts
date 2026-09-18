@@ -250,6 +250,17 @@ describe("defense in the watch loop (autonomous)", () => {
     const trail = store.recentDefenseEvents(wallet);
     assert.equal(trail[0].action, "de-escalate");
     assert.equal(trail[0].toState, "gated");
+
+    // 4. Poll 4 (only 1 quiet poll in gated state) must HOLD gated, not de-escalate immediately
+    await watchOnce(store, "k", {
+      fetchTxs: async () => [],
+      fetchPrices: async () => null,
+      fetchMintRisk: async () => ({}),
+      nowSec: NOW + 10 + 4 * 100_000,
+    });
+    assert.equal(store.getDefenseState(wallet)?.state, "gated");
+    assert.equal(store.getDefenseState(wallet)?.quietStreak, 1);
+
     store.close();
   });
 });

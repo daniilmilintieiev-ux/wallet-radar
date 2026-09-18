@@ -595,3 +595,149 @@ test("http-server: GET /economics is 503 with no store", async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
 });
+
+test("http-server: payload > 1MB returns 413 Payload Too Large", async () => {
+  const r = await startTestServer();
+  try {
+    const hugePayload = "x".repeat(1_050_000);
+    const res = await fetch(`${r.base}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: hugePayload,
+    });
+    assert.equal(res.status, 413);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, "Payload Too Large");
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: rate limiter exempts /health with query params", async () => {
+  const server = createServer({ rateLimitPerMin: 2 });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    // /health?check=1 should be exempt even if called repeatedly
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`${base}/health?check=${i}`);
+      assert.equal(res.status, 200);
+    }
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test("http-server: internal server error returns clean 500 without leaking stack traces", async () => {
+  const server = createServer({
+    fetchTxs: async () => {
+      throw new Error("/var/secret/path/failed to connect to upstream RPC database: internal details");
+    },
+    apiKey: "test-helius-key",
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    const res = await fetch(`${base}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8" }),
+    });
+    assert.equal(res.status, 500);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, "Internal server error");
+    assert.ok(!JSON.stringify(body).includes("/var/secret"));
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test("http-server: GET /defense/:wallet and POST /defense/:wallet/clear validate base58 wallet", async () => {
+  const { store, dir } = tmpStore();
+  const server = createServer({ store, rateLimitPerMin: 0 });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    const resGet = await fetch(`${base}/defense/invalid-wallet-address!`);
+    assert.equal(resGet.status, 400);
+
+    const resClear = await fetch(`${base}/defense/invalid-wallet-address!/clear`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(resClear.status, 400);
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("http-server: POST /simulate validates positive amountUsd, token, and balances", async () => {
+  const r = await startTestServer();
+  try {
+    const wallet = "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8";
+
+    // Negative amountUsd -> 400
+    const res1 = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet, amountUsd: -10, balances: { usdc: 100 } }),
+    });
+    assert.equal(res1.status, 400);
+
+    // Invalid token -> 400
+    const res2 = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet, amountUsd: 10, token: "btc", balances: { usdc: 100 } }),
+    });
+    assert.equal(res2.status, 400);
+
+    // Invalid balances -> 400
+    const res3 = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet, amountUsd: 10, balances: { usdc: -5 } }),
+    });
+    assert.equal(res3.status, 400);
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /trust validates maxRisk and minLiquidityUsd", async () => {
+  const r = await startTestServer();
+  try {
+    const wallet = "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8";
+
+    // maxRisk out of range -> 400
+    const res1 = await fetch(`${r.base}/trust`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet, maxRisk: 150 }),
+    });
+    assert.equal(res1.status, 400);
+
+    // negative minLiquidityUsd -> 400
+    const res2 = await fetch(`${r.base}/trust`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet, minLiquidityUsd: -1 }),
+    });
+    assert.equal(res2.status, 400);
+  } finally {
+    await r.close();
+  }
+});
+

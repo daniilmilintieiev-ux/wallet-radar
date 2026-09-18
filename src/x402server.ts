@@ -76,6 +76,9 @@ function getRpcUrl(): string {
   return "https://api.mainnet-beta.solana.com";
 }
 
+const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
+const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
+
 export async function verifySolanaPaymentRpc(
   proof: PaymentProof,
   requirement: PaymentRequirement,
@@ -97,6 +100,7 @@ export async function verifySolanaPaymentRpc(
           },
         ],
       }),
+      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       return { valid: false, error: `RPC HTTP error ${res.status}: ${res.statusText}` };
@@ -276,18 +280,32 @@ export function send402(
   );
 }
 
-function readBody(req: http.IncomingMessage, maxBytes = 10 * 1024 * 1024): Promise<string> {
+class PayloadTooLargeError extends Error {
+  status = 413;
+  constructor() {
+    super("Payload Too Large");
+  }
+}
+
+function readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
+    let rejected = false;
     req.on("data", (chunk) => {
+      if (rejected) return;
       data += chunk.toString();
       if (data.length > maxBytes) {
-        req.destroy();
-        reject(new Error("Request payload too large"));
+        rejected = true;
+        reject(new PayloadTooLargeError());
+        req.resume();
       }
     });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!rejected) resolve(data);
+    });
+    req.on("error", (err) => {
+      if (!rejected) reject(err);
+    });
   });
 }
 
@@ -296,6 +314,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
     options.recipient ??
     process.env.RADAR_X402_RECIPIENT ??
     "11111111111111111111111111111111";
+
+  const inFlightPayments = new Set<string>();
 
   const store =
     options.store ??
@@ -447,9 +467,20 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
         try {
           const raw = await readBody(req);
           if (raw.trim()) {
-            body = JSON.parse(raw);
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "body must be a JSON object" }));
+              return;
+            }
+            body = parsed;
           }
-        } catch {
+        } catch (err: any) {
+          if (err instanceof PayloadTooLargeError || err?.status === 413) {
+            res.writeHead(413, { "Content-Type": "application/json", "Connection": "close" });
+            res.end(JSON.stringify({ error: "Payload Too Large" }));
+            return;
+          }
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Invalid JSON body" }));
           return;
@@ -462,134 +493,154 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           return;
         }
 
-        // 2. Check replay in settled ledger
-        if (store.hasSettledPayment(proof.signature)) {
+        // Reject dry-run / mock payment bypass on paid routes
+        if (req.headers["x-payment-dry-run"] === "true") {
+          send402(res, pathname, requiredPrice, recipient, "Dry-run payments not allowed on paid routes");
+          return;
+        }
+
+        // 2. Check replay in settled ledger and in-flight payments
+        if (inFlightPayments.has(proof.signature) || store.hasSettledPayment(proof.signature)) {
           send402(res, pathname, requiredPrice, recipient, "Payment signature already settled (replay rejected)");
           return;
         }
 
-        // 3. Verify payment
-        const verResult = await verifier(proof, {
-          endpoint: pathname,
-          recipient,
-          minAmount: requiredPrice,
-          maxAgeSec: options.maxAgeSec,
-          mint: USDC_MINT,
-        });
+        inFlightPayments.add(proof.signature);
+        try {
+          // 3. Verify payment
+          const verResult = await verifier(proof, {
+            endpoint: pathname,
+            recipient,
+            minAmount: requiredPrice,
+            maxAgeSec: options.maxAgeSec,
+            mint: USDC_MINT,
+          });
 
-        if (!verResult.valid) {
-          send402(res, pathname, requiredPrice, recipient, verResult.error || "Payment verification failed");
-          return;
-        }
-
-        // 3.5. Validate endpoint params BEFORE settling, so a validly-paid
-        // request that is missing its parameters 400s without marking the
-        // signature settled (which would force the client to pay again for a
-        // replay that now reads "already settled").
-        if (pathname === "/scan") {
-          if (!body?.wallet || typeof body.wallet !== "string") {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Missing or invalid wallet parameter" }));
+          if (!verResult.valid) {
+            send402(res, pathname, requiredPrice, recipient, verResult.error || "Payment verification failed");
             return;
           }
-        } else if (pathname === "/analyze") {
-          if (!body?.wallet || typeof body.wallet !== "string" || !body.txs) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
-            return;
-          }
-        }
 
-        // 4. Settle signature in store
-        store.recordSettledPayment({
-          signature: proof.signature,
-          payer: proof.payer,
-          recipient,
-          amount: verResult.amount ?? requiredPrice,
-          endpoint: pathname,
-        });
-
-        // 5. Execute endpoint handler
-        if (pathname === "/scan") {
-          if (!body?.wallet || typeof body.wallet !== "string") {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Missing or invalid wallet parameter" }));
-            return;
-          }
-          const rawScanRes = (await scanHandler(body.wallet)) as Record<string, any>;
-          recordHeliusCost(store, "/scan");
-          const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
-
-          if (scanRes && typeof scanRes === "object") {
-            const riskScore = typeof scanRes.riskScore === "number" ? scanRes.riskScore : 0;
-            const verdict =
-              typeof scanRes.verdict === "string" ? scanRes.verdict : computeVerdict(riskScore);
-            scanRes.verdict = verdict;
-
-            const isOracleEnabled =
-              options.enableOracle ??
-              (process.env.RADAR_ORACLE === "1" || options.oracleClient !== undefined);
-
-            if (isOracleEnabled) {
-              try {
-                const anomalies = Array.isArray(scanRes.anomalies) ? scanRes.anomalies : [];
-                const topRules = Array.from(
-                  new Set(anomalies.map((a: any) => a.type || a.rule).filter(Boolean)),
-                );
-                const txSignatures = Array.isArray(scanRes.txSignatures)
-                  ? scanRes.txSignatures
-                  : Array.isArray(scanRes.txs)
-                  ? scanRes.txs.map((t: any) => t.signature).filter(Boolean).slice(0, 10)
-                  : [];
-
-                const commitFn = options.commitScanFn ?? commitScan;
-                const commitRes = await commitFn(
-                  {
-                    wallet: body.wallet,
-                    riskScore,
-                    verdict,
-                    timestamp: Math.floor(Date.now() / 1000),
-                    topRules,
-                    txSignatures,
-                  },
-                  { client: options.oracleClient, rpcUrl: options.rpcUrl },
-                );
-
-                if (commitRes.signature) {
-                  scanRes.onchainLedgerSig = commitRes.signature;
-                }
-                scanRes.oracle = commitRes;
-              } catch (err) {
-                if (process.env.RADAR_DEBUG === "1") {
-                  console.error("[x402] oracle commitScan failed:", err);
-                }
-              }
+          // 3.5. Validate endpoint params BEFORE settling, so a validly-paid
+          // request that is missing its parameters 400s without marking the
+          // signature settled
+          if (pathname === "/scan") {
+            if (!body?.wallet || !BASE58_ADDR_REGEX.test(body.wallet)) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "body.wallet must be a Solana base58 address" }));
+              return;
+            }
+          } else if (pathname === "/analyze") {
+            const wallet = body?.wallet;
+            if (!wallet || typeof wallet !== "string" || wallet.length > 64) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+              return;
+            }
+            if (!body?.txs || (!Array.isArray(body.txs) && typeof body.txs !== "string")) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+              return;
+            }
+            if (Array.isArray(body.txs) && body.txs.length > 1000) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "body.txs: at most 1000 transactions allowed" }));
+              return;
             }
           }
 
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(scanRes, null, 2));
-          return;
-        }
-
-        if (pathname === "/analyze") {
-          if (!body?.wallet || typeof body.wallet !== "string" || !body.txs) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+          // 4. Settle signature in store
+          const settled = store.recordSettledPayment({
+            signature: proof.signature,
+            payer: proof.payer,
+            recipient,
+            amount: verResult.amount ?? requiredPrice,
+            endpoint: pathname,
+          });
+          if (!settled) {
+            send402(res, pathname, requiredPrice, recipient, "Payment signature already settled (replay rejected)");
             return;
           }
-          const analyzeRes = await analyzeHandler(body.wallet, body.txs);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(analyzeRes, null, 2));
-          return;
+
+          // 5. Execute endpoint handler
+          if (pathname === "/scan") {
+            const rawScanRes = (await scanHandler(body.wallet)) as Record<string, any>;
+            recordHeliusCost(store, "/scan");
+            const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
+
+            if (scanRes && typeof scanRes === "object") {
+              const riskScore = typeof scanRes.riskScore === "number" ? scanRes.riskScore : 0;
+              const verdict =
+                typeof scanRes.verdict === "string" ? scanRes.verdict : computeVerdict(riskScore);
+              scanRes.verdict = verdict;
+
+              const isOracleEnabled =
+                options.enableOracle ??
+                (process.env.RADAR_ORACLE === "1" || options.oracleClient !== undefined);
+
+              if (isOracleEnabled) {
+                try {
+                  const anomalies = Array.isArray(scanRes.anomalies) ? scanRes.anomalies : [];
+                  const topRules = Array.from(
+                    new Set(anomalies.map((a: any) => a.type || a.rule).filter(Boolean)),
+                  );
+                  const txSignatures = Array.isArray(scanRes.txSignatures)
+                    ? scanRes.txSignatures
+                    : Array.isArray(scanRes.txs)
+                    ? scanRes.txs.map((t: any) => t.signature).filter(Boolean).slice(0, 10)
+                    : [];
+
+                  const commitFn = options.commitScanFn ?? commitScan;
+                  const commitRes = await commitFn(
+                    {
+                      wallet: body.wallet,
+                      riskScore,
+                      verdict,
+                      timestamp: Math.floor(Date.now() / 1000),
+                      topRules,
+                      txSignatures,
+                    },
+                    { client: options.oracleClient, rpcUrl: options.rpcUrl },
+                  );
+
+                  if (commitRes.signature) {
+                    scanRes.onchainLedgerSig = commitRes.signature;
+                  }
+                  scanRes.oracle = commitRes;
+                } catch (err) {
+                  if (process.env.RADAR_DEBUG === "1") {
+                    console.error("[x402] oracle commitScan failed:", err);
+                  }
+                }
+              }
+            }
+
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(scanRes, null, 2));
+            return;
+          }
+
+          if (pathname === "/analyze") {
+            const analyzeRes = await analyzeHandler(body.wallet, body.txs);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(analyzeRes, null, 2));
+            return;
+          }
+        } finally {
+          inFlightPayments.delete(proof.signature);
         }
       }
 
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not Found" }));
-    } catch (err) {
+    } catch (err: any) {
+      if (err instanceof PayloadTooLargeError || err?.status === 413) {
+        res.writeHead(413, { "Content-Type": "application/json", "Connection": "close" });
+        res.end(JSON.stringify({ error: "Payload Too Large" }));
+        return;
+      }
       res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: `Internal server error: ${err instanceof Error ? err.message : String(err)}` }));
+      res.end(JSON.stringify({ error: "Internal server error" }));
     }
   });
 

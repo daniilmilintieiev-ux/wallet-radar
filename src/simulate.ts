@@ -114,12 +114,20 @@ export function simulatePayment(input: SimulateInput): SimulateResult {
   // Projected risk score
   const projectedRiskScore = riskScore !== null ? Math.min(100, riskScore + riskDelta) : null;
 
+  // Recompute projected verdict so decision engine reflects post-payment risk/liquidity
+  let projectedLegacyVerdict: "safe" | "hold" | "unknown" = legacyVerdict;
+  if (projectedLegacyVerdict !== "unknown") {
+    if ((projectedRiskScore !== null && projectedRiskScore > maxRisk) || liquidityAfterUsd < minLiquidityUsd) {
+      projectedLegacyVerdict = "hold";
+    }
+  }
+
   // Compute the decision based on projected state
   const decisionInputs = {
     riskScore: projectedRiskScore,
     anomalies: anomalies,
     liquidityUsd: liquidityAfterUsd,
-    legacyVerdict,
+    legacyVerdict: projectedLegacyVerdict,
     maxRisk,
     minLiquidityUsd,
   };

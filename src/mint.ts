@@ -116,6 +116,9 @@ export function computeTop10Pct(
   return Math.max(0, Math.min(100, Math.round(pct * 100) / 100));
 }
 
+const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
+const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchTop10Pct(
   fetchFn: typeof fetch,
   rpcUrl: string,
@@ -123,6 +126,7 @@ async function fetchTop10Pct(
   supplyBaseUnits: string,
   decimals: number,
 ): Promise<number | null> {
+  if (!BASE58_ADDR_REGEX.test(mint)) return null;
   try {
     const res = await fetchFn(rpcUrl, {
       method: "POST",
@@ -133,6 +137,7 @@ async function fetchTop10Pct(
         method: "getTokenLargestAccounts",
         params: [mint],
       }),
+      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as any;
@@ -173,6 +178,10 @@ export async function fetchMintMetadata(
   mint: string,
   opts: FetchMintOptions = {},
 ): Promise<MintRiskInfo | null> {
+  if (!BASE58_ADDR_REGEX.test(mint)) {
+    return null;
+  }
+
   if (MAJOR_MINTS.includes(mint)) {
     return { mint, mintAuthority: null, freezeAuthority: null };
   }
@@ -208,6 +217,7 @@ export async function fetchMintMetadata(
         method: "getAsset",
         params: { id: mint },
       }),
+      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
     });
     if (dasRes.ok) {
       const dasData = await dasRes.json();
@@ -235,6 +245,7 @@ export async function fetchMintMetadata(
           method: "getAccountInfo",
           params: [mint, { encoding: "jsonParsed" }],
         }),
+        signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
       });
       if (rpcRes.ok) {
         const rpcData = await rpcRes.json();
