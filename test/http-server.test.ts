@@ -540,16 +540,21 @@ test("http-server: in-process watch loop runs and stops on server close", async 
     fetchMintRisk: async () => ({}),
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  await new Promise<void>((r) => setTimeout(r, 60));
-  const afterRun = calls;
-  assert.ok(afterRun >= 1, `loop should have polled at least once (calls=${afterRun})`);
-  server.close();
-  await new Promise<void>((r) => setTimeout(r, 50));
-  const afterClose = calls;
-  await new Promise<void>((r) => setTimeout(r, 60));
-  const afterClose2 = calls;
-  assert.ok(afterClose2 - afterClose <= 1, `loop should stop after close (delta=${afterClose2 - afterClose})`);
+  const start = Date.now();
+  while (calls === 0 && Date.now() - start < 2000) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(calls >= 1, `loop should have polled at least once (calls=${calls})`);
+
   (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+
+  const afterClose = calls;
+  await new Promise((r) => setTimeout(r, 50));
+  const afterClose2 = calls;
+  assert.equal(afterClose2, afterClose, `loop should stop after close (was ${afterClose}, then ${afterClose2})`);
   store.close();
   cleanup(dir);
 });
@@ -595,3 +600,168 @@ test("http-server: GET /economics is 503 with no store", async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
 });
+
+test("http-server: 404 for unknown endpoints", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/non-existent-route`);
+    assert.equal(res.status, 404);
+    const body = (await res.json()) as { error: string };
+    assert.ok(body.error.includes("unknown GET route"));
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /analyze with malformed JSON body returns 400 clean error", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "this is not valid json {{{",
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.ok(body.error.includes("body must be a JSON object"));
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /simulate input validations (missing balances, negative amount, invalid token)", async () => {
+  const r = await startTestServer();
+  const validWallet = "11111111111111111111111111111111";
+  try {
+    // Missing balances
+    const res1 = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: validWallet, amountUsd: 100 }),
+    });
+    assert.equal(res1.status, 400);
+    const b1 = (await res1.json()) as { error: string };
+    assert.ok(b1.error.includes("body.balances is required"));
+
+    // Negative amountUsd
+    const res2 = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: validWallet, amountUsd: -50, balances: { sol: 1, usdc: 10, usdt: 0 } }),
+    });
+    assert.equal(res2.status, 400);
+    const b2 = (await res2.json()) as { error: string };
+    assert.ok(b2.error.includes("body.amountUsd must be a positive number"));
+
+    // Invalid token
+    const res3 = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: validWallet, amountUsd: 100, token: "btc", balances: { sol: 1, usdc: 10, usdt: 0 } }),
+    });
+    assert.equal(res3.status, 400);
+    const b3 = (await res3.json()) as { error: string };
+    assert.ok(b3.error.includes("body.token must be 'usdc' or 'sol'"));
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /trust error paths (503 without key, 400 with invalid wallet)", async () => {
+  const r = await startTestServer();
+  try {
+    // 1. Invalid wallet -> 400
+    const resBadWallet = await fetch(`${r.base}/trust`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "invalid_wallet" }),
+    });
+    assert.equal(resBadWallet.status, 400);
+    const bodyBadWallet = (await resBadWallet.json()) as { error: string };
+    assert.ok(bodyBadWallet.error.includes("Solana base58 address"));
+
+    // 2. Missing HELIUS_API_KEY -> 503
+    const prevKey = process.env.HELIUS_API_KEY;
+    delete process.env.HELIUS_API_KEY;
+    try {
+      const resNoKey = await fetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: "11111111111111111111111111111111" }),
+      });
+      assert.equal(resNoKey.status, 503);
+      const bodyNoKey = (await resNoKey.json()) as { error: string };
+      assert.ok(bodyNoKey.error.includes("HELIUS_API_KEY is not set"));
+    } finally {
+      if (prevKey !== undefined) process.env.HELIUS_API_KEY = prevKey;
+      else delete process.env.HELIUS_API_KEY;
+    }
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /simulate invalid wallet returns 400", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "bad-wallet-123", amountUsd: 10, balances: { sol: 1, usdc: 10, usdt: 0 } }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.ok(body.error.includes("Solana base58 address"));
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /analyze with invalid txs parameter returns 400", async () => {
+  const r = await startTestServer();
+  try {
+    // 1. txs is not an array or string
+    const res1 = await fetch(`${r.base}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "W1", txs: 12345 }),
+    });
+    assert.equal(res1.status, 400);
+    const body1 = (await res1.json()) as { error: string };
+    assert.ok(body1.error.includes("body.txs must be an array"));
+
+    // 2. txs is an invalid JSON string
+    const res2 = await fetch(`${r.base}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "W1", txs: "{not json" }),
+    });
+    assert.equal(res2.status, 400);
+    const body2 = (await res2.json()) as { error: string };
+    assert.ok(body2.error.includes("body.txs must be a JSON array"));
+
+    // 3. txs is a JSON string of an object, not array
+    const res3 = await fetch(`${r.base}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "W1", txs: "{\"key\": 123}" }),
+    });
+    assert.equal(res3.status, 400);
+    const body3 = (await res3.json()) as { error: string };
+    assert.ok(body3.error.includes("body.txs must be a JSON array"));
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: OPTIONS request returns CORS headers with 204", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/scan`, { method: "OPTIONS" });
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get("access-control-allow-origin"), "*");
+  } finally {
+    await r.close();
+  }
+});
+

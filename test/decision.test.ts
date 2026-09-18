@@ -138,4 +138,111 @@ describe("computeDecision", () => {
       assert.ok(r.confidence >= 0 && r.confidence <= 1, `confidence ${r.confidence} out of range for ${r.verdict}`);
     }
   });
+
+  it("maxRisk: 0 guard does not produce NaN confidence", () => {
+    const r = computeDecision({
+      riskScore: 0,
+      anomalies: [],
+      liquidityUsd: 100,
+      legacyVerdict: "safe",
+      maxRisk: 0,
+    });
+    assert.equal(r.verdict, "allow");
+    assert.equal(typeof r.confidence, "number");
+    assert.ok(!Number.isNaN(r.confidence));
+    assert.ok(r.confidence >= 0.75 && r.confidence <= 0.95);
+  });
+
+  it("hold + thin liquidity (< minLiquidity * 0.5) escalates to manual_review", () => {
+    const r = computeDecision({
+      riskScore: 35,
+      anomalies: [makeAnomaly("NEW_VENUE", "medium", "New venue", 1)],
+      liquidityUsd: 20, // 20 < 50 * 0.5 = 25
+      legacyVerdict: "hold",
+      minLiquidityUsd: 50,
+    });
+    assert.equal(r.verdict, "manual_review");
+    assert.equal(r.confidence, 0.55);
+    assert.ok(r.recommendation.includes("Manual review"));
+  });
+
+  it("custom minLiquidityUsd throttles safe wallet when balance is below threshold", () => {
+    const r = computeDecision({
+      riskScore: 5,
+      anomalies: [],
+      liquidityUsd: 150,
+      legacyVerdict: "safe",
+      minLiquidityUsd: 200, // 150 < 200
+    });
+    assert.equal(r.verdict, "throttle");
+    assert.equal(r.suggestedLimitUsd, 150);
+  });
+
+  it("hold with riskScore: null applies default riskPenalty to suggested limit", () => {
+    const r = computeDecision({
+      riskScore: null,
+      anomalies: [makeAnomaly("NEW_VENUE", "medium", "New venue", 1)],
+      liquidityUsd: 200,
+      legacyVerdict: "hold",
+    });
+    // 200 * 0.25 * 0.5 = 25
+    assert.equal(r.suggestedLimitUsd, 25);
+  });
+
+  it("suggestedLimitUsd is capped at 500 for safe wallets with high liquidity", () => {
+    const r = computeDecision({
+      riskScore: 10,
+      anomalies: [],
+      liquidityUsd: 2500,
+      legacyVerdict: "safe",
+    });
+    assert.equal(r.suggestedLimitUsd, 500);
+  });
+
+  it("suggestedLimitUsd is null for negative or zero liquidity", () => {
+    const rZero = computeDecision({ riskScore: 10, anomalies: [], liquidityUsd: 0, legacyVerdict: "safe" });
+    assert.equal(rZero.suggestedLimitUsd, null);
+
+    const rNeg = computeDecision({ riskScore: 10, anomalies: [], liquidityUsd: -50, legacyVerdict: "safe" });
+    assert.equal(rNeg.suggestedLimitUsd, null);
+  });
+
+  it("cooldownMs maps accurately to severity and legacy verdicts", () => {
+    // 1. high severity anomaly -> 5 minutes
+    const high = computeDecision({
+      riskScore: 80,
+      anomalies: [makeAnomaly("TOXIC_MINT", "high", "Freeze authority")],
+      liquidityUsd: 100,
+      legacyVerdict: "hold",
+    });
+    assert.equal(high.cooldownMs, 5 * 60 * 1000);
+
+    // 2. legacy hold (no high severity) -> 15 minutes
+    const hold = computeDecision({
+      riskScore: 40,
+      anomalies: [makeAnomaly("NEW_VENUE", "medium", "New venue")],
+      liquidityUsd: 100,
+      legacyVerdict: "hold",
+    });
+    assert.equal(hold.cooldownMs, 15 * 60 * 1000);
+
+    // 3. legacy unknown -> 30 minutes
+    const unknown = computeDecision({
+      riskScore: null,
+      anomalies: [],
+      liquidityUsd: 0,
+      legacyVerdict: "unknown",
+    });
+    assert.equal(unknown.cooldownMs, 30 * 60 * 1000);
+
+    // 4. legacy safe -> 60 minutes
+    const safe = computeDecision({
+      riskScore: 5,
+      anomalies: [],
+      liquidityUsd: 200,
+      legacyVerdict: "safe",
+    });
+    assert.equal(safe.cooldownMs, 60 * 60 * 1000);
+  });
 });
+

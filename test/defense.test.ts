@@ -110,6 +110,42 @@ describe("defense state machine (pure)", () => {
     const ctx = { riskScore: 42, hasHighSeverity: false, active: true, current: stance("armed"), quietStreak: 0, nowSec: NOW };
     assert.deepEqual(computeDefenseAction(ctx), computeDefenseAction(ctx));
   });
+
+  test("active tick on already blocked wallet holds blocked state", () => {
+    const a = computeDefenseAction({
+      riskScore: 90,
+      hasHighSeverity: true,
+      active: true,
+      current: stance("blocked"),
+      quietStreak: 0,
+      nowSec: NOW,
+    });
+    assert.equal(a.state, "blocked");
+    assert.equal(a.action, "hold");
+    assert.equal(a.changed, false);
+  });
+
+  test("stepwise de-escalation from blocked -> gated -> alerting -> armed across quiet streaks", () => {
+    // blocked at quietStreak 3 -> gated
+    const step1 = computeDefenseAction({ riskScore: 0, hasHighSeverity: false, active: false, current: stance("blocked"), quietStreak: 3, nowSec: NOW });
+    assert.equal(step1.state, "gated");
+    assert.equal(step1.action, "de-escalate");
+
+    // gated at quietStreak 3 -> alerting
+    const step2 = computeDefenseAction({ riskScore: 0, hasHighSeverity: false, active: false, current: stance("gated"), quietStreak: 3, nowSec: NOW });
+    assert.equal(step2.state, "alerting");
+    assert.equal(step2.action, "de-escalate");
+
+    // alerting at quietStreak 3 -> armed (clears back to armed)
+    const step3 = computeDefenseAction({ riskScore: 0, hasHighSeverity: false, active: false, current: stance("alerting"), quietStreak: 3, nowSec: NOW });
+    assert.equal(step3.state, "armed");
+    assert.equal(step3.action, "clear");
+
+    // armed remains armed
+    const step4 = computeDefenseAction({ riskScore: 0, hasHighSeverity: false, active: false, current: stance("armed"), quietStreak: 3, nowSec: NOW });
+    assert.equal(step4.state, "armed");
+    assert.equal(step4.action, "hold");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -320,6 +356,33 @@ describe("defense over HTTP", () => {
       const out = (await res.json()) as { defense?: { state: string; enforcement: { verdict: string } } };
       assert.equal(out.defense?.state, "blocked");
       assert.equal(out.defense?.enforcement.verdict, "block");
+    });
+    store.close();
+  });
+
+  test("GET /defense/:wallet returns null state for wallet without stance; POST clear returns 404", async () => {
+    const store = new Store(":memory:");
+    const unescalated = "UnescalatedWallet111111111111111111111111";
+
+    await withServer(store, async (base) => {
+      // 1. GET returns 200 with state null
+      const resGet = await fetch(`${base}/defense/${unescalated}`);
+      assert.equal(resGet.status, 200);
+      const dataGet = (await resGet.json()) as any;
+      assert.equal(dataGet.wallet, unescalated);
+      assert.equal(dataGet.state, null);
+      assert.equal(dataGet.enforcement, null);
+      assert.deepEqual(dataGet.events, []);
+
+      // 2. POST clear on unescalated wallet returns 404
+      const resClear = await fetch(`${base}/defense/${unescalated}/clear`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(resClear.status, 404);
+      const dataClear = (await resClear.json()) as any;
+      assert.ok(dataClear.error.includes("no defense state for this wallet"));
     });
     store.close();
   });

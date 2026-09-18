@@ -8,6 +8,13 @@ import {
   TRUST_DEFAULTS,
   TrustInputs,
   TrustResult,
+  runTrustCheck,
+  runTrustChecks,
+  formatTrustLine,
+  formatShortlist,
+  fetchAccountOwner,
+  fetchLiquidity,
+  SYSTEM_PROGRAM,
 } from "../src/trust.js";
 import type { EnhancedTx } from "../src/types.js";
 import { aggregateConsensus, behaviorAgent, solvencyAgent, identityAgent } from "../src/consensus.js";
@@ -283,4 +290,297 @@ test("consensus panel reproduces the legacy verdict on every gate scenario", () 
     assert.equal(panelVerdict(inputs, opts), computeTrustVerdict(inputs, opts).verdict, name);
   }
 });
+
+test("liquidityOf returns 0 when balances is null", () => {
+  assert.equal(liquidityOf({ riskScore: 10, balances: null, solPriced: true, solPrice: 100 }), 0);
+});
+
+test("computeTrustVerdict: confirmed PDA owner forces hold even when risk is 0 and liquidity is high", () => {
+  const r = computeTrustVerdict({
+    riskScore: 0,
+    balances: { sol: 100, usdc: 10000, usdt: 10000 },
+    solPriced: true,
+    solPrice: 150,
+    accountAuthority: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", isSystemAccount: false },
+  });
+  assert.equal(r.verdict, "hold");
+  assert.ok(r.reasons.some((x) => x.includes("not the system program")));
+});
+
+test("formatTrustLine formats one-line summaries correctly", () => {
+  const safeRes: TrustResult = {
+    wallet: "WalletSafe111111111111111111111111111",
+    verdict: "safe",
+    riskScore: 10,
+    anomalyCount: 0,
+    anomalies: [],
+    balances: { sol: 1, usdc: 50, usdt: 0 },
+    solPriced: true,
+    solPrice: 150,
+    accountAuthority: { owner: SYSTEM_PROGRAM, isSystemAccount: true },
+    liquidityUsd: 200,
+    reasons: [],
+    txCount: 1,
+    windowDays: 7,
+    generatedAt: 1700000000,
+    medianSwapAmountUsd: null,
+  };
+  const lineSafe = formatTrustLine(safeRes);
+  assert.match(lineSafe, /WalletSafe111111111111111111111111111 — SAFE — risk 10\/100, liquidity \$200\.00/);
+
+  const unpricedRes: TrustResult = {
+    ...safeRes,
+    solPriced: false,
+    reasons: ["liquidity low"],
+  };
+  const lineUnpriced = formatTrustLine(unpricedRes);
+  assert.match(lineUnpriced, /SOL unpriced, excluded from liquidity/);
+  assert.match(lineUnpriced, /liquidity low/);
+
+  const unknownRes: TrustResult = {
+    ...safeRes,
+    verdict: "unknown",
+    riskScore: null,
+    balances: null,
+    liquidityUsd: 0,
+    reasons: ["no history"],
+  };
+  const lineUnknown = formatTrustLine(unknownRes);
+  assert.match(lineUnknown, /risk n\/a, liquidity n\/a/);
+});
+
+test("formatShortlist renders formatted summary with all sections", () => {
+  const results = [
+    mkResult("W_SAFE", "safe", 10, 200),
+    mkResult("W_HOLD", "hold", 50, 10),
+    mkResult("W_UNKNOWN", "unknown", null, 0),
+  ];
+  const shortlist = buildShortlist(results, 1700000000);
+  const text = formatShortlist(shortlist);
+  assert.match(text, /trust shortlist — 3 wallet\(s\): 1 safe, 1 hold, 1 unknown/);
+  assert.match(text, /SAFE \(ranked by risk, then liquidity\):/);
+  assert.match(text, /1\. W_SAFE — risk 10\/100/);
+  assert.match(text, /HOLD:/);
+  assert.match(text, /1\. W_HOLD — risk 50\/100/);
+  assert.match(text, /UNKNOWN:/);
+  assert.match(text, /1\. W_UNKNOWN — risk n\/a/);
+
+  const emptyText = formatShortlist(buildShortlist([], 0));
+  assert.match(emptyText, /SAFE: none/);
+});
+
+test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WalletTest1111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    // 1. Helius history transactions
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      const mockTxs: EnhancedTx[] = [
+        {
+          signature: "sigHist1",
+          timestamp: Math.floor(Date.now() / 1000) - 3600,
+          source: "JUPITER",
+          programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+        },
+      ];
+      return new Response(JSON.stringify(mockTxs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
+    // 2. Jupiter price API
+    if (urlStr.includes("jup.ag")) {
+      return new Response(
+        JSON.stringify({
+          So11111111111111111111111111111111111111112: { usdPrice: 150 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // 3. Solana JSON-RPC calls
+    if (bodyStr) {
+      try {
+        const parsed = JSON.parse(bodyStr);
+        if (parsed.method === "getBalance") {
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), // 1 SOL
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (parsed.method === "getTokenAccountsByOwner") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: {
+                value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 50 } } } } } }],
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (parsed.method === "getAccountInfo") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: { value: { owner: SYSTEM_PROGRAM } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+      } catch {}
+    }
+
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    // 1. Happy path: clean wallet -> safe
+    const res = await runTrustCheck("test_api_key", targetWallet, { includeAudit: true });
+    assert.equal(res.wallet, targetWallet);
+    assert.equal(res.verdict, "safe");
+    assert.equal(res.action?.verdict, "allow");
+    assert.equal(res.consensus?.verdict, "safe");
+    assert.equal(res.accountAuthority.isSystemAccount, true);
+    assert.ok(res.liquidityUsd >= 200); // 1 SOL ($150) + 50 USDC + 50 USDT = 250
+    assert.ok(res.audit, "audit trail should be populated when includeAudit: true");
+
+    // 2. LLM hold-veto option overrides deterministic safe
+    const resLlm = await runTrustCheck("test_api_key", targetWallet, {
+      llmVerdict: "hold",
+      llmVerdictNote: "Conservative LLM veto",
+    });
+    assert.equal(resLlm.verdict, "hold");
+    assert.ok(resLlm.reasons.includes("Conservative LLM veto"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runTrustCheck: error handling when history or balances fail", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WalletTest1111111111111111111111111111";
+
+  try {
+    // 1. History fetch fails -> risk is null, verdict is unknown
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/v0/addresses")) {
+        throw new Error("Helius 503 Service Unavailable");
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 0 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const resHistErr = await runTrustCheck("test_api_key", targetWallet);
+    assert.equal(resHistErr.verdict, "unknown");
+    assert.ok(resHistErr.reasons.includes("no history to score risk"));
+
+    // 2. Balances RPC fails -> balances is null, verdict is unknown
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/v0/addresses")) {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error("RPC network failure");
+    };
+
+    const resBalErr = await runTrustCheck("test_api_key", targetWallet);
+    assert.equal(resBalErr.verdict, "unknown");
+    assert.ok(resBalErr.reasons.includes("balance data unavailable"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runTrustChecks: batches wallets and isolates errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const wSuccess = "WalletGood1111111111111111111111111111";
+  const wFail = "WalletFail1111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes(wFail)) {
+      throw new Error("Fatal fetch crash for fail wallet");
+    }
+    if (url.includes("/v0/addresses")) {
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { value: 1_000_000_000, owner: SYSTEM_PROGRAM },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+
+  try {
+    const batch = await runTrustChecks("test_key", [wSuccess, wFail]);
+    assert.equal(batch.length, 2);
+
+    const good = batch.find((r) => r.wallet === wSuccess);
+    assert.ok(good);
+
+    const bad = batch.find((r) => r.wallet === wFail);
+    assert.ok(bad);
+    assert.equal(bad.verdict, "unknown");
+    assert.ok(bad.reasons.some((r) => r.includes("no history to score risk")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runTrustChecks: handles unhandled runTrustCheck exception in batch", async () => {
+  const originalFetch = globalThis.fetch;
+  const wSuccess = "WalletGood1111111111111111111111111111";
+  const wFail = "WalletFail1111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/v0/addresses")) {
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { value: 1_000_000_000, owner: SYSTEM_PROGRAM },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+
+  let count = 0;
+  const throwingOpts = {
+    get windowDays(): number {
+      count++;
+      if (count === 2) {
+        throw new Error("Simulated unhandled exception");
+      }
+      return 7;
+    },
+  };
+
+  try {
+    const batch = await runTrustChecks("test_key", [wSuccess, wFail], throwingOpts);
+    assert.equal(batch.length, 2);
+
+    const bad = batch.find((r) => r.wallet === wFail);
+    assert.ok(bad);
+    assert.equal(bad.verdict, "unknown");
+    assert.ok(bad.reasons.some((r) => r.includes("check failed: Simulated unhandled exception")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 

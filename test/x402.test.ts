@@ -399,3 +399,301 @@ test("verifySolanaPaymentRpc: verifies parsed RPC response and handles errors", 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("x402: 404 for unknown endpoints", async () => {
+  const { store, dir } = tmpDb();
+  const server = createX402Server({ store });
+  const { port, close } = await startServer(server);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/unknown-route`);
+    assert.equal(res.status, 404);
+    const json = (await res.json()) as { error: string };
+    assert.ok(json.error.includes("Not Found"));
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("x402: POST /scan returns 400 on malformed JSON body", async () => {
+  const { store, dir } = tmpDb();
+  const server = createX402Server({ store });
+  const { port, close } = await startServer(server);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": "valid_sig_123",
+        "X-Payment-Payer": "payer_123",
+      },
+      body: "malformed JSON {{{{",
+    });
+    assert.equal(res.status, 400);
+    const json = (await res.json()) as { error: string };
+    assert.ok(json.error.includes("Invalid JSON"));
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("extractPaymentProof returns null when headers are missing or malformed", () => {
+  const req = {
+    headers: {},
+  } as any;
+  assert.equal(extractPaymentProof(req), null);
+
+  const reqBadAuth = {
+    headers: { authorization: "Bearer token123" }, // not x402
+  } as any;
+  assert.equal(extractPaymentProof(reqBadAuth), null);
+
+  // Authorization x402 without colon
+  const reqBadAuthNoColon = {
+    headers: { authorization: "x402 only_signature_no_colon" },
+  } as any;
+  assert.equal(extractPaymentProof(reqBadAuthNoColon), null);
+
+  // X-Payment with malformed JSON string (not valid json, no colon)
+  const reqBadXPay = {
+    headers: { "x-payment": "{broken json" },
+  } as any;
+  assert.equal(extractPaymentProof(reqBadXPay), null);
+
+  // X-Payment with colon format string parses correctly
+  const reqColon = {
+    headers: { "x-payment": "sig_colon_1:payer_colon_1" },
+  } as any;
+  assert.deepEqual(extractPaymentProof(reqColon), {
+    signature: "sig_colon_1",
+    payer: "payer_colon_1",
+  });
+});
+
+test("verifySolanaPaymentRpc: rejects transactions exceeding maxAgeSec", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const oldBlockTime = Math.floor(Date.now() / 1000) - 7200; // 2 hours old
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: oldBlockTime,
+            meta: {
+              err: null,
+              preTokenBalances: [{ accountIndex: 1, owner: "R1", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", uiTokenAmount: { uiAmount: 0 } }],
+              postTokenBalances: [{ accountIndex: 1, owner: "R1", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", uiTokenAmount: { uiAmount: 1 } }],
+            },
+          },
+        }),
+      );
+
+    const res = await verifySolanaPaymentRpc(
+      { signature: "s_old", payer: "p1" },
+      { endpoint: "/scan", recipient: "R1", minAmount: 0.005, maxAgeSec: 3600 },
+      "http://mock-rpc",
+    );
+    assert.equal(res.valid, false);
+    assert.match(res.error ?? "", /Transaction too old/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("verifySolanaPaymentRpc: falls back to parsed instructions and inner instructions", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    // 1. Top-level instruction transferChecked
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            meta: { err: null, preTokenBalances: [], postTokenBalances: [] },
+            transaction: {
+              message: {
+                instructions: [
+                  {
+                    parsed: {
+                      type: "transferChecked",
+                      info: {
+                        destination: "RecipientParsed1",
+                        tokenAmount: { uiAmount: 0.005 },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      );
+
+    const res1 = await verifySolanaPaymentRpc(
+      { signature: "s_inst", payer: "Payer1" },
+      { endpoint: "/scan", recipient: "RecipientParsed1", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(res1.valid, true);
+    assert.equal(res1.amount, 0.005);
+
+    // 2. Inner instruction transfer
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [],
+              innerInstructions: [
+                {
+                  instructions: [
+                    {
+                      parsed: {
+                        type: "transfer",
+                        info: {
+                          destination: "RecipientInner1",
+                          amount: "5000", // 5000 / 1e6 = 0.005
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+      );
+
+    const res2 = await verifySolanaPaymentRpc(
+      { signature: "s_inner", payer: "Payer1" },
+      { endpoint: "/scan", recipient: "RecipientInner1", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(res2.valid, true);
+    assert.equal(res2.amount, 0.005);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("verifySolanaPaymentRpc: ignores non-target mint balances and handles RPC errors", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    // 1. Different mint transferred (not USDC) -> insufficient payment
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            meta: {
+              err: null,
+              preTokenBalances: [{ accountIndex: 1, owner: "R_MINT", mint: "RandomMint11111111111111111111111111111111", uiTokenAmount: { uiAmount: 0 } }],
+              postTokenBalances: [{ accountIndex: 1, owner: "R_MINT", mint: "RandomMint11111111111111111111111111111111", uiTokenAmount: { uiAmount: 500 } }],
+            },
+          },
+        }),
+      );
+
+    const resMint = await verifySolanaPaymentRpc(
+      { signature: "s_wrong_mint", payer: "P1" },
+      { endpoint: "/scan", recipient: "R_MINT", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(resMint.valid, false);
+    assert.match(resMint.error ?? "", /Insufficient payment/);
+
+    // 2. RPC returns HTTP 500
+    globalThis.fetch = async () =>
+      new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" });
+
+    const res500 = await verifySolanaPaymentRpc(
+      { signature: "s_500", payer: "P1" },
+      { endpoint: "/scan", recipient: "R1", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(res500.valid, false);
+    assert.match(res500.error ?? "", /RPC HTTP error 500/);
+
+    // 3. RPC returns JSON-RPC error payload
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", error: { message: "Node lagging" } }));
+
+    const resRpcErr = await verifySolanaPaymentRpc(
+      { signature: "s_rpc_err", payer: "P1" },
+      { endpoint: "/scan", recipient: "R1", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(resRpcErr.valid, false);
+    assert.match(resRpcErr.error ?? "", /Node lagging/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("x402: parameter validation errors do NOT settle payment signature", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWallet111111111111111111111111111";
+  const payer = "PayerWallet1111111111111111111111111111111";
+  const sigScan = "sig_valid_but_missing_wallet_param";
+  const sigAnalyze = "sig_valid_but_missing_txs_param";
+
+  const stubVerifier = async (proof: PaymentProof, req: PaymentRequirement) => {
+    return { valid: true, amount: req.minAmount, payer, recipient };
+  };
+
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: stubVerifier,
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    // 1. POST /scan with valid payment but missing wallet param -> 400
+    const resScan = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sigScan,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({}), // missing wallet!
+    });
+    assert.equal(resScan.status, 400);
+    const dataScan = (await resScan.json()) as any;
+    assert.match(dataScan.error, /Missing or invalid wallet/);
+    assert.equal(store.hasSettledPayment(sigScan), false, "signature must not be settled on 400 error");
+
+    // 2. POST /analyze with valid payment but missing txs -> 400
+    const resAnalyze = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sigAnalyze,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: "W1" }), // missing txs!
+    });
+    assert.equal(resAnalyze.status, 400);
+    const dataAnalyze = (await resAnalyze.json()) as any;
+    assert.match(dataAnalyze.error, /Missing required parameters/);
+    assert.equal(store.hasSettledPayment(sigAnalyze), false, "signature must not be settled on 400 error");
+
+    // 3. GET /scan returns 405 Method Not Allowed
+    const resGetScan = await fetch(`http://127.0.0.1:${port}/scan`);
+    assert.equal(resGetScan.status, 405);
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+

@@ -123,4 +123,83 @@ test("parseTime accepts unix seconds, ISO 8601, and rejects garbage", () => {
   assert.equal(parseTime("1750000000", "--since"), 1_750_000_000);
   assert.equal(parseTime("2026-03-11T07:36:15Z", "--since"), Math.floor(Date.parse("2026-03-11T07:36:15Z") / 1000));
   assert.throws(() => parseTime("yesterday", "--until"), /unparseable time/);
+  assert.throws(() => parseTime("", "--since"), /unparseable time/);
+  assert.throws(() => parseTime("not-a-date", "--since"), /unparseable time/);
 });
+
+test("splitTxs handles empty input and completely out-of-range timestamps", () => {
+  const empty = splitTxs([], 100, 200);
+  assert.deepEqual(empty.history, []);
+  assert.deepEqual(empty.burst, []);
+
+  const allBefore = [txAt(10), txAt(20), txAt(30)];
+  const resBefore = splitTxs(allBefore as any, 100, 200);
+  assert.equal(resBefore.history.length, 3);
+  assert.equal(resBefore.burst.length, 0);
+
+  const allAfter = [txAt(300), txAt(400)];
+  const resAfter = splitTxs(allAfter as any, 100, 200);
+  assert.equal(resAfter.history.length, 0);
+  assert.equal(resAfter.burst.length, 0);
+});
+
+test("splitTxs handles undefined timestamps and open-ended untilSec", () => {
+  const txs = [
+    { signature: "t0" }, // ts defaults to 0 -> < 100 -> history
+    { signature: "t1", timestamp: 150 },
+    { signature: "t2", timestamp: 250 },
+  ];
+  const { history, burst } = splitTxs(txs as any, 100);
+  assert.deepEqual(history.map(t => t.signature), ["t0"]);
+  assert.deepEqual(burst.map(t => t.signature), ["t1", "t2"]);
+});
+
+test("replayWallet propagates history fetcher errors", async () => {
+  const fetchHistory = async () => {
+    throw new Error("Helius 503 Service Unavailable");
+  };
+  await assert.rejects(
+    () => replayWallet("key", WALLET, { sinceSec: 100 }, { fetchHistory, usePrices: false }),
+    /Helius 503 Service Unavailable/,
+  );
+});
+
+test("replayWallet incorporates mintRisk results into anomalies", async () => {
+  const scamMint = "ScamToken1111111111111111111111111111111111";
+  const customBurst = [
+    {
+      signature: "b_custom",
+      timestamp: T0 + GAP,
+      source: "RAYDIUM",
+      swap: {
+        tokenInputs: [{ mint: SOL_MINT, rawTokenAmount: { tokenAmount: "1000000000", decimals: 9 } }],
+        tokenOutputs: [{ mint: scamMint, rawTokenAmount: { tokenAmount: "1000000", decimals: 6 } }],
+      },
+    },
+  ];
+  const fetchHistory = async (_w: string, q: HistoryQuery) => {
+    if (q.gteTime) return customBurst;
+    return HISTORY;
+  };
+  const fetchMintRisk = async () => ({
+    [scamMint]: {
+      mint: scamMint,
+      mintAuthority: "BadGuy1111111111111111111111111111111111",
+      freezeAuthority: "BadGuy1111111111111111111111111111111111",
+      top10Pct: 95,
+    },
+  });
+  const res = await replayWallet("key", WALLET, { sinceSec: T0 + GAP }, {
+    fetchHistory,
+    fetchMintRisk,
+    usePrices: false,
+  });
+  assert.ok(res.anomalies.some(a => a.type === "TOXIC_MINT"));
+});
+
+
+function txAt(ts: number) {
+  return { signature: `tx_${ts}`, timestamp: ts };
+}
+
+
