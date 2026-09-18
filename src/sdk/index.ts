@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "../oracle/index.js";
 import { USDC_MINT } from "../types.js";
+import type { TrustProofBundle } from "../trust-proof.js";
 
 export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
@@ -144,6 +145,7 @@ export interface RadarClient {
   analyze(wallet: string, txs?: unknown): Promise<RadarClientAnalyzeResult>;
   selftest(): Promise<RadarClientSelftestResult>;
   readOnchainLedger(wallet: string, limit?: number): Promise<ScanLedgerRecord[]>;
+  trustProof(wallet: string): Promise<TrustProofBundle>;
 }
 
 export class RadarClientImpl implements RadarClient {
@@ -491,6 +493,19 @@ export class RadarClientImpl implements RadarClient {
       rpcUrl: this.rpcUrl,
       limit,
     });
+  }
+
+  async trustProof(wallet: string): Promise<TrustProofBundle> {
+    const url = `${this.baseUrl}/trust-proof?wallet=${encodeURIComponent(wallet)}`;
+    const res = await this.fetchFn(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`Radar trust-proof failed (${res.status}): ${errBody || res.statusText}`);
+    }
+    return (await res.json()) as TrustProofBundle;
   }
 }
 

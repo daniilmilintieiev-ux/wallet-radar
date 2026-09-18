@@ -53,7 +53,8 @@ export class Store {
         recipient TEXT NOT NULL,
         amount REAL NOT NULL,
         endpoint TEXT NOT NULL,
-        settled_at INTEGER NOT NULL
+        settled_at INTEGER NOT NULL,
+        wallet TEXT
       );
       CREATE TABLE IF NOT EXISTS mint_cache (
         mint TEXT PRIMARY KEY,
@@ -98,6 +99,12 @@ export class Store {
     const mintCols = this.db.prepare("PRAGMA table_info(mint_cache)").all() as Array<{ name: string }>;
     if (!mintCols.some((c) => c.name === "top10_pct")) {
       this.db.exec("ALTER TABLE mint_cache ADD COLUMN top10_pct REAL");
+    }
+    // Migration: add wallet to settled_payments for databases created before it existed.
+    const payCols = this.db.prepare("PRAGMA table_info(settled_payments)").all() as Array<{ name: string }>;
+    if (!payCols.some((c) => c.name === "wallet")) {
+      this.db.exec("ALTER TABLE settled_payments ADD COLUMN wallet TEXT");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_settled_payments_wallet ON settled_payments(wallet)");
     }
   }
 
@@ -283,15 +290,15 @@ export class Store {
   }
 
   recordSettledPayment(
-    payment: { signature: string; payer: string; recipient: string; amount: number; endpoint: string },
+    payment: { signature: string; payer: string; recipient: string; amount: number; endpoint: string; wallet?: string },
     settledAt: number = Math.floor(Date.now() / 1000),
   ): boolean {
     try {
       this.db
         .prepare(
-          "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at, wallet) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt);
+        .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt, payment.wallet ?? null);
       return true;
     } catch (err: any) {
       if (err && (err.code === "ERR_SQLITE_ERROR" || String(err).includes("UNIQUE"))) {
@@ -303,7 +310,7 @@ export class Store {
 
   getSettledPayment(signature: string): SettledPayment | null {
     const row = this.db
-      .prepare("SELECT signature, payer, recipient, amount, endpoint, settled_at FROM settled_payments WHERE signature = ?")
+      .prepare("SELECT signature, payer, recipient, amount, endpoint, settled_at, wallet FROM settled_payments WHERE signature = ?")
       .get(signature) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
@@ -313,6 +320,25 @@ export class Store {
       amount: Number(row.amount),
       endpoint: row.endpoint as string,
       settledAt: Number(row.settled_at),
+      wallet: (row.wallet as string) ?? null,
+    };
+  }
+
+  getLatestSettledPaymentForWallet(wallet: string): SettledPayment | null {
+    const row = this.db
+      .prepare(
+        "SELECT signature, payer, recipient, amount, endpoint, settled_at, wallet FROM settled_payments WHERE wallet = ? OR payer = ? ORDER BY settled_at DESC LIMIT 1",
+      )
+      .get(wallet, wallet) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      signature: row.signature as string,
+      payer: row.payer as string,
+      recipient: row.recipient as string,
+      amount: Number(row.amount),
+      endpoint: row.endpoint as string,
+      settledAt: Number(row.settled_at),
+      wallet: (row.wallet as string) ?? null,
     };
   }
 

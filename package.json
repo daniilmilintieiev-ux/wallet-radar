@@ -11,7 +11,8 @@
     "./blink": "./dist/src/blink/index.js",
     "./oracle": "./dist/src/oracle/index.js",
     "./dashboard": "./dist/src/dashboard.js",
-    "./hook": "./dist/src/hook/index.js"
+    "./hook": "./dist/src/hook/index.js",
+    "./trust-proof": "./dist/src/trust-proof.js"
   },
   "license": "MIT",
   "engines": {

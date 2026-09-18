@@ -332,6 +332,46 @@ Wallet Radar provides a minimal, deterministic web dashboard (`src/dashboard.ts`
   node dist/src/cli.js dashboard --export overview.html
   ```
 
+## Independently Verifiable Trust Proofs (`/trust-proof`)
+
+Anyone—human or autonomous agent—can independently verify a wallet's risk assessment without trusting our server via `GET /trust-proof?wallet=<addr>`:
+
+- **Differentiator**: *"We don't just assert trust — we prove it on-chain, and we're paid USDC for it."*
+- **On-Chain ZK Attestation**: Includes the Solana transaction signature, ledger slot, and compressed account PDA from the Light Protocol ZK scan ledger.
+- **Current Assessment**: Exact risk score (0–100), verdict badge (`SAFE` / `SUSPICIOUS` / `HIGH RISK`), and firing anomaly detector rules (`REGIME_SHIFT`, `TOXIC_MINT`, `LARGE_SWAP`, etc.).
+- **x402 Commercial Receipt**: If the scan was earned via x402 pay-per-call, includes payer address, amount in USDC ($0.005), and settlement signature — proving commercial audit authenticity.
+- **Unknown Wallets**: Returns graceful empty/null fields when an address has no prior scans or attestations.
+
+```bash
+# Query verifiable trust proof bundle
+curl "http://localhost:7690/trust-proof?wallet=<wallet_address>"
+```
+
+Example response:
+```json
+{
+  "wallet": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+  "verified": true,
+  "attestation": {
+    "signature": "5Knm...3ZtW",
+    "slot": 312845920,
+    "compressedAddress": "comp_a1b2c3d4...",
+    "timestamp": 1726700000
+  },
+  "riskScore": 88,
+  "verdict": "HIGH RISK",
+  "topRules": ["REGIME_SHIFT", "TOXIC_MINT"],
+  "payment": {
+    "payer": "4uQeVj5tqViQh7yWWGStvfEG1Zmhx6uasJtWCJziofM",
+    "amountUsdc": 0.005,
+    "txSignature": "3Fpq...7VwX",
+    "signature": "3Fpq...7VwX",
+    "settledAt": 1726700000
+  },
+  "generatedAt": 1726700000
+}
+```
+
 ## Token-22 Transfer Hook (Scan-on-Transfer)
 
 Wallet Radar delivers autonomous on-chain risk gating via an SPL Token-22 transfer hook program (`programs/radar-transfer-hook` and `src/hook`).

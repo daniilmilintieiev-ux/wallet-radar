@@ -221,4 +221,5 @@ export interface SettledPayment {
   amount: number;
   endpoint: string;
   settledAt: number;
+  wallet?: string | null;
 }

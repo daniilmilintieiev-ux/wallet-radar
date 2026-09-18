@@ -28,6 +28,7 @@ import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
 import { validateConfig } from "./config.js";
+import { buildTrustProof } from "./trust-proof.js";
 
 const SERVICE = "wallet-radar";
 
@@ -56,6 +57,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/benchmark", tool: "radar_benchmark", description: "Reproducible quality proof: runs a versioned eval set of labeled test cases through the full detection pipeline and reports precision, recall, accuracy, and per-case results. Deterministic — same input, same numbers, every time. No network calls." },
   { method: "GET", path: "/dashboard", tool: "radar_dashboard", description: "Minimal web dashboard reading the on-chain ZK scan ledger and rendering risk history + latest verdict." },
   { method: "GET", path: "/api/ledger", tool: "radar_ledger", description: "JSON API reading historical on-chain ZK scan attestations for a given wallet." },
+  { method: "GET", path: "/trust-proof", tool: "radar_trust_proof", description: "Independently verifiable attestation bundle: on-chain ZK-compressed scan attestation, current risk score & verdict, and x402 USDC payment receipt if paid." },
   { method: "GET", path: "/economics", tool: "radar_economics", description: "Live unit economics (the agent's P&L): on-chain revenue (USDC settled via x402) vs. tracked operating cost (Helius/LLM), net, margin, self-sustaining status, per-day trend, and per-paid-scan unit economics." },
   { method: "GET", path: "/health", tool: "health", description: "Health check. No auth." },
   { method: "GET", path: "/.well-known/agent.json", tool: "a2a_card", description: "A2A agent card (a2a-protocol.org) for the Wallet Radar Trust Gate agent — describes the screen-wallet skill and the /a2a RPC endpoint." },
@@ -502,6 +504,16 @@ async function handleA2A(
   }
 }
 
+async function toolTrustProof(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
+  const wallet = body.wallet;
+  if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+  return buildTrustProof(wallet, {
+    oracleClient: ctx.oracleClient,
+    rpcUrl: ctx.rpcUrl,
+    store: ctx.store,
+  });
+}
+
 const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>, ctx: RequestContext) => Promise<unknown> | unknown> = {
   "/scan": toolScan,
   "/radar_scan": toolScan,
@@ -509,6 +521,8 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>, ctx: RequestC
   "/radar_analyze": toolAnalyze,
   "/trust": toolTrust,
   "/radar_trust": toolTrust,
+  "/trust-proof": toolTrustProof,
+  "/radar_trust_proof": toolTrustProof,
   "/batch": toolBatch,
   "/radar_batch": toolBatch,
   "/simulate": toolSimulate,
@@ -587,6 +601,22 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (p === "/economics") {
         if (!ctx.store) throw new HttpError(503, "economics store not available (start the server with a shared RADAR_DB).");
         sendJson(res, 200, computeEconomics(ctx.store));
+        return;
+      }
+      if (p === "/trust-proof") {
+        const wallet = url.searchParams.get("wallet");
+        if (!wallet) {
+          throw new HttpError(400, "wallet query parameter is required (Solana base58 address).");
+        }
+        if (!isBase58Address(wallet)) {
+          throw new HttpError(400, "wallet query parameter must be a Solana base58 address.");
+        }
+        const proof = await buildTrustProof(wallet, {
+          oracleClient: ctx.oracleClient,
+          rpcUrl: ctx.rpcUrl,
+          store: ctx.store,
+        });
+        sendJson(res, 200, proof);
         return;
       }
       if (p === "/" || p === "") {

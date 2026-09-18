@@ -18,6 +18,7 @@ import { handleBlinkHttpRequest } from "./blink/index.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { recordHeliusCost } from "./economics.js";
 import { validateConfig } from "./config.js";
+import { buildTrustProof } from "./trust-proof.js";
 
 /** Pricing in USDC per endpoint matching AgenticTrade manifest. */
 export const X402_PRICING: Record<string, number> = {
@@ -434,12 +435,40 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
                 "/analyze": { method: "POST", priceUsdc: 0.001, description: "Offline anomaly analysis over tx fixture" },
                 "/dashboard": { method: "GET", priceUsdc: 0.0, description: "Web dashboard for ZK scan ledger" },
                 "/api/ledger": { method: "GET", priceUsdc: 0.0, description: "JSON API for on-chain scan attestations" },
+                "/trust-proof": { method: "GET", priceUsdc: 0.0, description: "Independently verifiable attestation bundle" },
               },
             },
             null,
             2,
           ),
         );
+        return;
+      }
+
+      if (pathname === "/trust-proof") {
+        if (method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Method Not Allowed" }));
+          return;
+        }
+        const wallet = url.searchParams.get("wallet");
+        if (!wallet) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "wallet query parameter is required (Solana base58 address)." }));
+          return;
+        }
+        if (!/^[A-Za-z0-9]{32,44}$/.test(wallet)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "wallet query parameter must be a Solana base58 address." }));
+          return;
+        }
+        const proof = await buildTrustProof(wallet, {
+          oracleClient: options.oracleClient,
+          rpcUrl: options.rpcUrl,
+          store,
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(proof, null, 2));
         return;
       }
 
@@ -557,6 +586,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             recipient,
             amount: verResult.amount ?? requiredPrice,
             endpoint: pathname,
+            wallet: typeof body.wallet === "string" ? body.wallet : undefined,
           });
           if (!settled) {
             send402(res, pathname, requiredPrice, recipient, "Payment signature already settled (replay rejected)");
