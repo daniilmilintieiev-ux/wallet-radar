@@ -12,6 +12,7 @@ import {
   USDT_MINT,
 } from "./types.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
+import { detectCounterpartyAnomalies } from "./counterparty.js";
 
 /** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
 export const TOP10_CONCENTRATION_PCT = 60;
@@ -440,6 +441,11 @@ export function detectAnomalies(
       }
     }
   }
+
+  // COUNTERPARTY MEMORY: cross-batch relationship signals (new counterparty,
+  // dominant hub, relationship escalation). Emitted before the anti-evasion
+  // meta-rules so they participate in REGIME_SHIFT's distinct-type count.
+  anomalies.push(...detectCounterpartyAnomalies(wallet, txs, baseline?.counterparties ?? null));
 
   // --- REGIME_SHIFT (8th rule): Behavioral Drift Detector ---
   // Fires when a wallet's recent behavior is a STRUCTURAL break from its own

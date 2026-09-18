@@ -84,6 +84,35 @@ export interface Baseline {
   activeHours: number[];
   lastSeenAt: number | null;
   txCount: number;
+  /**
+   * Bounded cross-batch counterparty relationship memory (first/last seen,
+   * interaction count, cumulative USD). Drives NEW_COUNTERPARTY,
+   * COUNTERPARTY_HUB and COUNTERPARTY_ESCALATION. Absent on pre-feature
+   * baselines (treated as empty).
+   */
+  counterparties?: CounterpartyMemory;
+}
+
+/**
+ * A single counterparty relationship in the wallet's persistent memory.
+ * `count` / `volumeUsd` accumulate across batches; `firstSeen` / `lastSeen`
+ * are unix seconds. Entries are bounded (top-N by count) but the lifetime
+ * `total` interaction count is never truncated.
+ */
+export interface CounterpartyStat {
+  address: string;
+  count: number;
+  volumeUsd: number;
+  firstSeen: number;
+  lastSeen: number;
+}
+
+/** Bounded, cross-batch counterparty relationship memory for one wallet. */
+export interface CounterpartyMemory {
+  /** Cumulative counterparty interactions across ALL counterparties (unbounded). */
+  total: number;
+  /** Retained counterparties (top-N by interaction count). */
+  entries: CounterpartyStat[];
 }
 
 export type AnomalyType =
@@ -94,6 +123,9 @@ export type AnomalyType =
   | "CONCENTRATION"
   | "NEW_PROTOCOL"
   | "COUNTERPARTY_CLUSTER"
+  | "NEW_COUNTERPARTY"
+  | "COUNTERPARTY_HUB"
+  | "COUNTERPARTY_ESCALATION"
   | "TOXIC_MINT"
   | "REGIME_SHIFT"
   | "WARMING";

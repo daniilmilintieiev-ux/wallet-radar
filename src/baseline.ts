@@ -2,6 +2,7 @@ import { Baseline, EnhancedTx } from "./types.js";
 import { extractSwap, MAJOR_MINTS, txPrograms } from "./analyzer.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
 import { computePnlLite, mergePnl } from "./pnl.js";
+import { foldCounterparties } from "./counterparty.js";
 
 export { computePnlLite, mergePnl };
 
@@ -115,5 +116,6 @@ export function updateBaseline(
     recentSwapAmountsUsd: pushWindow(prevB.recentSwapAmountsUsd, swapSizesUsd, RECENT_SWAP_WINDOW),
     lastSeenAt: lastSeen,
     txCount: prevB.txCount + txs.length,
+    counterparties: foldCounterparties(prevB.counterparties, txs, nowSec, prices),
   };
 }
