@@ -24,7 +24,7 @@ import { Keypair, Connection } from "@solana/web3.js";
 const payer = Keypair.fromSecretKey(Uint8Array.from([...]));
 
 const client = createRadarClient({
-  baseUrl: "https://api.wallet-radar.app", // or http://127.0.0.1:4020
+  baseUrl: "https://pay.cbellory.xyz", // or http://127.0.0.1:4020
   rpc: "https://api.mainnet-beta.solana.com", // or Connection instance
   x402Payer: payer,
   recipient: "RecipientUSDCWalletAddress1111111111111111",

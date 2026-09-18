@@ -32,7 +32,7 @@ A **Blink** (Blockchain Link) turns any Solana Action into an unfurled interacti
 
 ## The Blink Manifest (`actions.json`)
 
-Hosted at the root domain (`https://wallet-radar.app/actions.json`):
+Hosted at the root domain (`https://pay.cbellory.xyz/actions.json`):
 
 ```json
 {
@@ -58,12 +58,12 @@ Hosted at the root domain (`https://wallet-radar.app/actions.json`):
 Dialect unrolls the Action metadata into an interactive widget:
 
 ```
-https://dial.to/?action=solana-action:https://wallet-radar.app/api/actions/radar-scan
+https://dial.to/?action=solana-action:https://pay.cbellory.xyz/api/actions/radar-scan
 ```
 
 Or for a specific target wallet:
 ```
-https://dial.to/?action=solana-action:https://wallet-radar.app/api/actions/radar-scan?wallet=8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j
+https://dial.to/?action=solana-action:https://pay.cbellory.xyz/api/actions/radar-scan?wallet=8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j
 ```
 
 ### 2. Phantom Wallet Registration
@@ -71,12 +71,12 @@ https://dial.to/?action=solana-action:https://wallet-radar.app/api/actions/radar
 Phantom detects Blinks natively in experimental mode (Twitter/X and web) and through in-app browser universal links:
 
 ```
-https://phantom.app/ul/browse/https%3A%2F%2Fwallet-radar.app%2Fapi%2Factions%2Fradar-scan?ref=wallet-radar
+https://phantom.app/ul/browse/https%3A%2F%2Fpay.cbellory.xyz%2Fapi%2Factions%2Fradar-scan?ref=wallet-radar
 ```
 
 Or via direct protocol scheme:
 ```
-solana-action:https://wallet-radar.app/api/actions/radar-scan
+solana-action:https://pay.cbellory.xyz/api/actions/radar-scan
 ```
 
 ### 3. Solflare Wallet Registration
@@ -84,7 +84,7 @@ solana-action:https://wallet-radar.app/api/actions/radar-scan
 Solflare supports Solana Actions directly inside its mobile app and browser extension:
 
 ```
-https://solflare.com/ul/v1/browse/https%3A%2F%2Fwallet-radar.app%2Fapi%2Factions%2Fradar-scan
+https://solflare.com/ul/v1/browse/https%3A%2F%2Fpay.cbellory.xyz%2Fapi%2Factions%2Fradar-scan
 ```
 
 ### 4. Official Dialect Registry Submission
@@ -93,8 +93,8 @@ To list Wallet Radar on the global [dial.to](https://dial.to) directory:
 - **Repository**: [dialectlabs/blinks-registry](https://github.com/dialectlabs/blinks-registry)
 - **Metadata**:
   - Name: `Wallet Radar`
-  - Host: `wallet-radar.app`
-  - Action URL: `https://wallet-radar.app/api/actions/radar-scan`
+  - Host: `pay.cbellory.xyz`
+  - Action URL: `https://pay.cbellory.xyz/api/actions/radar-scan`
   - Tags: `Security`, `DeFi`, `Trading`, `Audit`
 
 ---
@@ -131,6 +131,6 @@ const postResponse = await buildRadarScanActionPost(
 // postResponse.transaction contains base64 wire transaction for signing
 
 // 4. Generate wallet deep-links
-const phantomLink = buildBlinkUrl("https://wallet-radar.app/api/actions/radar-scan", { provider: "phantom" });
-const dialectLink = buildBlinkUrl("https://wallet-radar.app/api/actions/radar-scan", { provider: "dialect" });
+const phantomLink = buildBlinkUrl("https://pay.cbellory.xyz/api/actions/radar-scan", { provider: "phantom" });
+const dialectLink = buildBlinkUrl("https://pay.cbellory.xyz/api/actions/radar-scan", { provider: "dialect" });
 ```

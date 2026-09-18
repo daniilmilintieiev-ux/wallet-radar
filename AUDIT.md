@@ -41,6 +41,7 @@ running, or a link that points at a dead host.
     pay-per-call handshake is live.
   - `radar.cbellory.xyz/health` → **HTTP 200** (public service is up).
   - `wallet-radar.app/api/actions/radar-scan` → **HTTP 000** (dead).
+  - `pay.cbellory.xyz/actions.json` → **HTTP 200**, `/api/actions/radar-scan` → **HTTP 200** (the x402 server serves the live Blink routes).
   - `systemctl --user status canary-agent` → **`could not be found`**.
 
 ## Feature-by-feature classification
@@ -69,12 +70,12 @@ README/report claims more than is true today (see the 5 gaps below).
 | 15 | **Pillar 1 — Self-funding loop** (`/economics`) | GAP(4) | math tested + live, but **0 real settled USDC revenue** |
 | 16 | **Pillar 2 — Multi-agent consensus** | CODE | `aggregateConsensus` tested; internal to trust |
 | 17 | **Pillar 3 — Active defense** | LIVE | `/defense` live; `enforceVerdict` wired in scan |
-| 18 | **Autonomous canary agent** ("self-paying 24/7 + systemd unit") | GAP(2) | code + tests exist, but **service not installed on pi** |
+| 18 | **Autonomous canary agent** ("self-paying 24/7 + systemd unit") | GAP(2) | **process IS running** (log iter 1530, since 09-17) but as a bare process, not a managed systemd unit; its "self-pay" is a **dry-run**, not real USDC |
 | 19 | **x402 pay-per-call** (HTTP 402 + on-chain USDC verify + settlement) | LIVE(handshake) / GAP(4) | 402 manifest live; **no real settled payment yet** |
 | 20 | MCP server (6 tools) | CODE | stdio handshake + tools/list tested; `bin/mcp-server` |
 | 21 | A2A agent surface (card + `/a2a`) | LIVE | card + `/a2a` live; T3N DID registration unverified |
 | 22 | Agent SDK (`createRadarClient`, auto-pay, ledger read) | CODE | 12 SDK tests pass (real HTTP + payment + ledger) |
-| 23 | **Solana Actions & Blinks** (Phantom/Solflare/Dialect deep links) | GAP(3) | code + tests work, but **`wallet-radar.app` domain is dead** |
+| 23 | **Solana Actions & Blinks** (Phantom/Solflare/Dialect deep links) | FIXED | Blink routes are **live on `pay.cbellory.xyz`** (`/actions.json` + `/api/actions/...` → HTTP 200); README/deep-links re-pointed from the dead `wallet-radar.app` |
 | 24 | Web dashboard + ZK ledger viewer | LIVE | verified populated with real attestations |
 | 25 | **On-chain ZK scan ledger (The Oracle)** | LIVE | write + read proven live (see above) |
 | 26 | **SPL Token-22 Transfer Hook** (scan-on-transfer enforcement) | GAP(1) | program written; **not deployed**, no record bridge, no Token-22 mint |
@@ -104,21 +105,32 @@ README/report claims more than is true today (see the 5 gaps below).
   `transfer_checked` that the chain reverts. Until then the README should say
   "designed + implemented, **not yet deployed**."
 
-### GAP 2 — Canary agent: code exists, service is not installed on the pi
-- `scripts/canary-agent.ts` + `deploy/canary-agent.service` + `canary.test.ts`
-  exist and pass, but `systemctl --user status canary-agent` → **could not be
-  found**. So the "autonomous canary (self-paying 24/7) + systemd unit" claim is
-  not currently true on the deployed box.
-- **Fix (existing work, do now):** install + enable + start the canary unit on
-  the pi and confirm it is running; it then exercises the real self-pay loop.
+### GAP 2 — canary / x402 / watch run as bare processes, not managed units (minor)
+- Corrected after probing the box: the canary **is** running
+  (`/tmp/canary.log` at iter 1530, started 09-17), as is the x402 server
+  (`dist/src/x402server.js`) and the watch process (`dist/src/cli.js watch`).
+  Only `radar-http.service` is a real systemd unit; the other three are bare
+  processes. So the *features* work, but **auto-start / restart-on-crash /
+  survive-reboot** for x402, canary, and watch is not guaranteed by a unit.
+- Two nuances the README should state honestly: (a) the canary's "self-pay" is a
+  **dry-run** (`X-Payment-Dry-Run: true` against the free `/selftest`) — it
+  validates the x402 handshake, it does **not** move real USDC; (b)
+  `deploy/canary-agent.service` exists but is not installed.
+- **Fix (existing work):** install + enable proper systemd units for the x402
+  server (and canary/watch) so all four services are managed, restart-on-failure,
+  and start-on-boot (see PLAN / TASKS Batch 7).
 
-### GAP 3 — Blink deep links point at a dead domain
-- README Blink links (Phantom/Solflare/Dialect) use `wallet-radar.app`, which
-  returns **HTTP 000** (unreachable). The same action endpoints work on the live
-  host `radar.cbellory.xyz`.
-- **Fix (existing work, do now):** point the README/manifest Blink + Actions
-  links at the live host, or restore the `wallet-radar.app` CNAME. Until then,
-  "registered on Phantom/Solflare" is aspirational.
+### GAP 3 — Blink deep links pointed at a dead domain (FIXED this session)
+- README/`src/blink` deep links (Phantom/Solflare/Dialect) used `wallet-radar.app`
+  (HTTP 000, unreachable). The Blink/Actions routes are actually served by the
+  **x402 server**, which is live on `pay.cbellory.xyz`: `/actions.json` → 200,
+  `/api/actions/radar-scan` → 200 (verified).
+- **Fix applied (existing work):** `getBlinkRegistrationManifest` default base is
+  now `process.env.RADAR_BLINK_BASE_URL || "https://pay.cbellory.xyz"`; README,
+  `src/blink/README.md`, `docs/oracle-spike.md`, and `src/sdk/README.md` deep
+  links re-pointed to `pay.cbellory.xyz`. "One-tap in Phantom/Solflare" now
+  points at a live host. (Optional follow-up: restore the `wallet-radar.app`
+  CNAME if a branded domain is wanted.)
 
 ### GAP 4 — Self-funding loop has cost but no real settled revenue yet
 - `/economics` is real and the P&L math is tested, but

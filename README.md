@@ -303,12 +303,12 @@ Wallet Radar exposes official **Solana Actions & Blinks** (`src/blink`), turning
 - **One-Tap Execution**: `POST /api/actions/radar-scan` builds and returns a signable transaction containing an audit memo instruction (`RadarScan:<target>:x402:0.005`) and 0.005 USDC micropayment transfer.
 - **Dialect Blinks Link**:
   ```
-  https://dial.to/?action=solana-action:https://wallet-radar.app/api/actions/radar-scan
+  https://dial.to/?action=solana-action:https://pay.cbellory.xyz/api/actions/radar-scan
   ```
 - **Phantom & Solflare Deep Links**:
   ```
-  https://phantom.app/ul/browse/https%3A%2F%2Fwallet-radar.app%2Fapi%2Factions%2Fradar-scan?ref=wallet-radar
-  https://solflare.com/ul/v1/browse/https%3A%2F%2Fwallet-radar.app%2Fapi%2Factions%2Fradar-scan
+  https://phantom.app/ul/browse/https%3A%2F%2Fpay.cbellory.xyz%2Fapi%2Factions%2Fradar-scan?ref=wallet-radar
+  https://solflare.com/ul/v1/browse/https%3A%2F%2Fpay.cbellory.xyz%2Fapi%2Factions%2Fradar-scan
   ```
 
 See [`src/blink/README.md`](src/blink/README.md) for full specification, registration manifest, and programmatic usage.

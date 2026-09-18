@@ -281,7 +281,7 @@ export function buildWalletDeepLink(
  * Generates the full Blink registration manifest and deep links.
  */
 export function getBlinkRegistrationManifest(
-  baseUrl: string = "https://wallet-radar.app",
+  baseUrl: string = process.env.RADAR_BLINK_BASE_URL || "https://pay.cbellory.xyz",
   recipient: string = process.env.RADAR_X402_RECIPIENT || "11111111111111111111111111111111",
 ): BlinkRegistrationManifest {
   const normalizedBase = baseUrl.replace(/\/+$/, "");

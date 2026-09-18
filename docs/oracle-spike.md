@@ -188,7 +188,7 @@ import { ActionGetResponse } from "@solana/actions";
 export function handleGetRadarScanAction(): ActionGetResponse {
   return {
     type: "action",
-    icon: "https://wallet-radar.app/radar-icon-512.png",
+    icon: "https://pay.cbellory.xyz/radar-icon-512.png",
     title: "Wallet Radar Security Scan",
     description: "Instant behavioral anomaly detection and risk scoring for Solana wallets.",
     label: "Scan Wallet",
@@ -268,7 +268,7 @@ The standard mapping hosted at the root of the server:
 
 ### 3.6 Dialect Blinks URL Formatting
 Users can share Blinks on social media via the Dialect proxy:
-`https://dial.to/?action=solana-action:https://wallet-radar.app/api/actions/radar-scan`
+`https://dial.to/?action=solana-action:https://pay.cbellory.xyz/api/actions/radar-scan`
 
 ---
 
