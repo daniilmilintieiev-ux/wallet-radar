@@ -133,11 +133,88 @@ test("consensus: 0 active voters returns unknown verdict with no-active-voters r
   assert.equal(c.agreement, 0);
 });
 
-test("consensus: all agents abstain returns unknown verdict", () => {
+test("behavior agent at exact boundary riskScore === maxRisk votes safe", () => {
+  const vote = behaviorAgent(30, 30);
+  assert.equal(vote.verdict, "safe");
+  assert.equal(vote.confidence, 0.6); // 0 margin -> base confidence
+});
+
+test("solvency agent at exact boundary liquidityUsd === minLiquidityUsd votes safe", () => {
+  const vote = solvencyAgent(bal(50), 50, 50);
+  assert.equal(vote.verdict, "safe");
+  assert.equal(vote.confidence, 0.7);
+});
+
+test("solvency agent with balances null votes unknown with reason", () => {
+  const vote = solvencyAgent(null, 0, 50);
+  assert.equal(vote.verdict, "unknown");
+  assert.equal(vote.confidence, 0.2);
+  assert.ok(vote.reasons.includes("balance data unavailable"));
+});
+
+test("identity agent: non-system account (PDA) votes hold with confidence 0.8", () => {
+  const vote = identityAgent({ owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", isSystemAccount: false });
+  assert.equal(vote.verdict, "hold");
+  assert.equal(vote.confidence, 0.8);
+  assert.ok(vote.reasons[0].includes("is not the system program"));
+});
+
+test("all four agents in consensus panel: unanimous agreement when all safe", () => {
+  const votes = [
+    behaviorAgent(10, 30),
+    solvencyAgent(bal(100), 100, 50),
+    identityAgent({ owner: SYS, isSystemAccount: true }),
+    llmAgent("safe", "LLM approves")!,
+  ];
+  const c = aggregateConsensus(votes);
+  assert.equal(c.verdict, "safe");
+  assert.equal(c.participants, 4);
+  assert.equal(c.agreement, 1.0);
+  assert.deepEqual(c.dissent, []);
+});
+
+test("core unknown-data veto takes precedence over identity hold veto", () => {
+  // Behavior agent has no data (unknown) while Identity agent votes hold (PDA)
+  const votes = [
+    behaviorAgent(null, 30),
+    solvencyAgent(bal(100), 100, 50),
+    identityAgent({ owner: PDA, isSystemAccount: false }),
+  ];
+  const c = aggregateConsensus(votes);
+  assert.equal(c.verdict, "unknown");
+  assert.equal(c.rule, "unknown-data-veto");
+});
+
+test("core unknown-data veto takes precedence over behavior hold veto", () => {
+  // Solvency agent has no data (unknown) while Behavior agent votes hold (high risk)
+  const votes = [
+    behaviorAgent(85, 30),
+    solvencyAgent(null, 0, 50),
+    identityAgent({ owner: SYS, isSystemAccount: true }),
+  ];
+  const c = aggregateConsensus(votes);
+  assert.equal(c.verdict, "unknown");
+  assert.equal(c.rule, "unknown-data-veto");
+});
+
+test("behaviorAgent handles maxRisk: 0 boundary cleanly", () => {
+  // 0 risk with 0 maxRisk -> margin is 1 -> safe
+  const zeroRisk = behaviorAgent(0, 0);
+  assert.equal(zeroRisk.verdict, "safe");
+  assert.equal(zeroRisk.confidence, 0.95);
+
+  // Positive risk with 0 maxRisk -> over is 1 -> hold
+  const overRisk = behaviorAgent(10, 0);
+  assert.equal(overRisk.verdict, "hold");
+  assert.equal(overRisk.confidence, 0.9);
+});
+
+test("aggregateConsensus handles all-abstaining panel without crashing", () => {
   const votes = [identityAgent({ owner: null, isSystemAccount: null })];
   const c = aggregateConsensus(votes);
   assert.equal(c.verdict, "unknown");
   assert.equal(c.rule, "no-active-voters");
   assert.equal(c.participants, 0);
+  assert.equal(c.agreement, 0);
 });
 

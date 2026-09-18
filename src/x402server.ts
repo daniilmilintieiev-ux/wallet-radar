@@ -17,6 +17,7 @@ import { computeVerdict } from "./htmlreport.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { recordHeliusCost } from "./economics.js";
+import { validateConfig } from "./config.js";
 
 /** Pricing in USDC per endpoint matching AgenticTrade manifest. */
 export const X402_PRICING: Record<string, number> = {
@@ -672,6 +673,11 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     );
     process.exit(0);
   }
+
+  validateConfig(process.env, {
+    paywall: Boolean(process.env.RADAR_PAYWALL === "1" || process.env.RADAR_X402_PAYWALL === "1"),
+    rpcMode: process.env.RADAR_RPC_MODE as any,
+  });
 
   let port = Number(process.env.RADAR_X402_PORT || process.env.PORT || 4020);
   let host = process.env.HOST || "0.0.0.0";

@@ -14,6 +14,7 @@ export interface CanaryConfig {
   dryRun?: boolean;
   once?: boolean;
   fetchFn?: typeof fetch;
+  now?: () => number;
 }
 
 export interface CanaryStepResult {
@@ -127,12 +128,16 @@ export class CanaryAgent {
     this.fetchFn = config?.fetchFn ?? globalThis.fetch;
   }
 
-  public isBackingOff(now = Date.now()): boolean {
+  public now(): number {
+    return this.config.now ? this.config.now() : Date.now();
+  }
+
+  public isBackingOff(now = this.now()): boolean {
     return now < this.backoffUntil;
   }
 
   public async step(dryRunOverride?: boolean): Promise<CanaryStepResult> {
-    const nowMs = Date.now();
+    const nowMs = this.now();
     if (this.isBackingOff(nowMs)) {
       const remainingSec = Math.ceil((this.backoffUntil - nowMs) / 1000);
       return {
@@ -145,7 +150,7 @@ export class CanaryAgent {
 
     this.iteration++;
     const iter = this.iteration;
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date(nowMs).toISOString();
 
     // 1. Check API key status / log warning if missing
     if (!process.env.HELIUS_API_KEY && !this.apiKeyWarningLogged) {
@@ -190,7 +195,7 @@ export class CanaryAgent {
           this.config.logFile,
           `[${nowIso}] ERROR: 3 consecutive failures (${failMsg}), backing off for 5 minutes`,
         );
-        this.backoffUntil = Date.now() + (this.config.backoffMs ?? 5 * 60 * 1000);
+        this.backoffUntil = nowMs + (this.config.backoffMs ?? 5 * 60 * 1000);
       }
       return { ok: false, iter, error: failMsg };
     }
@@ -223,7 +228,7 @@ export class CanaryAgent {
           this.config.logFile,
           `[${nowIso}] ERROR: 3 consecutive failures (${failMsg}), backing off for 5 minutes`,
         );
-        this.backoffUntil = Date.now() + (this.config.backoffMs ?? 5 * 60 * 1000);
+        this.backoffUntil = nowMs + (this.config.backoffMs ?? 5 * 60 * 1000);
       }
       return { ok: false, iter, error: failMsg };
     }

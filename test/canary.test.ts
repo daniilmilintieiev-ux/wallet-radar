@@ -172,6 +172,7 @@ describe("Canary Agent Integration Tests", () => {
       throw new Error("Simulated network connection drop");
     };
 
+    let fakeNow = 1_700_000_000_000;
     const agent = new CanaryAgent({
       scanUrl: "http://127.0.0.1:9999",
       x402Url: "http://127.0.0.1:9999",
@@ -179,6 +180,7 @@ describe("Canary Agent Integration Tests", () => {
       logFile,
       fetchFn: failingFetch as any,
       backoffMs: 300_000, // 5 minutes
+      now: () => fakeNow,
     });
 
     try {
@@ -201,9 +203,10 @@ describe("Canary Agent Integration Tests", () => {
       assert.equal(res3.ok, false);
       assert.equal(agent.consecutiveFailures, 3);
       assert.equal(agent.isBackingOff(), true);
-      assert.ok(
-        agent.backoffUntil >= Date.now() + 290_000,
-        "Backoff until should be scheduled ~5 min in the future",
+      assert.equal(
+        agent.backoffUntil,
+        fakeNow + 300_000,
+        "Backoff until should be scheduled exactly 5 min in the future",
       );
 
       // Attempt 4: while backing off, step returns backedOff=true without attempting fetch

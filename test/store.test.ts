@@ -342,3 +342,140 @@ test("store: settled payments tracking and replay prevention across restart", ()
   store2.close();
   cleanup(dir);
 });
+
+test("store: recordCostEvent and getCostSummary aggregation", () => {
+  const { store, dir } = tmpStore();
+  const ts = 1700000000;
+  store.recordCostEvent({ ts, category: "helius", quantity: 10, unitPriceUsd: 0.0001, totalUsd: 0.001, detail: "10 RPC calls" });
+  store.recordCostEvent({ ts: ts + 10, category: "helius", quantity: 5, unitPriceUsd: 0.0001, totalUsd: 0.0005 });
+  store.recordCostEvent({ ts: ts + 20, category: "compute", quantity: 1, unitPriceUsd: 0.05, totalUsd: 0.05 });
+
+  const summary = store.getCostSummary();
+  assert.equal(summary.events, 3);
+  assert.equal(summary.totalUsd, 0.0515);
+  assert.equal(summary.byCategory["helius"], 0.0015);
+  assert.equal(summary.byCategory["compute"], 0.05);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("store: getRevenueSummary and getRevenuePerDay metrics", () => {
+  const { store, dir } = tmpStore();
+  const ts = 1700000000;
+  store.recordSettledPayment({ signature: "sig1", payer: "p1", recipient: "r1", amount: 0.005, endpoint: "/scan" }, ts);
+  store.recordSettledPayment({ signature: "sig2", payer: "p2", recipient: "r1", amount: 0.005, endpoint: "/scan" }, ts + 100);
+  store.recordSettledPayment({ signature: "sig3", payer: "p3", recipient: "r1", amount: 0.001, endpoint: "/analyze" }, ts + 200);
+
+  const rev = store.getRevenueSummary();
+  assert.equal(rev.payments, 3);
+  assert.equal(rev.totalUsdc, 0.011);
+  assert.equal(rev.byEndpoint["/scan"].count, 2);
+  assert.equal(rev.byEndpoint["/scan"].amountUsdc, 0.01);
+  assert.equal(rev.byEndpoint["/analyze"].count, 1);
+  assert.equal(rev.byEndpoint["/analyze"].amountUsdc, 0.001);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("store: cleanExpiredMintCache cleans stale mints only", () => {
+  const { store, dir } = tmpStore();
+  const now = 1700000000;
+  store.saveMintMetadata(
+    {
+      mint: "StaleMint11111111111111111111111111111111111",
+      mintAuthority: null,
+      freezeAuthority: null,
+      top10Pct: null,
+    },
+    now - 20000,
+    14400, // expired (20000 > 14400)
+  );
+  store.saveMintMetadata(
+    {
+      mint: "FreshMint11111111111111111111111111111111111",
+      mintAuthority: null,
+      freezeAuthority: null,
+      top10Pct: null,
+    },
+    now - 1000,
+    14400, // fresh
+  );
+
+  assert.ok(store.getMintMetadata("StaleMint11111111111111111111111111111111111", now) === null);
+  assert.ok(store.getMintMetadata("FreshMint11111111111111111111111111111111111", now) !== null);
+
+  const cleaned = store.cleanExpiredMintCache(now);
+  assert.equal(cleaned, 1);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("store: getCostPerDay and getRevenuePerDay aggregate across days", () => {
+  const { store, dir } = tmpStore();
+  const now = Math.floor(Date.now() / 1000);
+  const day1 = now - 2 * 86400;
+  const day2 = now - 86400;
+
+  // Cost events on day1 and day2
+  store.recordCostEvent({ ts: day1, category: "helius", quantity: 1, unitPriceUsd: 0.01, totalUsd: 0.01 });
+  store.recordCostEvent({ ts: day1 + 10, category: "helius", quantity: 1, unitPriceUsd: 0.02, totalUsd: 0.02 });
+  store.recordCostEvent({ ts: day2, category: "helius", quantity: 1, unitPriceUsd: 0.05, totalUsd: 0.05 });
+
+  const costPerDay = store.getCostPerDay(365);
+  assert.ok(costPerDay.length >= 2);
+  assert.equal(costPerDay[costPerDay.length - 2].costUsd, 0.03);
+  assert.equal(costPerDay[costPerDay.length - 1].costUsd, 0.05);
+
+  // Revenue payments on day1 and day2
+  store.recordSettledPayment({ signature: "s1", payer: "p1", recipient: "r1", amount: 0.005, endpoint: "/scan" }, day1);
+  store.recordSettledPayment({ signature: "s2", payer: "p2", recipient: "r1", amount: 0.010, endpoint: "/scan" }, day1 + 50);
+  store.recordSettledPayment({ signature: "s3", payer: "p3", recipient: "r1", amount: 0.020, endpoint: "/scan" }, day2);
+
+  const revPerDay = store.getRevenuePerDay(365);
+  assert.ok(revPerDay.length >= 2);
+  assert.equal(revPerDay[revPerDay.length - 2].revenueUsdc, 0.015);
+  assert.equal(revPerDay[revPerDay.length - 1].revenueUsdc, 0.020);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("store: removeWallet cleans up all associated tables completely", () => {
+  const { store, dir } = tmpStore();
+  const wallet = "W_FULL_CASCADE";
+  const now = 1700000000;
+
+  store.addWallet(wallet, now);
+  store.saveBaseline({ ...BASELINE, walletAddress: wallet });
+  store.markSeen(wallet, [{ sig: "sig1", ts: now }]);
+  store.recordBackoff(wallet, now);
+  store.recordPacing(wallet, 2, now + 100);
+  store.setDefenseState(wallet, { state: "gated", riskAt: 60, setAt: now, quietStreak: 0, actions: 1 });
+  store.recordDefenseEvent({ wallet, ts: now, fromState: "armed", toState: "gated", action: "escalate", risk: 60, reason: "risk" });
+
+  assert.equal(store.hasWallet(wallet), true);
+  assert.ok(store.getBaseline(wallet) !== null);
+  assert.equal(store.allSeen(wallet, ["sig1"]), true);
+  assert.ok(store.getBackoff(wallet) !== null);
+  assert.ok(store.getPacing(wallet) !== null);
+  assert.ok(store.getDefenseState(wallet) !== null);
+  assert.equal(store.recentDefenseEvents(wallet).length, 1);
+
+  // Remove wallet
+  store.removeWallet(wallet);
+
+  assert.equal(store.hasWallet(wallet), false);
+  assert.equal(store.getBaseline(wallet), null);
+  assert.equal(store.allSeen(wallet, ["sig1"]), false);
+  assert.equal(store.getBackoff(wallet), null);
+  assert.equal(store.getPacing(wallet), null);
+  assert.equal(store.getDefenseState(wallet), null);
+  assert.equal(store.recentDefenseEvents(wallet).length, 0);
+
+  store.close();
+  cleanup(dir);
+});
+

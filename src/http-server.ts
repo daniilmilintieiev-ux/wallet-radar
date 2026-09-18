@@ -27,6 +27,7 @@ import { commitScan, type ZKOracleClient } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
+import { validateConfig } from "./config.js";
 
 const SERVICE = "wallet-radar";
 
@@ -903,12 +904,13 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
     return;
   }
   loadEnv();
+  const watchEnabled = process.env.RADAR_WATCH === "1" || args.includes("--watch");
+  validateConfig(process.env, {
+    watch: watchEnabled,
+    rpcMode: process.env.RADAR_RPC_MODE as any,
+  });
   const port = Number(process.env.PORT ?? 7690);
   const host = process.env.HOST ?? "0.0.0.0";
-
-  // Optional in-process monitoring: RADAR_WATCH=1 (or --watch) opens a shared Store
-  // and runs the watch loop, firing WEBHOOK_URL / Telegram alerts on new anomalies.
-  const watchEnabled = process.env.RADAR_WATCH === "1" || args.includes("--watch");
   const options: ServerOptions = {};
   // Always open the shared store so /economics (and the watch endpoints) can
   // read on-chain revenue (settled_payments) + tracked cost (cost_events).

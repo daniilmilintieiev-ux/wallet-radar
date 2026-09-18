@@ -193,3 +193,78 @@ test("fetchUsdPrices throws on non-2xx responses", async () => {
     globalThis.fetch = original;
   }
 });
+
+test("fetchUsdPrices with empty mints array returns empty object without fetching", async () => {
+  let fetched = false;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    fetched = true;
+    return { ok: true, json: async () => ({}) };
+  }) as unknown as typeof fetch;
+  try {
+    const res = await fetchUsdPrices([]);
+    assert.deepEqual(res, {});
+    assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("swapUsdValue returns null on malformed swap or unpriced tokens", () => {
+  const malformed = makeSwap({ mint: "UnknownMint1", amount: 0 }, { mint: "UnknownMint2", amount: 0 });
+  assert.equal(swapUsdValue(malformed, {}), null);
+});
+
+test("collectSwapMints returns empty array when no txs have swap data", () => {
+  const txs: EnhancedTx[] = [
+    { signature: "tx1", timestamp: 100, source: "SYSTEM" },
+    { signature: "tx2", timestamp: 200, source: "UNKNOWN" },
+  ];
+  assert.deepEqual(collectSwapMints(txs), []);
+});
+
+test("fetchSwapPrices falls back to null when price feed fetch fails", async () => {
+  const original = globalThis.fetch;
+  const originalConsoleError = console.error;
+  console.error = () => {}; // suppress intentional fallback error log
+  globalThis.fetch = (async () => ({ ok: false, status: 500, statusText: "Internal Error" })) as unknown as typeof fetch;
+  try {
+    const txs: EnhancedTx[] = [swapTx("s1", SOL_MINT, 1, 9, BONK, 1000, 8)];
+    const prices = await fetchSwapPrices(txs, { baseUrl: "https://example.invalid/price/v3" });
+    assert.equal(prices, null);
+  } finally {
+    globalThis.fetch = original;
+    console.error = originalConsoleError;
+  }
+});
+
+test("fetchUsdPrices sends x-api-key header and custom baseUrl when configured", async () => {
+  const original = globalThis.fetch;
+  let capturedHeaders: Record<string, string> = {};
+  let capturedUrl = "";
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
+    return { ok: true, status: 200, statusText: "OK", json: async () => ({ [SOL_MINT]: { usdPrice: 150 } }) };
+  }) as unknown as typeof fetch;
+  try {
+    const res = await fetchUsdPrices([SOL_MINT], { baseUrl: "https://custom.jupiter.api/price/v3", apiKey: "test-jup-key" });
+    assert.equal(res[SOL_MINT], 150);
+    assert.ok(capturedUrl.startsWith("https://custom.jupiter.api/price/v3"));
+    assert.equal(capturedHeaders["x-api-key"], "test-jup-key");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("swapUsdValue supports USDT stablecoin and rounds to micro-USD precision", () => {
+  const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+  const swapWithUsdt = makeSwap({ mint: SOL_MINT, amount: 1 }, { mint: USDT, amount: 125.5 });
+  assert.equal(swapUsdValue(swapWithUsdt, {}), 125.5);
+
+  // Micro-USD rounding test: 0.123456789 * 10 = 1.23456789 -> 1.234568
+  const swapFloat = makeSwap({ mint: BONK, amount: 0.123456789 }, { mint: "RandomMint", amount: 1 });
+  assert.equal(swapUsdValue(swapFloat, { [BONK]: 10 }), 1.234568);
+});
+
+
