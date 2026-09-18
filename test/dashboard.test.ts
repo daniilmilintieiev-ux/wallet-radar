@@ -76,12 +76,12 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       generatedAt: 1726300500,
     });
 
-    assert.ok(html.includes("WALLET RADAR"));
-    assert.ok(html.includes("ZK Scan Ledger Overview"));
-    assert.ok(html.includes("~400x Cost Reduction"));
-    assert.ok(html.includes("Inspect Target Wallet Ledger"));
-    assert.ok(html.includes("Watched Wallets:"));
-    assert.ok(html.includes("Target1111111111111111111111111111111111111"));
+    assert.ok(html.includes("Wallet Radar"));
+    assert.ok(html.includes("Inspect target wallet ledger"));
+    assert.ok(html.includes("ZK scan ledger"));
+    assert.ok(html.includes("~400x cost"));
+    assert.ok(html.includes("wallet-input"));
+    assert.ok(html.includes("Targ")); // watchlist chip short-addr
   });
 
   test("renderDashboardHtml: renders empty state when wallet has no scan records", () => {
@@ -104,27 +104,64 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       generatedAt: 1726300500,
     });
 
-    // Check title and wallet
+    // Check top bar + wallet
     assert.ok(html.includes(testWallet));
-    assert.ok(html.includes("Latest Oracle Attestation"));
+    assert.ok(html.includes("Wallet Radar"));
 
-    // Check latest verdict card
+    // Check readout + scan ledger
     assert.ok(html.includes("85")); // score
-    assert.ok(html.includes("HIGH RISK"));
-    assert.ok(html.includes("badge-danger"));
+    assert.ok(html.includes("HIGH RISK")); // ledger verdict
     assert.ok(html.includes("DORMANT_ACTIVE"));
     assert.ok(html.includes("LARGE_SWAP"));
-    assert.ok(html.includes("CompAddr1111"));
+    assert.ok(html.includes("CompAddr1111")); // compressed PDA preview
     assert.ok(html.includes("300010000")); // slot
-    assert.ok(html.includes("4uQeVj5tqViQh7yG")); // onchain sig link
+    assert.ok(html.includes("4uQeVj5tqViQh7yG")); // onchain sig preview
 
-    // Check timeline table
-    assert.ok(html.includes("Attestation Timeline (2 scans recorded)"));
+    // Check scan-ledger table
+    assert.ok(html.includes("Scan ledger"));
+    assert.ok(html.includes("2 recorded"));
     assert.ok(html.includes("SAFE"));
     assert.ok(html.includes("20"));
 
-    // Check watchlist chip active class
-    assert.ok(html.includes("chip-active"));
+    // Check watchlist chip active state
+    assert.ok(html.includes('class="chip on"'));
+  });
+
+  test("renderDashboardHtml: renders defense stance, enforcement, and audit trail", () => {
+    const html = renderDashboardHtml({
+      wallet: testWallet,
+      records: [mockRecords[0]],
+      generatedAt: 1726300500,
+      defense: {
+        state: "gated",
+        riskAt: 55,
+        setAt: 1726299000,
+        quietStreak: 0,
+        actions: 3,
+        enforcement: { verdict: "throttle", limitUsd: null, gating: true },
+        trail: [
+          { ts: 1726299000, fromState: "alerting", toState: "gated", action: "escalate", risk: 55, reason: "risk 55" },
+          { ts: 1726298000, fromState: "armed", toState: "alerting", action: "escalate", risk: 34, reason: "risk 34" },
+        ],
+      },
+    });
+
+    // Defense state big readout + ladder
+    assert.ok(html.includes(">GATED<"));
+    assert.ok(html.includes("Active defense state"));
+    assert.ok(html.includes("gated"));
+
+    // Enforcement implied by the stance
+    assert.ok(html.includes("THROTTLE"));
+    assert.ok(html.includes("Gating"));
+
+    // Audit trail
+    assert.ok(html.includes("Defense audit trail"));
+    assert.ok(html.includes("alerting"));
+    assert.ok(html.includes("escalate"));
+
+    // Defense action count in readout
+    assert.ok(html.includes("defense actions"));
   });
 
   test("renderDashboardHtml: deterministic output for identical options", () => {
@@ -161,9 +198,8 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
 
     const html = await fetchAndRenderDashboard(testWallet, { client: oracleClient });
     assert.ok(html.includes(testWallet));
-    assert.ok(html.includes("Latest Oracle Attestation"));
+    assert.ok(html.includes("Scan ledger"));
     assert.ok(html.includes("85"));
-    assert.ok(html.includes("Attestation Timeline"));
   });
 
   test("handleDashboardHttpRequest: GET /dashboard returns HTML view", async () => {
@@ -302,7 +338,7 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.ok(dashRes.headers.get("content-type")?.includes("text/html"));
       const dashHtml = await dashRes.text();
       assert.ok(dashHtml.includes(testWallet));
-      assert.ok(dashHtml.includes("Latest Oracle Attestation"));
+      assert.ok(dashHtml.includes("Scan ledger"));
 
       // 2. GET /api/ledger
       const ledgerRes = await fetch(`http://127.0.0.1:${port}/api/ledger?wallet=${testWallet}`);
@@ -397,7 +433,7 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.equal(res.code, 0);
       assert.ok(fs.existsSync(outFile));
       const htmlContent = fs.readFileSync(outFile, "utf-8");
-      assert.ok(htmlContent.includes("WALLET RADAR"));
+      assert.ok(htmlContent.includes("Wallet Radar"));
       assert.ok(htmlContent.includes(testWallet));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -412,8 +448,8 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.equal(res.code, 0);
       assert.ok(fs.existsSync(outFile));
       const htmlContent = fs.readFileSync(outFile, "utf-8");
-      assert.ok(htmlContent.includes("WALLET RADAR"));
-      assert.ok(htmlContent.includes("ZK Scan Ledger Overview"));
+      assert.ok(htmlContent.includes("Wallet Radar"));
+      assert.ok(htmlContent.includes("ZK scan ledger"));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -145,10 +145,10 @@ describe("E2E Integration & Verification (Hackathon Full Flow)", () => {
         client: oracleClient,
       });
       assert.ok(dashHtml.includes(safeTarget), "Dashboard must include target wallet");
-      assert.ok(dashHtml.includes("Latest Oracle Attestation"), "Dashboard must render hero card");
+      assert.ok(dashHtml.includes("Scan ledger"), "Dashboard must render scan ledger");
       assert.ok(dashHtml.includes("15"), "Dashboard must render risk score");
       assert.ok(dashHtml.includes("SAFE"), "Dashboard must render SAFE verdict");
-      assert.ok(dashHtml.includes("badge-safe"), "Dashboard must render safe badge style");
+      assert.ok(dashHtml.includes("ARMED"), "Dashboard must render armed/safe stance");
       assert.ok(dashHtml.includes(latestOnchain.onchainSignature!.slice(0, 12)));
 
       // Step E: Server HTTP endpoints test (/dashboard and /api/ledger)

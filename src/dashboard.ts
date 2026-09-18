@@ -2,6 +2,22 @@ import http from "node:http";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "./oracle/index.js";
 import { escapeHtml, computeVerdict } from "./htmlreport.js";
 import { Store } from "./store.js";
+import { enforcementFor, DEFENSE_THRESHOLDS, DefenseState, DefenseEnforcement } from "./defense.js";
+
+/**
+ * Defense context surfaced to the dashboard for a single wallet: the persisted
+ * stance, its implied enforcement, and the recent auditable transition trail.
+ * Optional — when absent the dashboard derives a "stance" from the latest scan.
+ */
+export interface DashboardDefense {
+  state: DefenseState;
+  riskAt: number;
+  setAt: number;
+  quietStreak: number;
+  actions: number;
+  enforcement: DefenseEnforcement;
+  trail: Array<{ ts: number; fromState: string; toState: string; action: string; risk: number; reason: string }>;
+}
 
 export interface DashboardRenderOptions {
   wallet?: string;
@@ -9,6 +25,7 @@ export interface DashboardRenderOptions {
   watchlist?: string[];
   generatedAt?: number;
   rpcUrl?: string;
+  defense?: DashboardDefense | null;
 }
 
 export interface DashboardHttpOptions {
@@ -23,56 +40,393 @@ function formatIso(timestampSec?: number | null): string {
   return new Date(ms).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
 }
 
-function formatRelative(timestampSec?: number | null, nowSec = Math.floor(Date.now() / 1000)): string {
-  if (timestampSec == null || !Number.isFinite(timestampSec)) return "";
-  const diffSec = nowSec - timestampSec;
-  if (diffSec < 60) return "just now";
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-  return `${Math.floor(diffSec / 86400)}d ago`;
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
 }
 
-function verdictBadgeClass(verdict: string): string {
-  const upper = verdict.toUpperCase();
-  if (upper.includes("SAFE") || upper === "LOW" || upper.includes("LOW RISK")) {
-    return "badge-safe";
-  }
-  if (upper.includes("SUSPICIOUS") || upper.includes("HOLD") || upper.includes("MEDIUM") || upper.includes("WARN")) {
-    return "badge-warn";
-  }
-  return "badge-danger";
+function fmtStamp(timestampSec?: number | null): string {
+  if (timestampSec == null || !Number.isFinite(timestampSec)) return "—";
+  const ms = timestampSec > 1e11 ? timestampSec : timestampSec * 1000;
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
-function scoreColorClass(score: number): string {
-  if (score <= 30) return "score-safe";
-  if (score <= 60) return "score-warn";
-  return "score-danger";
+function fmtClock(timestampSec?: number | null): string {
+  if (timestampSec == null || !Number.isFinite(timestampSec)) return "—";
+  const ms = timestampSec > 1e11 ? timestampSec : timestampSec * 1000;
+  const d = new Date(ms);
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
 }
 
-function renderWatchlistChips(watchlist?: string[], currentWallet?: string): string {
-  if (!watchlist || watchlist.length === 0) return "";
-  const chips = watchlist.slice(0, 8).map((w) => {
-    const isSelected = w === currentWallet;
-    const short = `${w.slice(0, 4)}...${w.slice(-4)}`;
-    return `<a href="/dashboard?wallet=${encodeURIComponent(w)}" class="chip ${isSelected ? "chip-active" : ""}">${escapeHtml(short)}</a>`;
-  }).join(" ");
+/** Map a 0-100 risk score onto the defense ladder (mirrors DEFENSE_THRESHOLDS). */
+function riskToState(score: number): DefenseState {
+  if (score >= DEFENSE_THRESHOLDS.blocked) return "blocked";
+  if (score >= DEFENSE_THRESHOLDS.gated) return "gated";
+  if (score >= DEFENSE_THRESHOLDS.alerting) return "alerting";
+  return "armed";
+}
 
+const STATE_ORDER: readonly DefenseState[] = ["armed", "alerting", "gated", "blocked"];
+
+function fmtLimit(limitUsd: number | null): string {
+  if (limitUsd === 0) return "$0.00";
+  if (limitUsd == null) return "—";
+  return `$${limitUsd.toFixed(2)}`;
+}
+
+function shortAddr(w: string): string {
+  if (!w) return "—";
+  return w.length > 10 ? `${w.slice(0, 4)}…${w.slice(-4)}` : w;
+}
+
+const CONSOLE_CSS = `
+:root{
+  --bg:#0a0a0b; --panel:#101013; --ink:#f1f1ee; --ink2:#9c9c97; --ink3:#63635f;
+  --line:#26262b; --line2:#3a3a41; --accent:#ffb000; --accent-ink:#1a1400;
+  --mono:ui-monospace,"SFMono-Regular","Cascadia Code","JetBrains Mono","Consolas",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg)}
+body{font-family:var(--mono);color:var(--ink);-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1}
+.label{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink2);font-weight:700}
+.console{max-width:1440px;margin:0 auto;padding:0 30px 40px}
+.top{display:flex;justify-content:space-between;align-items:stretch;border-bottom:3px solid var(--ink);margin-top:26px}
+.top .brand{font-size:20px;font-weight:800;letter-spacing:.04em;padding:16px 0}
+.top .brand b{color:var(--accent)}
+.top .brand .sub{display:block;font-size:9.5px;letter-spacing:.2em;color:var(--ink3);font-weight:600;margin-top:5px}
+.top .meta{display:flex;align-items:stretch}
+.top .mcell{padding:14px 22px;border-left:2px solid var(--line);display:flex;flex-direction:column;justify-content:center;gap:6px}
+.top .mcell .v{font-size:13px;color:var(--ink);font-weight:600}
+.top .mcell .live .v{color:var(--accent)}
+.cur{display:inline-block;width:8px;height:14px;background:var(--accent);vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.readout{display:grid;grid-template-columns:1fr auto;gap:0;border:2px solid var(--line2);margin-top:26px}
+.readout .left{padding:26px 30px;border-right:2px solid var(--line2);display:flex;flex-direction:column;gap:14px}
+.readout .state-lbl{font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink2);font-weight:700}
+.readout .state{font-size:74px;font-weight:800;letter-spacing:-.01em;line-height:.9;color:var(--accent);animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.62}}
+.readout .state-cap{font-size:12px;color:var(--ink2);letter-spacing:.04em}
+.readout .state-cap b{color:var(--ink)}
+.readout .right{display:flex;flex-direction:column}
+.readout .right .rcell{padding:18px 26px;border-bottom:2px solid var(--line2);display:flex;flex-direction:column;gap:5px}
+.readout .right .rcell:last-child{border-bottom:0}
+.readout .right .num{font-size:40px;font-weight:800;line-height:1}
+.readout .right .num.warn{color:var(--accent)}
+.readout .right .cap{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink3)}
+.panels{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;margin-top:26px}
+.panel{background:var(--panel);border:2px solid var(--line2);padding:16px 16px 18px;display:flex;flex-direction:column;gap:12px}
+.panel h3{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink2);font-weight:700;display:flex;justify-content:space-between;align-items:center;padding-bottom:11px;border-bottom:2px solid var(--line)}
+.panel h3 .r{color:var(--ink3);letter-spacing:.08em}
+.s3{grid-column:span 3}.s4{grid-column:span 4}.s6{grid-column:span 6}.s8{grid-column:span 8}
+.kv .row{display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-top:1px solid var(--line);gap:14px}
+.kv .row:first-child{border-top:0}
+.kv .k{font-size:11px;color:var(--ink2);white-space:nowrap}
+.kv .v{font-size:13px;font-weight:700;color:var(--ink);text-align:right;word-break:break-all}
+.kv .v.on{color:var(--accent)}
+.kv .v a{color:var(--ink);text-decoration:none}
+.kv .v a:hover{color:var(--accent);text-decoration:underline}
+.vladder{display:flex;flex-direction:column;gap:8px}
+.vladder .st{display:flex;align-items:center;gap:12px;padding:11px 13px;border:2px solid var(--line)}
+.vladder .st .k{font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--ink3)}
+.vladder .st .mark{margin-left:auto;width:11px;height:11px;border:2px solid var(--ink3)}
+.vladder .st.on{border-color:var(--accent);background:rgba(255,176,0,.08)}
+.vladder .st.on .k{color:var(--accent)}
+.vladder .st.on .mark{background:var(--accent);border-color:var(--accent)}
+.rule-row{display:flex;align-items:center;gap:11px;padding:9px 0;border-top:1px solid var(--line)}
+.rule-row:first-child{border-top:0}
+.rule-row .sq{width:11px;height:11px;flex:none}
+.rule-row .sq.h{background:var(--accent)}
+.rule-row .sq.m{background:var(--ink)}
+.rule-row .nm{font-size:12.5px;font-weight:700;letter-spacing:.02em}
+.ev{display:grid;grid-template-columns:74px 1fr auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.ev:first-child{border-top:0}
+.ev .tm{font-size:11.5px;color:var(--ink2)}
+.ev .tx{font-size:12px;color:var(--ink)}
+.ev .tx b{color:var(--accent)}
+.ev .tag{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;border:1px solid var(--line2);padding:3px 7px;color:var(--ink2);font-weight:700}
+.ev .tag.hold{color:var(--accent);border-color:var(--accent)}
+.ev .tag.up{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+table{width:100%;border-collapse:collapse}
+thead th{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink3);font-weight:700;text-align:right;padding:0 0 10px;border-bottom:2px solid var(--line)}
+thead th:first-child{text-align:left}
+tbody td{font-size:12px;padding:10px 0;border-bottom:1px solid var(--line);text-align:right;color:var(--ink2)}
+tbody td:first-child{text-align:left;color:var(--ink)}
+tbody tr:last-child td{border-bottom:0}
+td .rk{font-weight:800;color:var(--ink)}
+td .rk.hi{color:var(--accent)}
+td .rules{color:var(--ink2)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-size:12px;border:1px solid var(--line2);padding:5px 10px;color:var(--ink2);text-decoration:none;letter-spacing:.02em}
+.chip:hover{color:var(--ink);border-color:var(--ink2)}
+.chip.on{color:var(--accent);border-color:var(--accent)}
+.note{font-size:12px;color:var(--ink3);letter-spacing:.02em;line-height:1.5}
+.empty{padding:6px 0;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.empty .t{font-size:15px;font-weight:800;letter-spacing:.04em;color:var(--ink)}
+.empty .d{font-size:12.5px;color:var(--ink2);line-height:1.6;max-width:680px}
+.empty code{color:var(--ink)}
+.search{display:flex;flex-direction:column;gap:10px}
+.search .row{display:flex;gap:10px}
+.search input{flex:1;min-width:0;background:var(--bg);border:2px solid var(--line2);color:var(--ink);font-family:var(--mono);font-size:13px;padding:10px 12px;outline:none}
+.search input:focus{border-color:var(--accent)}
+.search button{background:var(--accent);color:var(--accent-ink);border:2px solid var(--accent);font-family:var(--mono);font-size:12px;font-weight:800;letter-spacing:.1em;padding:10px 18px;cursor:pointer;text-transform:uppercase}
+.search .lbl{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink3);font-weight:700}
+footer{margin-top:26px;padding-top:14px;border-top:2px solid var(--line);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+footer .l{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
+footer .l b{color:var(--ink2)}
+footer .r{font-size:10.5px;color:var(--ink3)}
+@media (max-width:1000px){
+  .top{flex-direction:column}
+  .top .meta{border-left:0;border-top:2px solid var(--line)}
+  .readout{grid-template-columns:1fr}
+  .readout .left{border-right:0;border-bottom:2px solid var(--line2)}
+  .s3,.s4,.s6,.s8{grid-column:span 12}
+}
+`;
+
+function renderTop(wallet: string, slot: string | number): string {
   return `
-    <div class="watchlist-chips">
-      <span class="chips-label">Watched Wallets:</span>
+  <div class="top">
+    <div class="brand">WALLET<b>_</b>RADAR
+      <span class="sub">PRE-COPY TRUST GATE // DETERMINISTIC // NO LLM IN DECISION PATH</span>
+    </div>
+    <div class="meta">
+      <div class="mcell"><span class="label">Wallet</span><span class="v" title="${escapeHtml(wallet)}">${escapeHtml(shortAddr(wallet))}</span></div>
+      <div class="mcell"><span class="label">Slot</span><span class="v">${escapeHtml(String(slot))}</span></div>
+      <div class="mcell live"><span class="label">Link</span><span class="v"><span id="clock">--:--:--</span> <span class="cur"></span></span></div>
+    </div>
+  </div>
+`;
+}
+
+function renderReadout(args: {
+  state: DefenseState;
+  fromDefense: boolean;
+  enforcement: DefenseEnforcement;
+  rulesFired: number;
+  riskScore: number;
+  verdict: string;
+  thirdNum: string | number;
+  thirdCap: string;
+}): string {
+  const { state, fromDefense, enforcement, rulesFired, riskScore, verdict, thirdNum, thirdCap } = args;
+  const riskClass = riskScore >= DEFENSE_THRESHOLDS.gated ? "warn" : "";
+  const verdictCap = verdict ? verdict.toLowerCase() : "no scan data";
+  const stateCap = fromDefense
+    ? `<b>${escapeHtml(enforcement.verdict.toUpperCase())}</b> · ${rulesFired} rule(s) fired · defense engine`
+    : `<b>${escapeHtml(enforcement.verdict.toUpperCase())}</b> · ${rulesFired} rule(s) fired · from latest scan`;
+  const stateLbl = fromDefense ? "Active defense state" : "Risk stance";
+  return `
+  <div class="readout">
+    <div class="left">
+      <div class="state-lbl">${stateLbl}</div>
+      <div class="state">${escapeHtml(state.toUpperCase())}</div>
+      <div class="state-cap">${stateCap}</div>
+    </div>
+    <div class="right">
+      <div class="rcell"><span class="num ${riskClass}">${escapeHtml(String(riskScore))}</span><span class="cap">Risk index · ${escapeHtml(verdictCap)}</span></div>
+      <div class="rcell"><span class="num">${escapeHtml(fmtLimit(enforcement.limitUsd))}</span><span class="cap">Max payment · ${enforcement.gating ? "gating on" : "gating off"}</span></div>
+      <div class="rcell"><span class="num">${escapeHtml(String(thirdNum))}</span><span class="cap">${escapeHtml(thirdCap)}</span></div>
+    </div>
+  </div>
+`;
+}
+
+function renderStatesPanel(state: DefenseState, fromDefense: boolean): string {
+  const rows = STATE_ORDER.map(
+    (s) => `<div class="st ${s === state ? "on" : ""}"><span class="k">${s}</span><span class="mark"></span></div>`,
+  ).join("");
+  return `
+    <div class="panel s4">
+      <h3>Defense states <span class="r">${fromDefense ? "live" : "derived"}</span></h3>
+      <div class="vladder">${rows}</div>
+    </div>
+  `;
+}
+
+function renderEnforcementPanel(enforcement: DefenseEnforcement, fromDefense: boolean): string {
+  return `
+    <div class="panel s4">
+      <h3>Enforcement <span class="r">${fromDefense ? "live" : "derived"}</span></h3>
+      <div class="kv">
+        <div class="row"><span class="k">Verdict</span><span class="v ${enforcement.gating ? "on" : ""}">${escapeHtml(enforcement.verdict.toUpperCase())}</span></div>
+        <div class="row"><span class="k">Gating</span><span class="v ${enforcement.gating ? "on" : ""}">${enforcement.gating ? "ON" : "OFF"}</span></div>
+        <div class="row"><span class="k">Throttle</span><span class="v ${enforcement.verdict === "throttle" ? "on" : ""}">${enforcement.verdict === "throttle" ? "ON" : "OFF"}</span></div>
+        <div class="row"><span class="k">Max payment</span><span class="v">${escapeHtml(fmtLimit(enforcement.limitUsd))}</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRulesPanel(rules: string[]): string {
+  const body = rules.length
+    ? rules
+        .slice(0, 12)
+        .map((r, i) => `<div class="rule-row"><span class="sq ${i === 0 ? "h" : "m"}"></span><span class="nm">${escapeHtml(r)}</span></div>`)
+        .join("")
+    : `<div class="note">NO_ANOMALIES — no rules fired on the latest scan</div>`;
+  return `
+    <div class="panel s4">
+      <h3>Fired rules <span class="r">${rules.length ? `${rules.length} active` : "none"}</span></h3>
+      <div>${body}</div>
+    </div>
+  `;
+}
+
+function renderLedgerPanel(records: ScanLedgerRecord[]): string {
+  const rows = records
+    .slice(0, 50)
+    .map((rec) => {
+      const v = rec.verdict || computeVerdict(rec.riskScore);
+      const rs = rec.topRules && rec.topRules.length ? rec.topRules.join(", ") : "—";
+      return `
+        <tr>
+          <td>${rec.slot != null ? rec.slot : "—"}</td>
+          <td>${escapeHtml(fmtStamp(rec.timestamp))}</td>
+          <td><span class="rk ${rec.riskScore >= DEFENSE_THRESHOLDS.gated ? "hi" : ""}">${rec.riskScore}</span></td>
+          <td>${escapeHtml(v)}</td>
+          <td class="rules">${escapeHtml(rs)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  return `
+    <div class="panel s8">
+      <h3>Scan ledger <span class="r">${records.length} recorded</span></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Slot</th><th>Time</th><th>Risk</th><th>Verdict</th><th>Rules</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderAttestationPanel(latest: ScanLedgerRecord | null): string {
+  if (!latest) {
+    return `
+      <div class="panel s4">
+        <h3>Ledger attestation <span class="r">latest</span></h3>
+        <div class="note">no attestation committed to the on-chain ledger yet</div>
+      </div>
+    `;
+  }
+  const sig = latest.onchainSignature
+    ? `<a href="https://explorer.solana.com/tx/${encodeURIComponent(latest.onchainSignature)}" target="_blank" rel="noopener">${escapeHtml(latest.onchainSignature.slice(0, 16))}…</a>`
+    : "—";
+  const comp = latest.compressedAddress ? `${escapeHtml(latest.compressedAddress.slice(0, 12))}…` : "—";
+  return `
+    <div class="panel s4">
+      <h3>Ledger attestation <span class="r">latest</span></h3>
+      <div class="kv">
+        <div class="row"><span class="k">Slot</span><span class="v">${latest.slot != null ? latest.slot : "—"}</span></div>
+        <div class="row"><span class="k">Attested</span><span class="v">${escapeHtml(formatIso(latest.timestamp))}</span></div>
+        <div class="row"><span class="k">Compressed PDA</span><span class="v">${comp}</span></div>
+        <div class="row"><span class="k">On-chain tx</span><span class="v">${sig}</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTrailPanel(trail: DashboardDefense["trail"]): string {
+  const body = trail.length
+    ? trail
+        .slice(0, 8)
+        .map((ev) => {
+          const hasTransition = ev.fromState && ev.toState;
+          const detail = hasTransition
+            ? `${escapeHtml(ev.fromState)} → <b>${escapeHtml(ev.toState)}</b>${ev.risk ? ` (${ev.risk})` : ""}`
+            : `<b>${escapeHtml(ev.toState || "armed")}</b> · ${escapeHtml(ev.action)}`;
+          const cls = ev.action === "escalate" ? "up" : ev.action === "hold" ? "hold" : "";
+          return `<div class="ev"><span class="tm">${fmtClock(ev.ts)}</span><span class="tx">${detail}</span><span class="tag ${cls}">${escapeHtml(ev.action)}</span></div>`;
+        })
+        .join("")
+    : `<div class="note">no defense events recorded for this wallet</div>`;
+  return `
+    <div class="panel s6">
+      <h3>Defense audit trail <span class="r">${trail.length} events</span></h3>
+      <div>${body}</div>
+    </div>
+  `;
+}
+
+function renderWatchlistPanel(watchlist: string[], wallet: string): string {
+  const body = watchlist.length
+    ? `<div class="chips">${watchlist
+        .slice(0, 10)
+        .map((w) => `<a class="chip ${w === wallet ? "on" : ""}" href="/dashboard?wallet=${encodeURIComponent(w)}">${escapeHtml(shortAddr(w))}</a>`)
+        .join("")}</div>`
+    : `<div class="note">no wallets in the watchlist yet</div>`;
+  return `
+    <div class="panel s6">
+      <h3>Watched wallets <span class="r">${watchlist.length}</span></h3>
+      ${body}
+    </div>
+  `;
+}
+
+function renderSearchPanel(wallet: string, watchlist: string[]): string {
+  const chips = watchlist.length
+    ? `<div class="chips" style="margin-top:10px">${watchlist
+        .slice(0, 10)
+        .map((w) => `<a class="chip ${w === wallet ? "on" : ""}" href="/dashboard?wallet=${encodeURIComponent(w)}">${escapeHtml(shortAddr(w))}</a>`)
+        .join("")}</div>`
+    : "";
+  return `
+    <div class="panel s8">
+      <h3>Inspect target wallet ledger <span class="r">base58</span></h3>
+      <form method="GET" action="/dashboard" class="search">
+        <span class="lbl">Query the on-chain ZK scan ledger + defense stance for a wallet</span>
+        <div class="row">
+          <input id="wallet-input" type="text" name="wallet" value="${escapeHtml(wallet)}" placeholder="Solana base58 address (e.g. 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j)" required />
+          <button type="submit">Lookup</button>
+        </div>
+      </form>
       ${chips}
     </div>
   `;
 }
 
+function renderAboutPanel(): string {
+  return `
+    <div class="panel s4">
+      <h3>ZK scan ledger <span class="r">Light Protocol</span></h3>
+      <div class="kv">
+        <div class="row"><span class="k">Compression</span><span class="v">~400x cost</span></div>
+        <div class="row"><span class="k">Receipts</span><span class="v">tamper-evident</span></div>
+        <div class="row"><span class="k">Settlement</span><span class="v">x402 pay-per-call</span></div>
+        <div class="row"><span class="k">Verification</span><span class="v">agent on-chain</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderEmptyPanel(wallet: string): string {
+  return `
+    <div class="panel s12" style="grid-column:span 12">
+      <h3>No attestations <span class="r">empty ledger</span></h3>
+      <div class="empty">
+        <div class="t">No On-Chain Scan Attestations Found</div>
+        <div class="d">
+          No ZK-compressed scan records have been committed to the on-chain ledger for
+          <code>${escapeHtml(wallet)}</code>. Trigger an automated scan via
+          <code>radar scan ${escapeHtml(wallet)}</code> (with <code>RADAR_ORACLE=1</code>),
+          the x402 <code>POST /scan</code> API, or via one-tap Blink.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 /**
- * Renders the self-contained Dashboard HTML page.
+ * Renders the self-contained Wallet Radar console (brutalist monochrome HMI).
  * Deterministic for identical input options.
  */
 export function renderDashboardHtml(opts: DashboardRenderOptions): string {
   const wallet = opts.wallet?.trim() || "";
   const records = opts.records || [];
   const watchlist = opts.watchlist || [];
+  const defense = opts.defense ?? null;
   const generatedAt = opts.generatedAt || Math.floor(Date.now() / 1000);
   const nowStr = formatIso(generatedAt);
 
@@ -81,448 +435,80 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
   const latest = hasRecords ? records[0] : null;
 
   const title = hasWallet
-    ? `Wallet Radar — ${wallet.slice(0, 4)}...${wallet.slice(-4)} Ledger`
-    : "Wallet Radar — ZK Scan Ledger Dashboard";
+    ? `Wallet Radar — ${shortAddr(wallet)} Console`
+    : "Wallet Radar — Console";
+
+  // Resolve the stance to display: the persisted defense stance when present,
+  // otherwise derive from the latest scan's risk score.
+  const displayState: DefenseState = defense ? defense.state : riskToState(latest?.riskScore ?? 0);
+  const fromDefense = defense != null;
+  const enforcement: DefenseEnforcement = defense ? defense.enforcement : enforcementFor(displayState);
+  const rulesFired = latest?.topRules?.length ?? 0;
+  const riskScore = latest?.riskScore ?? defense?.riskAt ?? 0;
+  const latestVerdict = latest ? latest.verdict || computeVerdict(latest.riskScore) : "";
+
+  let body: string;
+  if (!hasWallet) {
+    body = `
+    ${renderReadout({ state: "armed", fromDefense: false, enforcement: enforcementFor("armed"), rulesFired: 0, riskScore: 0, verdict: "", thirdNum: watchlist.length, thirdCap: "watched wallets" })}
+    <div class="panels">
+      ${renderSearchPanel("", watchlist)}
+      ${renderAboutPanel()}
+    </div>`;
+  } else if (!hasRecords && !defense) {
+    body = `
+    ${renderReadout({ state: "armed", fromDefense: false, enforcement: enforcementFor("armed"), rulesFired: 0, riskScore: 0, verdict: "", thirdNum: 0, thirdCap: "scans on ledger" })}
+    <div class="panels">
+      ${renderEmptyPanel(wallet)}
+      ${renderSearchPanel(wallet, watchlist)}
+      ${renderAboutPanel()}
+    </div>`;
+  } else {
+    body = `
+    ${renderReadout({
+      state: displayState,
+      fromDefense,
+      enforcement,
+      rulesFired,
+      riskScore,
+      verdict: latestVerdict,
+      thirdNum: defense ? defense.actions : records.length,
+      thirdCap: defense ? "defense actions" : "scans on ledger",
+    })}
+    <div class="panels">
+      ${renderStatesPanel(displayState, fromDefense)}
+      ${renderEnforcementPanel(enforcement, fromDefense)}
+      ${renderRulesPanel(latest?.topRules ?? [])}
+      ${renderLedgerPanel(records)}
+      ${renderAttestationPanel(latest)}
+      ${renderTrailPanel(defense?.trail ?? [])}
+      ${renderWatchlistPanel(watchlist, wallet)}
+    </div>`;
+  }
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
-  <style>
-    :root {
-      --bg-page: #0d1117;
-      --bg-card: #161b22;
-      --bg-card-alt: #21262d;
-      --border: #30363d;
-      --border-muted: #21262d;
-      --text: #c9d1d9;
-      --text-muted: #8b949e;
-      --text-heading: #f0f6fc;
-      --accent: #58a6ff;
-      --accent-glow: rgba(88, 166, 255, 0.15);
-      --safe: #3fb950;
-      --safe-bg: rgba(63, 185, 80, 0.15);
-      --safe-border: #238636;
-      --warn: #d29922;
-      --warn-bg: rgba(210, 153, 34, 0.15);
-      --warn-border: #9e6a03;
-      --danger: #f85149;
-      --danger-bg: rgba(248, 81, 73, 0.15);
-      --danger-border: #da3633;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg-page);
-      color: var(--text);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 14px;
-      line-height: 1.6;
-      padding: 24px;
-    }
-
-    .container { max-width: 1120px; margin: 0 auto; }
-
-    /* Header */
-    .header {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 24px;
-    }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .brand-title {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--text-heading);
-      letter-spacing: -0.5px;
-    }
-    .brand-badge {
-      display: inline-block;
-      font-size: 10px;
-      font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 12px;
-      background: var(--accent-glow);
-      color: var(--accent);
-      border: 1px solid var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .meta-nav { display: flex; gap: 16px; font-size: 12px; }
-    .meta-nav a { color: var(--text-muted); text-decoration: none; }
-    .meta-nav a:hover { color: var(--accent); }
-
-    /* Cards */
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 24px;
-    }
-    .card-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text-heading);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 14px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    /* Search Bar */
-    .search-form { display: flex; flex-direction: column; gap: 8px; }
-    .search-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; }
-    .input-group { display: flex; gap: 10px; }
-    .input-text {
-      flex: 1;
-      background: var(--bg-page);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-family: inherit;
-      font-size: 14px;
-      padding: 10px 14px;
-      outline: none;
-    }
-    .input-text:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
-    .btn {
-      background: var(--bg-card-alt);
-      border: 1px solid var(--border);
-      color: var(--text-heading);
-      font-family: inherit;
-      font-size: 13px;
-      font-weight: 600;
-      padding: 10px 18px;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      white-space: nowrap;
-    }
-    .btn:hover { background: var(--border); }
-    .btn-primary {
-      background: #1f6feb;
-      border-color: #388bfd;
-      color: #ffffff;
-    }
-    .btn-primary:hover { background: #388bfd; }
-
-    /* Chips */
-    .watchlist-chips { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
-    .chips-label { color: var(--text-muted); }
-    .chip {
-      background: var(--bg-page);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 3px 10px;
-      border-radius: 12px;
-      text-decoration: none;
-      font-size: 12px;
-    }
-    .chip:hover { border-color: var(--accent); color: var(--accent); }
-    .chip-active { border-color: var(--accent); background: var(--accent-glow); color: var(--accent); font-weight: 600; }
-
-    /* Hero Section */
-    .hero-grid {
-      display: grid;
-      grid-template-columns: 240px 1fr;
-      gap: 20px;
-      align-items: center;
-    }
-    @media (max-width: 720px) { .hero-grid { grid-template-columns: 1fr; } }
-
-    .hero-verdict {
-      background: var(--bg-page);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px;
-      text-align: center;
-    }
-    .verdict-badge {
-      display: inline-block;
-      font-size: 18px;
-      font-weight: 800;
-      padding: 6px 16px;
-      border-radius: 6px;
-      letter-spacing: 0.5px;
-      margin-bottom: 8px;
-      text-transform: uppercase;
-    }
-    .badge-safe { background: var(--safe-bg); border: 1px solid var(--safe-border); color: var(--safe); }
-    .badge-warn { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn); }
-    .badge-danger { background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger); }
-
-    .score-value {
-      font-size: 38px;
-      font-weight: 900;
-      line-height: 1.1;
-      margin-bottom: 4px;
-    }
-    .score-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
-    .score-safe { color: var(--safe); }
-    .score-warn { color: var(--warn); }
-    .score-danger { color: var(--danger); }
-
-    .hero-details { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; }
-    @media (max-width: 500px) { .hero-details { grid-template-columns: 1fr; } }
-    .detail-item { background: var(--bg-page); border: 1px solid var(--border-muted); border-radius: 6px; padding: 10px 12px; }
-    .detail-label { color: var(--text-muted); font-size: 11px; margin-bottom: 2px; text-transform: uppercase; }
-    .detail-val { color: var(--text-heading); word-break: break-all; font-weight: 500; }
-    .detail-val a { color: var(--accent); text-decoration: none; }
-    .detail-val a:hover { text-decoration: underline; }
-
-    /* Rules tags */
-    .rules-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-    .rule-tag {
-      background: var(--bg-card-alt);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 2px 8px;
-      font-size: 11px;
-      color: var(--warn);
-    }
-
-    /* History Table */
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
-    th {
-      background: var(--bg-card-alt);
-      color: var(--text-muted);
-      font-weight: 600;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      text-transform: uppercase;
-      font-size: 11px;
-    }
-    td { padding: 10px 12px; border-bottom: 1px solid var(--border-muted); vertical-align: middle; }
-    tr:hover td { background: var(--bg-card-alt); }
-    .mono-link { color: var(--accent); text-decoration: none; }
-    .mono-link:hover { text-decoration: underline; }
-
-    /* Empty state */
-    .empty-state {
-      text-align: center;
-      padding: 40px 20px;
-      color: var(--text-muted);
-    }
-    .empty-icon { font-size: 32px; margin-bottom: 12px; }
-    .empty-title { font-size: 16px; color: var(--text-heading); font-weight: 600; margin-bottom: 6px; }
-    .empty-desc { max-width: 500px; margin: 0 auto 16px auto; font-size: 13px; }
-
-    /* Footer */
-    .footer {
-      text-align: center;
-      padding-top: 24px;
-      margin-top: 24px;
-      border-top: 1px solid var(--border-muted);
-      color: var(--text-muted);
-      font-size: 12px;
-    }
-  </style>
+  <style>${CONSOLE_CSS}</style>
 </head>
 <body>
-  <div class="container">
-    <header class="header">
-      <div class="brand">
-        <span class="brand-title">WALLET RADAR</span>
-        <span class="brand-badge">ZK Scan Ledger</span>
-      </div>
-      <nav class="meta-nav">
-        <a href="/dashboard">Dashboard</a>
-        <a href="/health">Health</a>
-        <a href="/actions.json">Blink Rules</a>
-        <a href="https://github.com/daniilmilintieiev-ux/wallet-radar" target="_blank" rel="noopener">GitHub</a>
-      </nav>
-    </header>
-
-    <!-- Search / Target Card -->
-    <div class="card">
-      <form method="GET" action="/dashboard" class="search-form">
-        <label for="wallet-input" class="search-label">Inspect Target Wallet Ledger</label>
-        <div class="input-group">
-          <input
-            id="wallet-input"
-            class="input-text"
-            type="text"
-            name="wallet"
-            value="${escapeHtml(wallet)}"
-            placeholder="Enter Solana base58 address (e.g. 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j)"
-            required
-          />
-          <button type="submit" class="btn btn-primary">Lookup Ledger</button>
-        </div>
-      </form>
-      ${renderWatchlistChips(watchlist, wallet)}
-    </div>
-
-    ${hasWallet ? renderWalletView(wallet, records, latest) : renderWelcomeView(watchlist)}
-
-    <footer class="footer">
-      <div>Wallet Radar &middot; On-chain ZK scan ledger powered by Light Protocol stateless compression.</div>
-      <div style="margin-top: 4px; opacity: 0.7;">Generated at ${escapeHtml(nowStr)} &middot; History is the only receipt.</div>
+  <div class="console">
+    ${renderTop(wallet, latest?.slot ?? "—")}
+    ${body}
+    <footer>
+      <div class="l"><b>DETERMINISTIC GATE</b> · X402 PAY-PER-CALL · ON-CHAIN ZK LEDGER · DEFENSE ENGINE</div>
+      <div class="r">wallet-radar // generated ${escapeHtml(nowStr)}</div>
     </footer>
   </div>
+  <script>
+    function tick(){var d=new Date();var p=function(n){return (n<10?'0':'')+n};var el=document.getElementById('clock');if(el){el.textContent=p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds())+'Z';}}
+    tick();setInterval(tick,1000);
+  </script>
 </body>
 </html>`;
-}
-
-function renderWalletView(wallet: string, records: ScanLedgerRecord[], latest: ScanLedgerRecord | null): string {
-  if (!latest || records.length === 0) {
-    return `
-      <div class="card">
-        <div class="empty-state">
-          <div class="empty-icon">&#128269;</div>
-          <div class="empty-title">No On-Chain Scan Attestations Found</div>
-          <div class="empty-desc">
-            No ZK-compressed scan records have been committed to the on-chain ledger for
-            <br /><code>${escapeHtml(wallet)}</code>.
-          </div>
-          <p style="font-size: 12px; color: var(--text-muted);">
-            Trigger an automated scan via <code>radar scan ${escapeHtml(wallet)}</code> (with <code>RADAR_ORACLE=1</code>),
-            the x402 <code>POST /scan</code> API, or via one-tap Blink.
-          </p>
-        </div>
-      </div>
-    `;
-  }
-
-  const latestVerdict = latest.verdict || computeVerdict(latest.riskScore);
-  const badgeCls = verdictBadgeClass(latestVerdict);
-  const scoreCls = scoreColorClass(latest.riskScore);
-  const topRules = latest.topRules && latest.topRules.length > 0 ? latest.topRules : ["NO_ANOMALIES"];
-  const relTime = formatRelative(latest.timestamp);
-  const isoTime = formatIso(latest.timestamp);
-
-  const heroHtml = `
-    <div class="card">
-      <div class="card-title">
-        <span>Latest Oracle Attestation</span>
-        <span style="font-size: 12px; font-weight: normal; color: var(--text-muted);">${escapeHtml(relTime)}</span>
-      </div>
-      <div class="hero-grid">
-        <div class="hero-verdict">
-          <div class="verdict-badge ${badgeCls}">${escapeHtml(latestVerdict)}</div>
-          <div class="score-value ${scoreCls}">${latest.riskScore}</div>
-          <div class="score-label">Risk Score / 100</div>
-        </div>
-        <div class="hero-details">
-          <div class="detail-item">
-            <div class="detail-label">Audited Wallet</div>
-            <div class="detail-val"><code>${escapeHtml(wallet)}</code></div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-label">Attestation Time</div>
-            <div class="detail-val">${escapeHtml(isoTime)}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-label">On-chain Signature</div>
-            <div class="detail-val">
-              ${
-                latest.onchainSignature
-                  ? `<a href="https://explorer.solana.com/tx/${encodeURIComponent(latest.onchainSignature)}" target="_blank" rel="noopener"><code>${escapeHtml(latest.onchainSignature.slice(0, 16))}...</code></a>`
-                  : `<span style="color: var(--text-muted)">pending</span>`
-              }
-            </div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-label">Compressed PDA / Slot</div>
-            <div class="detail-val">
-              <code>${latest.compressedAddress ? escapeHtml(latest.compressedAddress.slice(0, 12)) + "..." : "n/a"}</code>
-              ${latest.slot ? `(slot ${latest.slot})` : ""}
-            </div>
-          </div>
-          <div class="detail-item" style="grid-column: 1 / -1;">
-            <div class="detail-label">Top Fired Anomaly Rules</div>
-            <div class="rules-list">
-              ${topRules.map((r) => `<span class="rule-tag">${escapeHtml(r)}</span>`).join(" ")}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // History Table rows
-  const rows = records.map((rec) => {
-    const v = rec.verdict || computeVerdict(rec.riskScore);
-    const bCls = verdictBadgeClass(v);
-    const sCls = scoreColorClass(rec.riskScore);
-    const rulesStr = rec.topRules && rec.topRules.length > 0 ? rec.topRules.join(", ") : "—";
-    const sigHtml = rec.onchainSignature
-      ? `<a href="https://explorer.solana.com/tx/${encodeURIComponent(rec.onchainSignature)}" target="_blank" rel="noopener" class="mono-link">${escapeHtml(rec.onchainSignature.slice(0, 12))}...</a>`
-      : `<span style="color: var(--text-muted);">—</span>`;
-
-    return `
-      <tr>
-        <td>${escapeHtml(formatIso(rec.timestamp))}</td>
-        <td><code>${rec.slot ?? "—"}</code></td>
-        <td class="${sCls}" style="font-weight: 700;">${rec.riskScore}</td>
-        <td><span class="verdict-badge ${bCls}" style="font-size: 11px; padding: 2px 8px; margin: 0;">${escapeHtml(v)}</span></td>
-        <td><span style="font-size: 11px;">${escapeHtml(rulesStr)}</span></td>
-        <td>${sigHtml}</td>
-      </tr>
-    `;
-  }).join("");
-
-  const historyHtml = `
-    <div class="card">
-      <div class="card-title">
-        <span>Attestation Timeline (${records.length} scans recorded)</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Timestamp (UTC)</th>
-              <th>Slot</th>
-              <th>Score</th>
-              <th>Verdict</th>
-              <th>Anomaly Rules Fired</th>
-              <th>On-chain Tx Sig</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-
-  return heroHtml + historyHtml;
-}
-
-function renderWelcomeView(watchlist: string[]): string {
-  const sampleWallet = watchlist.length > 0 ? watchlist[0] : "DemoTargetWallet1111111111111111111111111";
-  return `
-    <div class="card">
-      <div class="card-title">ZK Scan Ledger Overview</div>
-      <div style="font-size: 13px; color: var(--text); line-height: 1.7;">
-        <p style="margin-bottom: 12px;">
-          Wallet Radar commits cryptographic risk scan attestations to Solana state trees using <strong>Light Protocol ZK compression</strong>.
-          Every scan attestation contains the target wallet, risk score (0-100), verdict badge, evaluation timestamp, and top anomaly rules.
-        </p>
-        <ul style="margin-left: 20px; margin-bottom: 16px; color: var(--text-muted);">
-          <li><strong>~400x Cost Reduction</strong>: State compression records attestations for ~0.000005 SOL (rent-free state).</li>
-          <li><strong>Tamper-Evident Receipts</strong>: Attestation hashes are verifiable against Solana state root merkle proofs.</li>
-          <li><strong>Autonomous Agent Verification</strong>: AI agents and smart contracts verify counterparty risk on-chain before trade settlement.</li>
-        </ul>
-        <p>
-          To inspect a wallet's on-chain history, enter a public key in the search field above, or click:
-          <a href="/dashboard?wallet=${encodeURIComponent(sampleWallet)}" class="mono-link"><code>${escapeHtml(sampleWallet)}</code></a>.
-        </p>
-      </div>
-    </div>
-  `;
 }
 
 /**
@@ -535,19 +521,23 @@ export async function fetchAndRenderDashboard(
     client?: ZKOracleClient;
     limit?: number;
     watchlist?: string[];
+    defense?: DashboardDefense | null;
   } = {},
 ): Promise<string> {
-  const records = wallet ? await readScanLedger(wallet, {
-    client: opts.client,
-    rpcUrl: opts.rpcUrl,
-    limit: opts.limit ?? 20,
-  }) : [];
+  const records = wallet
+    ? await readScanLedger(wallet, {
+        client: opts.client,
+        rpcUrl: opts.rpcUrl,
+        limit: opts.limit ?? 20,
+      })
+    : [];
 
   return renderDashboardHtml({
     wallet,
     records,
     watchlist: opts.watchlist,
     rpcUrl: opts.rpcUrl,
+    defense: opts.defense ?? null,
   });
 }
 
@@ -576,6 +566,29 @@ export function formatLedgerTerminalTable(records: ScanLedgerRecord[]): string {
   lines.push("--------------------------------------------------------------------------------------------------");
 
   return lines.join("\n");
+}
+
+/**
+ * Builds a DashboardDefense from the Store for a wallet (null when no stance).
+ */
+function readDefense(store: Store | undefined, wallet: string): DashboardDefense | null {
+  if (!store || !wallet) return null;
+  try {
+    const info = store.getDefenseState(wallet);
+    if (!info) return null;
+    const trail = store.recentDefenseEvents(wallet, 8);
+    return {
+      state: info.state,
+      riskAt: info.riskAt,
+      setAt: info.setAt,
+      quietStreak: info.quietStreak,
+      actions: info.actions,
+      enforcement: enforcementFor(info.state),
+      trail,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -617,11 +630,14 @@ export async function handleDashboardHttpRequest(
       });
     }
 
+    const defense = readDefense(options.store, wallet);
+
     const html = renderDashboardHtml({
       wallet,
       records,
       watchlist,
       rpcUrl: options.rpcUrl,
+      defense,
     });
 
     const bodyBuf = Buffer.from(html, "utf-8");
