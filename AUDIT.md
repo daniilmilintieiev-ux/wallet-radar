@@ -1,7 +1,7 @@
 # Wallet Radar — Honest Audit (what actually works vs. what is promised)
 
 Date: 2026-09-18. Method: full `tsc` build + the entire unit/integration suite
-(485 tests, 22 suites), a static wiring review of `src/http-server.ts`, and a
+(488 tests, 22 suites), a static wiring review of `src/http-server.ts`, and a
 **live** probe of the deployed service on the Orange Pi (`radar-http.service`,
 port 7690; `x402` server, port 4020) plus the public domains. This is the answer
 to "how much of this is a promise or fake code?" — verified, not asserted.
@@ -13,7 +13,7 @@ baseline (USD-normalized, PnL-lite), trust gate + decision engine, batch,
 simulate, watchlist + adaptive polling, replay, benchmark, economics math,
 consensus, active defense, counterparty memory, x402 pay-per-call handshake,
 MCP server, A2A surface, on-chain **ZK** scan ledger (write + read), and the
-dashboard. **485/485 tests pass; the live service returns real on-chain data.**
+dashboard. **488/488 tests pass; the live service returns real on-chain data.**
 
 The original audit found **5 gaps** where the README/Colosseum report claimed
 more than was true live. **3 are now closed this session** — GAP 3 (Blink
@@ -28,7 +28,7 @@ running, or a link that points at a dead host.
 ## Evidence base (this audit)
 
 - `npm run build` (tsc) — clean.
-- `npm test` — **485 pass / 0 fail / 0 skip** (22 suites), ~7.7s.
+- `npm test` — **488 pass / 0 fail / 0 skip** (22 suites), ~7.7s.
 - Live probe (2026-09-18, Orange Pi):
   - `POST /scan 5DTK7…3V1g` → real: `txCount 7`, `riskScore 15`, `LOW RISK`,
     anomaly `ACTIVITY_BURST`; committed a fresh on-chain attestation
@@ -177,4 +177,4 @@ README/report claims more than is true today (see the 5 gaps below).
   `ATokenGPvbdGVxr1b2hvZbsiqW5Pvf9z3579PJgND1R` — a **non-existent** mainnet
   program, which broke any ATA derivation / x402 ATA-payer path. Corrected to the
   canonical `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` (verified
-  `executable: true` on mainnet; source `@solana/spl-token`). Build + 485/485 tests green.
+  `executable: true` on mainnet; source `@solana/spl-token`). Build + 488/488 tests green.
