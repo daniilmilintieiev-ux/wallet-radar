@@ -124,3 +124,20 @@ test("behavior agent confidence is higher with more risk margin", () => {
   assert.ok(safe.verdict === "safe" && risky.verdict === "safe");
   assert.ok(safe.confidence > risky.confidence);
 });
+
+test("consensus: 0 active voters returns unknown verdict with no-active-voters rule", () => {
+  const c = aggregateConsensus([]);
+  assert.equal(c.verdict, "unknown");
+  assert.equal(c.rule, "no-active-voters");
+  assert.equal(c.participants, 0);
+  assert.equal(c.agreement, 0);
+});
+
+test("consensus: all agents abstain returns unknown verdict", () => {
+  const votes = [identityAgent({ owner: null, isSystemAccount: null })];
+  const c = aggregateConsensus(votes);
+  assert.equal(c.verdict, "unknown");
+  assert.equal(c.rule, "no-active-voters");
+  assert.equal(c.participants, 0);
+});
+

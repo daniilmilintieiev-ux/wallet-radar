@@ -26,6 +26,9 @@ export function parsePriceResponse(raw: unknown): UsdPriceMap {
   return out;
 }
 
+const SAFE_MINT_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
+const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
+
 /**
  * Fetch USD prices for mints from the Jupiter Price API (GET, read-only).
  * Keyless by default (lite-api); set JUPITER_API_KEY for the higher-limit
@@ -37,7 +40,7 @@ export async function fetchUsdPrices(
 ): Promise<UsdPriceMap> {
   const apiKey = opts.apiKey ?? process.env.JUPITER_API_KEY;
   const baseUrl = opts.baseUrl ?? process.env.JUPITER_PRICE_BASE ?? (apiKey ? KEYED_BASE : KEYLESS_BASE);
-  const unique = Array.from(new Set(mints.filter(Boolean)));
+  const unique = Array.from(new Set(mints.filter((m) => typeof m === "string" && SAFE_MINT_REGEX.test(m))));
   const out: UsdPriceMap = {};
   for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
     const chunk = unique.slice(i, i + CHUNK_SIZE);
@@ -45,7 +48,10 @@ export async function fetchUsdPrices(
     url.searchParams.set("ids", chunk.join(","));
     const headers: Record<string, string> = { Accept: "application/json" };
     if (apiKey) headers["x-api-key"] = apiKey;
-    const res = await fetch(url.toString(), { headers });
+    const res = await fetch(url.toString(), {
+      headers,
+      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
+    });
     if (!res.ok) {
       throw new Error(`Jupiter price fetch failed: ${res.status} ${res.statusText}`);
     }

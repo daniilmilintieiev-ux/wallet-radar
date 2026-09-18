@@ -399,3 +399,111 @@ test("verifySolanaPaymentRpc: verifies parsed RPC response and handles errors", 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("x402: paid endpoint rejects X-Payment-Dry-Run: true", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWallet111111111111111111111111111";
+  const payer = "PayerWallet1111111111111111111111111111111";
+
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async () => ({ valid: true, amount: 0.005, payer, recipient }),
+    scanHandler: async () => ({ ok: true }),
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": "sig_dry_run_attempt",
+        "X-Payment-Payer": payer,
+        "X-Payment-Dry-Run": "true",
+      },
+      body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+    });
+
+    assert.equal(res.status, 402);
+    const body = (await res.json()) as any;
+    assert.ok(body.detail?.includes("Dry-run payments not allowed"));
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("x402: concurrent requests with identical signature are guarded against replay", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWallet111111111111111111111111111";
+  const payer = "PayerWallet1111111111111111111111111111111";
+  const sig = "sig_concurrent_replay_race";
+
+  let verifierDelayMs = 50;
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async () => {
+      await new Promise((r) => setTimeout(r, verifierDelayMs));
+      return { valid: true, amount: 0.005, payer, recipient };
+    },
+    scanHandler: async () => ({ ok: true }),
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    // Launch 2 concurrent requests with the identical signature
+    const [res1, res2] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/scan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Payment-Signature": sig,
+          "X-Payment-Payer": payer,
+        },
+        body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+      }),
+      fetch(`http://127.0.0.1:${port}/scan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Payment-Signature": sig,
+          "X-Payment-Payer": payer,
+        },
+        body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+      }),
+    ]);
+
+    const statuses = [res1.status, res2.status].sort();
+    // Exactly one should succeed (200) and the other should be rejected (402)
+    assert.deepEqual(statuses, [200, 402]);
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("x402: body > 1MB returns 413 Payload Too Large", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWallet111111111111111111111111111";
+  const server = createX402Server({ store, recipient });
+  const { port, close } = await startServer(server);
+
+  try {
+    const hugePayload = "x".repeat(1_050_000);
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: hugePayload,
+    });
+    assert.equal(res.status, 413);
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+

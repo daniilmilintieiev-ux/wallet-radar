@@ -85,10 +85,16 @@ export const TRUST_DEFAULTS = {
   windowDays: 7,
 };
 
+const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
+const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
+
 export function liquidityOf(inputs: TrustInputs): number {
   if (inputs.balances === null) return 0;
-  const stable = inputs.balances.usdc + inputs.balances.usdt;
-  const sol = inputs.solPriced && inputs.solPrice ? inputs.balances.sol * inputs.solPrice : 0;
+  const usdc = Number.isFinite(inputs.balances.usdc) ? inputs.balances.usdc : 0;
+  const usdt = Number.isFinite(inputs.balances.usdt) ? inputs.balances.usdt : 0;
+  const solAmount = Number.isFinite(inputs.balances.sol) ? inputs.balances.sol : 0;
+  const stable = usdc + usdt;
+  const sol = inputs.solPriced && inputs.solPrice && Number.isFinite(inputs.solPrice) ? solAmount * inputs.solPrice : 0;
   return Math.round((stable + sol) * 1e6) / 1e6;
 }
 
@@ -102,8 +108,8 @@ export function computeTrustVerdict(inputs: TrustInputs, opts: TrustOptions = {}
   const reasons: string[] = [];
   const liquidityUsd = liquidityOf(inputs);
 
-  if (inputs.riskScore === null || inputs.balances === null) {
-    if (inputs.riskScore === null) reasons.push("no history to score risk");
+  if (inputs.riskScore === null || !Number.isFinite(inputs.riskScore) || inputs.balances === null) {
+    if (inputs.riskScore === null || !Number.isFinite(inputs.riskScore)) reasons.push("no history to score risk");
     if (inputs.balances === null) reasons.push("balance data unavailable");
     return { verdict: "unknown", reasons, liquidityUsd: 0 };
   }
@@ -167,6 +173,7 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`RPC ${method} failed: ${res.status} ${res.statusText}`);
   const body = (await res.json()) as { result?: unknown; error?: { message?: string } };
@@ -181,6 +188,7 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
  * program-derived (PDA) accounts.
  */
 export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise<string | null> {
+  if (!BASE58_ADDR_REGEX.test(wallet)) throw new Error("Invalid Solana wallet address");
   const res = (await rpcCall(rpcUrl, "getAccountInfo", [wallet, { encoding: "base64" }])) as
     | { value: { owner: string } | null }
     | null;
@@ -192,10 +200,12 @@ export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise
  * Only these are counted — deliberately conservative.
  */
 export async function fetchLiquidity(rpcUrl: string, wallet: string): Promise<TrustBalances> {
+  if (!BASE58_ADDR_REGEX.test(wallet)) throw new Error("Invalid Solana wallet address");
   const balRes = (await rpcCall(rpcUrl, "getBalance", [wallet])) as { value: number };
   const sol = balRes.value / 1e9;
 
   async function stableBalance(mint: string): Promise<number> {
+    if (!BASE58_ADDR_REGEX.test(mint)) throw new Error("Invalid token mint address");
     const res = (await rpcCall(rpcUrl, "getTokenAccountsByOwner", [
       wallet,
       { mint },

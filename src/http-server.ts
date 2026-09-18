@@ -71,33 +71,42 @@ class HttpError extends Error {
 
 function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload, null, 2);
-  res.writeHead(status, {
+  const headers: Record<string, string | number> = {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  });
+  };
+  if (status === 413) headers["Connection"] = "close";
+  res.writeHead(status, headers);
   res.end(body);
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
+    let rejected = false;
     req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
       data += chunk.toString();
-      if (data.length > 2_000_000) {
-        reject(new Error("payload too large"));
-        req.destroy();
+      if (data.length > 1_000_000) {
+        rejected = true;
+        reject(new HttpError(413, "Payload Too Large"));
+        req.resume();
       }
     });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!rejected) resolve(data);
+    });
+    req.on("error", (err) => {
+      if (!rejected) reject(err);
+    });
   });
 }
 
 function isBase58Address(v: unknown): v is string {
-  return typeof v === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v);
+  return typeof v === "string" && /^[A-Za-z0-9]{32,44}$/.test(v);
 }
 
 async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
@@ -160,6 +169,9 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
 
 async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
   const wallet = typeof body.wallet === "string" ? body.wallet : "anonymous";
+  if (typeof wallet !== "string" || wallet.length > 64) {
+    throw new HttpError(400, "body.wallet must be a string up to 64 characters.");
+  }
   const raw = body.txs;
   let parsed: EnhancedTx[];
   if (Array.isArray(raw)) {
@@ -174,6 +186,9 @@ async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
   } else {
     throw new HttpError(400, "body.txs must be an array of transactions (or a JSON string encoding one).");
   }
+  if (parsed.length > 1000) {
+    throw new HttpError(400, "body.txs: at most 1000 transactions allowed.");
+  }
   const anomalies = detectAnomalies(wallet, parsed, null);
   return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) };
 }
@@ -181,6 +196,15 @@ async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
 async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+  if (body.maxRisk !== undefined && (typeof body.maxRisk !== "number" || !Number.isFinite(body.maxRisk) || body.maxRisk < 0 || body.maxRisk > 100)) {
+    throw new HttpError(400, "body.maxRisk must be a number between 0 and 100.");
+  }
+  if (body.minLiquidityUsd !== undefined && (typeof body.minLiquidityUsd !== "number" || !Number.isFinite(body.minLiquidityUsd) || body.minLiquidityUsd < 0)) {
+    throw new HttpError(400, "body.minLiquidityUsd must be a non-negative number.");
+  }
+  if (body.windowDays !== undefined && (typeof body.windowDays !== "number" || !Number.isFinite(body.windowDays) || body.windowDays <= 0)) {
+    throw new HttpError(400, "body.windowDays must be a positive number.");
+  }
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
   return runTrustCheck(apiKey, wallet, {
@@ -201,6 +225,15 @@ async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
   for (const w of wallets) {
     if (!isBase58Address(w)) throw new HttpError(400, "body.wallets must all be Solana base58 addresses: " + String(w));
   }
+  if (body.maxRisk !== undefined && (typeof body.maxRisk !== "number" || !Number.isFinite(body.maxRisk) || body.maxRisk < 0 || body.maxRisk > 100)) {
+    throw new HttpError(400, "body.maxRisk must be a number between 0 and 100.");
+  }
+  if (body.minLiquidityUsd !== undefined && (typeof body.minLiquidityUsd !== "number" || !Number.isFinite(body.minLiquidityUsd) || body.minLiquidityUsd < 0)) {
+    throw new HttpError(400, "body.minLiquidityUsd must be a non-negative number.");
+  }
+  if (body.windowDays !== undefined && (typeof body.windowDays !== "number" || !Number.isFinite(body.windowDays) || body.windowDays <= 0)) {
+    throw new HttpError(400, "body.windowDays must be a positive number.");
+  }
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
   const results = await runTrustChecks(apiKey, wallets, {
@@ -215,11 +248,26 @@ async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
   const amountUsd = body.amountUsd;
-  if (typeof amountUsd !== "number" || amountUsd <= 0) throw new HttpError(400, "body.amountUsd must be a positive number.");
+  if (typeof amountUsd !== "number" || !Number.isFinite(amountUsd) || amountUsd <= 0) {
+    throw new HttpError(400, "body.amountUsd must be a positive number.");
+  }
   const balances = body.balances as { sol?: number; usdc?: number; usdt?: number } | undefined;
-  if (!balances) throw new HttpError(400, "body.balances is required: { sol, usdc, usdt }.");
+  if (!balances || typeof balances !== "object" || Array.isArray(balances)) {
+    throw new HttpError(400, "body.balances is required: { sol, usdc, usdt }.");
+  }
+  for (const [k, v] of Object.entries(balances)) {
+    if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
+      throw new HttpError(400, `body.balances.${k} must be a non-negative number.`);
+    }
+  }
   const token = typeof body.token === "string" ? body.token : "usdc";
   if (token !== "usdc" && token !== "sol") throw new HttpError(400, "body.token must be 'usdc' or 'sol'.");
+  if (body.maxRisk !== undefined && (typeof body.maxRisk !== "number" || !Number.isFinite(body.maxRisk) || body.maxRisk < 0 || body.maxRisk > 100)) {
+    throw new HttpError(400, "body.maxRisk must be a number between 0 and 100.");
+  }
+  if (body.minLiquidityUsd !== undefined && (typeof body.minLiquidityUsd !== "number" || !Number.isFinite(body.minLiquidityUsd) || body.minLiquidityUsd < 0)) {
+    throw new HttpError(400, "body.minLiquidityUsd must be a non-negative number.");
+  }
 
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark, GET /metrics.");
@@ -572,10 +620,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         });
         return;
       }
-      const defenseMatch = p.match(/^\/defense\/([A-Za-z0-9]{1,64})$/);
+      const defenseMatch = p.match(/^\/defense\/([^/]+)$/);
       if (defenseMatch) {
         const store = requireStore(ctx);
         const wallet = defenseMatch[1];
+        if (!isBase58Address(wallet)) throw new HttpError(400, "wallet must be a Solana base58 address.");
         const st = store.getDefenseState(wallet);
         const events = store.recentDefenseEvents(wallet, 20);
         sendJson(res, 200, {
@@ -630,14 +679,15 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() });
         return;
       }
-      const defenseClearMatch = p.match(/^\/defense\/([A-Za-z0-9]{1,64})\/clear$/);
+      const defenseClearMatch = p.match(/^\/defense\/([^/]+)\/clear$/);
       if (defenseClearMatch) {
         const store = requireStore(ctx);
         const wallet = defenseClearMatch[1];
+        if (!isBase58Address(wallet)) throw new HttpError(400, "wallet must be a Solana base58 address.");
         const st = store.getDefenseState(wallet);
         if (!st) throw new HttpError(404, "no defense state for this wallet (it has not been escalated).");
         const nowSec = Math.floor(Date.now() / 1000);
-        const next = { state: "armed" as const, riskAt: st.riskAt, setAt: nowSec, quietStreak: st.quietStreak, actions: st.actions + 1 };
+        const next = { state: "armed" as const, riskAt: st.riskAt, setAt: nowSec, quietStreak: 0, actions: st.actions + 1 };
         store.setDefenseState(wallet, next);
         store.recordDefenseEvent({
           wallet,
@@ -705,7 +755,10 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     if (err instanceof HttpError) {
       sendJson(res, err.status, { error: err.message });
     } else {
-      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+      if (process.env.RADAR_DEBUG === "1") {
+        console.error("[http-server] unhandled error:", err);
+      }
+      sendJson(res, 500, { error: "Internal server error" });
     }
   }
 }
@@ -777,9 +830,13 @@ export function createServer(options: ServerOptions = {}): http.Server {
     fetchMintRisk: options.fetchMintRisk,
   };
   const server = http.createServer((req, res) => {
-    const url = req.url ?? "/";
-    if (rateLimiter && url !== "/health" && (req.method ?? "GET") !== "OPTIONS") {
-      const rl = rateLimiter.check(req.socket.remoteAddress ?? "unknown");
+    const rawUrl = req.url ?? "/";
+    const pathname = new URL(rawUrl, "http://localhost").pathname;
+    const isExempt = pathname === "/health" || (req.method ?? "GET") === "OPTIONS";
+    if (rateLimiter && !isExempt) {
+      const rawIp = req.socket.remoteAddress ?? "unknown";
+      const ip = rawIp.replace(/^::ffff:/, "");
+      const rl = rateLimiter.check(ip);
       if (!rl.ok) {
         res.writeHead(429, {
           "Content-Type": "application/json; charset=utf-8",

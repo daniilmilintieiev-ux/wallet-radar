@@ -9,6 +9,10 @@ export class HttpError extends Error {
   }
 }
 
+const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
+const BASE58_SIG_REGEX = /^[A-Za-z0-9_-]{1,128}$/;
+const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
+
 /**
  * Fetch a wallet's recent enhanced transactions from the Helius Enhanced
  * Transactions API (read-only GET).
@@ -22,8 +26,19 @@ export async function fetchWalletTransactions(
   before?: string,
   after?: string,
 ): Promise<EnhancedTx[]> {
+  if (!BASE58_ADDR_REGEX.test(walletAddress)) {
+    throw new HttpError("Invalid Solana wallet address", 400);
+  }
+  if (before && !BASE58_SIG_REGEX.test(before)) {
+    throw new HttpError("Invalid before signature parameter", 400);
+  }
+  if (after && !BASE58_SIG_REGEX.test(after)) {
+    throw new HttpError("Invalid after signature parameter", 400);
+  }
+
+  const encodedAddress = encodeURIComponent(walletAddress);
   const url = new URL(
-    `https://api.helius.xyz/v0/addresses/${walletAddress}/transactions`,
+    `https://api.helius.xyz/v0/addresses/${encodedAddress}/transactions`,
   );
   url.searchParams.set("api-key", apiKey);
   url.searchParams.set("limit", String(limit));
@@ -33,6 +48,7 @@ export async function fetchWalletTransactions(
   const response = await fetch(url.toString(), {
     method: "GET",
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new HttpError(`Helius fetch failed: ${response.status} ${response.statusText}`, response.status);
@@ -66,23 +82,35 @@ export async function fetchWalletHistory(
   walletAddress: string,
   query: HistoryQuery = {},
 ): Promise<EnhancedTx[]> {
+  if (!BASE58_ADDR_REGEX.test(walletAddress)) {
+    throw new HttpError("Invalid Solana wallet address", 400);
+  }
+
   const limit = Math.min(Math.max(1, query.limit ?? 100), 100);
   const maxPages = Math.max(1, query.maxPages ?? 20);
   const out: EnhancedTx[] = [];
   let cursor: string | undefined;
+  const encodedAddress = encodeURIComponent(walletAddress);
+
   for (let page = 0; page < maxPages; page++) {
     const url = new URL(
-      `https://api.helius.xyz/v0/addresses/${walletAddress}/transactions`,
+      `https://api.helius.xyz/v0/addresses/${encodedAddress}/transactions`,
     );
     url.searchParams.set("api-key", apiKey);
     url.searchParams.set("limit", String(limit));
     if (query.gteTime !== undefined) url.searchParams.set("gte-time", String(query.gteTime));
     if (query.ltTime !== undefined) url.searchParams.set("lt-time", String(query.ltTime));
-    if (cursor) url.searchParams.set("before", cursor);
+    if (cursor) {
+      if (!BASE58_SIG_REGEX.test(cursor)) {
+        throw new HttpError("Invalid cursor signature", 400);
+      }
+      url.searchParams.set("before", cursor);
+    }
 
     const response = await fetch(url.toString(), {
       method: "GET",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new HttpError(`Helius history fetch failed: ${response.status} ${response.statusText}`, response.status);

@@ -199,6 +199,18 @@ export function llmAgent(
 export function aggregateConsensus(votes: AgentVote[], opts: ConsensusOptions = {}): ConsensusResult {
   const active = votes.filter((v) => v.verdict !== "abstain");
 
+  if (active.length === 0) {
+    return {
+      verdict: "unknown",
+      agreement: 0,
+      confidence: 0,
+      votes,
+      dissent: [],
+      participants: 0,
+      rule: "no-active-voters",
+    };
+  }
+
   const coreUnknown = active.some(
     (v) => (v.agent === "behavior" || v.agent === "solvency") && v.verdict === "unknown",
   );

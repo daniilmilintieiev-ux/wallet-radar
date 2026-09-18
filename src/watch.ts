@@ -6,7 +6,7 @@ import { fetchSwapMintRisk, MintRiskMap } from "./mint.js";
 import { Store } from "./store.js";
 import { AlertSink, formatAlert } from "./alerts.js";
 import { bestEffortDigest, llmConfigFromEnv } from "./llmdigest.js";
-import { computeDefenseAction, DefenseAction, DefenseStateInfo } from "./defense.js";
+import { computeDefenseAction, DefenseAction, DefenseStateInfo, DEFENSE_THRESHOLDS } from "./defense.js";
 import { Anomaly, DEFAULT_CONFIG, EnhancedTx, PnlSummary } from "./types.js";
 
 export function defaultSeedPages(): number {
@@ -121,14 +121,16 @@ function evaluateDefense(
 ): DefenseAction | null {
   const current = store.getDefenseState(wallet);
   const hasHighSeverity = anomalies.some((a) => a.severity === "high");
-  const action = computeDefenseAction({ riskScore, hasHighSeverity, active, current, quietStreak, nowSec });
+  const stateQuietStreak = active ? 0 : (current ? (current.quietStreak ?? 0) + 1 : quietStreak);
+  const effectiveQuietStreak = quietStreak >= DEFENSE_THRESHOLDS.clearQuietPolls ? quietStreak : stateQuietStreak;
+  const action = computeDefenseAction({ riskScore, hasHighSeverity, active, current, quietStreak: effectiveQuietStreak, nowSec });
   if (current === null && !action.changed) return action;
   const prev = current?.state ?? "armed";
   const next: DefenseStateInfo = {
     state: action.state,
     riskAt: active ? riskScore : current?.riskAt ?? 0,
     setAt: nowSec,
-    quietStreak: active ? 0 : quietStreak,
+    quietStreak: active ? 0 : (action.changed ? 0 : stateQuietStreak),
     actions: (current?.actions ?? 0) + (action.changed ? 1 : 0),
   };
   store.setDefenseState(wallet, next);

@@ -105,6 +105,20 @@ export class Store {
     this.db.close();
   }
 
+  transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const res = fn();
+      this.db.exec("COMMIT");
+      return res;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw err;
+    }
+  }
+
   addWallet(address: string, nowSec: number = Math.floor(Date.now() / 1000)): void {
     this.db
       .prepare("INSERT OR IGNORE INTO wallets (address, added_at, baseline_json) VALUES (?, ?, NULL)")
@@ -112,12 +126,14 @@ export class Store {
   }
 
   removeWallet(address: string): void {
-    this.db.prepare("DELETE FROM wallets WHERE address = ?").run(address);
-    this.db.prepare("DELETE FROM seen_txs WHERE wallet = ?").run(address);
-    this.db.prepare("DELETE FROM wallet_backoff WHERE address = ?").run(address);
-    this.db.prepare("DELETE FROM wallet_pacing WHERE address = ?").run(address);
-    this.db.prepare("DELETE FROM defense_states WHERE address = ?").run(address);
-    this.db.prepare("DELETE FROM defense_events WHERE wallet = ?").run(address);
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM wallets WHERE address = ?").run(address);
+      this.db.prepare("DELETE FROM seen_txs WHERE wallet = ?").run(address);
+      this.db.prepare("DELETE FROM wallet_backoff WHERE address = ?").run(address);
+      this.db.prepare("DELETE FROM wallet_pacing WHERE address = ?").run(address);
+      this.db.prepare("DELETE FROM defense_states WHERE address = ?").run(address);
+      this.db.prepare("DELETE FROM defense_events WHERE wallet = ?").run(address);
+    });
   }
 
   listWallets(): string[] {
@@ -149,28 +165,32 @@ export class Store {
   }
 
   markSeen(wallet: string, sigs: Array<{ sig: string; ts: number }>, keep = 1000): void {
-    const insert = this.db.prepare("INSERT OR IGNORE INTO seen_txs (wallet, sig, ts) VALUES (?, ?, ?)");
-    for (const { sig, ts } of sigs) insert.run(wallet, sig, ts);
-    // Trim the oldest rows so the table stays bounded.
-    this.db
-      .prepare(
-        `DELETE FROM seen_txs WHERE wallet = ? AND sig NOT IN (
-           SELECT sig FROM seen_txs WHERE wallet = ? ORDER BY ts DESC, sig DESC LIMIT ?
-         )`,
-      )
-      .run(wallet, wallet, keep);
+    this.transaction(() => {
+      const insert = this.db.prepare("INSERT OR IGNORE INTO seen_txs (wallet, sig, ts) VALUES (?, ?, ?)");
+      for (const { sig, ts } of sigs) insert.run(wallet, sig, ts);
+      // Trim the oldest rows so the table stays bounded.
+      this.db
+        .prepare(
+          `DELETE FROM seen_txs WHERE wallet = ? AND sig NOT IN (
+             SELECT sig FROM seen_txs WHERE wallet = ? ORDER BY ts DESC, sig DESC LIMIT ?
+           )`,
+        )
+        .run(wallet, wallet, keep);
+    });
   }
 
   recordAnomalies(anomalies: Anomaly[], nowSec: number = Math.floor(Date.now() / 1000)): number {
-    const insert = this.db.prepare(
-      "INSERT INTO anomalies (wallet, type, severity, tx_ts, evidence_json, text, detected_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    );
-    let n = 0;
-    for (const a of anomalies) {
-      insert.run(a.wallet, a.type, a.severity, a.timestamp, JSON.stringify(a.evidence), a.text, nowSec);
-      n += 1;
-    }
-    return n;
+    return this.transaction(() => {
+      const insert = this.db.prepare(
+        "INSERT INTO anomalies (wallet, type, severity, tx_ts, evidence_json, text, detected_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      );
+      let n = 0;
+      for (const a of anomalies) {
+        insert.run(a.wallet, a.type, a.severity, a.timestamp, JSON.stringify(a.evidence), a.text, nowSec);
+        n += 1;
+      }
+      return n;
+    });
   }
 
   recentAnomalies(wallet: string | null, limit = 20): Anomaly[] {
@@ -265,14 +285,20 @@ export class Store {
   recordSettledPayment(
     payment: { signature: string; payer: string; recipient: string; amount: number; endpoint: string },
     settledAt: number = Math.floor(Date.now() / 1000),
-  ): void {
-    this.db
-      .prepare(
-        "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at) VALUES (?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(signature) DO UPDATE SET payer = excluded.payer, recipient = excluded.recipient, " +
-          "amount = excluded.amount, endpoint = excluded.endpoint, settled_at = excluded.settled_at",
-      )
-      .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt);
+  ): boolean {
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO settled_payments (signature, payer, recipient, amount, endpoint, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt);
+      return true;
+    } catch (err: any) {
+      if (err && (err.code === "ERR_SQLITE_ERROR" || String(err).includes("UNIQUE"))) {
+        return false;
+      }
+      throw err;
+    }
   }
 
   getSettledPayment(signature: string): SettledPayment | null {
