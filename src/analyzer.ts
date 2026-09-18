@@ -43,6 +43,21 @@ export const MIN_BASELINE_SAMPLES = 3;
 export const COUNTERPARTY_MIN_TXS = 4;
 export const COUNTERPARTY_CLUSTER_PCT = 50;
 
+/** Minimum baseline transaction count required before evaluating REGIME_SHIFT. */
+export const REGIME_MIN_BASELINE_TXS = 5;
+
+/** Minimum recent transaction count required to evaluate sustained REGIME_SHIFT. */
+export const REGIME_MIN_RECENT_TXS = 3;
+
+/** Factor threshold for sustained swap size shift in REGIME_SHIFT. */
+export const REGIME_AMOUNT_FACTOR = 3;
+
+/** Minimum ratio of recent transactions in an unseen venue/protocol for dominant shift. */
+export const REGIME_DOMINANT_RATIO = 0.7;
+
+/** Ratio threshold for inter-activity interval shift (acceleration or deceleration). */
+export const REGIME_CADENCE_FACTOR = 4;
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -426,22 +441,156 @@ export function detectAnomalies(
     }
   }
 
-  // --- Anti-evasion: REGIME_SHIFT ---
-  // Meta-rule: 3+ distinct anomaly types firing in the same batch indicates
-  // the wallet is operating in a fundamentally different "mode" than usual.
-  // A single anomaly could be a one-off; a coordinated shift across multiple
-  // dimensions (new venue + new protocol + large swap + burst) suggests the
-  // wallet is executing a new strategy, not just having a rough day.
+  // --- REGIME_SHIFT (8th rule): Behavioral Drift Detector ---
+  // Fires when a wallet's recent behavior is a STRUCTURAL break from its own
+  // established baseline (not a single spike) across one or more dimensions:
+  // 1. Amount: sustained shift in typical swap size (recent median >= 3x baseline)
+  // 2. Venue / Protocol diversity: new dominant venue/protocol or diversity collapse
+  // 3. Cadence: sustained acceleration or deceleration of inter-activity intervals
+  //
+  // Guard: requires minimum baseline history (>= 5 txs) and minimum recent window (>= 3 txs)
+  // so thin or newly initialized profiles never produce false positives.
+  // Severity: medium (high if 2+ dimensions shift together, or multi-anomaly shift).
+  const shiftReasons: string[] = [];
+  const shiftedDimensions = new Set<string>();
+
+  const hasBaselineHistory = baseline !== null && baseline.txCount >= REGIME_MIN_BASELINE_TXS;
+  const hasRecentWindow = txs.length >= REGIME_MIN_RECENT_TXS;
+
+  if (hasBaselineHistory && hasRecentWindow) {
+    // 1. AMOUNT DIMENSION: sustained shift in typical swap size
+    const usdRecent = baseline.recentSwapAmountsUsd;
+    const usdMedian = usdRecent && usdRecent.length > 0 ? median(usdRecent) : baseline.medianSwapAmountUsd ?? 0;
+    const rawRecent = baseline.recentSwapAmounts;
+    const rawMedian = rawRecent && rawRecent.length > 0 ? median(rawRecent) : baseline.medianSwapAmount;
+
+    if (prices && usdMedian > 0) {
+      const recentUsds = swaps
+        .map((s) => swapUsdValue(s, prices))
+        .filter((v): v is number => v !== null && v > 0);
+      if (recentUsds.length >= 2) {
+        const recentMedianUsd = median(recentUsds);
+        if (recentMedianUsd >= usdMedian * REGIME_AMOUNT_FACTOR) {
+          const factor = (recentMedianUsd / usdMedian).toFixed(1);
+          shiftReasons.push(`amount (recent median ~$${fmtUsd(recentMedianUsd)} is ${factor}x baseline ~$${fmtUsd(usdMedian)})`);
+          shiftedDimensions.add("amount");
+        }
+      }
+    } else if (rawMedian > 0) {
+      const recentMajors = swaps
+        .filter((s) => MAJOR_MINTS.includes(s.tokenIn.mint))
+        .map((s) => s.tokenIn.amount)
+        .filter((a) => a > 0);
+      if (recentMajors.length >= 2) {
+        const recentMedian = median(recentMajors);
+        if (recentMedian >= rawMedian * REGIME_AMOUNT_FACTOR) {
+          const factor = (recentMedian / rawMedian).toFixed(1);
+          shiftReasons.push(`amount (recent median ${recentMedian.toFixed(2)} is ${factor}x baseline ${rawMedian.toFixed(2)})`);
+          shiftedDimensions.add("amount");
+        }
+      }
+    }
+
+    // 2. VENUE / PROTOCOL DIVERSITY DIMENSION
+    const venueTxs = txs.filter((t) => t.source && t.source !== "unknown");
+    if (venueTxs.length >= 3) {
+      const venueCounts = new Map<string, number>();
+      for (const t of venueTxs) {
+        const v = t.source!;
+        venueCounts.set(v, (venueCounts.get(v) ?? 0) + 1);
+      }
+      let topVenue = "";
+      let topVenueCount = 0;
+      for (const [v, c] of venueCounts) {
+        if (c > topVenueCount) {
+          topVenue = v;
+          topVenueCount = c;
+        }
+      }
+      const ratio = topVenueCount / venueTxs.length;
+      if (!baseline.knownVenues.includes(topVenue) && ratio >= REGIME_DOMINANT_RATIO) {
+        const pct = Math.round(ratio * 100);
+        shiftReasons.push(`venue (new dominant venue ${topVenue} accounts for ${pct}% of recent txs, not in baseline)`);
+        shiftedDimensions.add("venue");
+      } else if (baseline.knownVenues.length >= 3 && venueCounts.size === 1) {
+        shiftReasons.push(`venue (diversity collapsed from ${baseline.knownVenues.length} baseline venues to single venue ${topVenue})`);
+        shiftedDimensions.add("venue");
+      }
+    }
+
+    // Protocol diversity
+    if (txs.length >= 3) {
+      const progCounts = new Map<string, number>();
+      for (const t of txs) {
+        for (const p of txPrograms(t)) {
+          progCounts.set(p, (progCounts.get(p) ?? 0) + 1);
+        }
+      }
+      for (const [prog, count] of progCounts) {
+        if (!baseline.knownPrograms.includes(prog)) {
+          const ratio = count / txs.length;
+          if (ratio >= REGIME_DOMINANT_RATIO && count >= 3) {
+            const pct = Math.round(ratio * 100);
+            shiftReasons.push(`protocol (new dominant program ${prog} accounts for ${pct}% of recent txs, not in baseline)`);
+            shiftedDimensions.add("protocol");
+            break;
+          }
+        }
+      }
+    }
+
+    // 3. CADENCE DIMENSION: inter-activity interval distribution shifted
+    if (baseline.medianTps > 0 && txs.length >= 3) {
+      const sortedTs = txs.map(ts).filter((t) => t > 0).sort((a, b) => a - b);
+      if (sortedTs.length >= 3) {
+        const intervals: number[] = [];
+        for (let i = 1; i < sortedTs.length; i++) {
+          intervals.push(sortedTs[i] - sortedTs[i - 1]);
+        }
+        const recentIntervalSec = median(intervals);
+        const baselineIntervalSec = 60 / baseline.medianTps;
+        if (recentIntervalSec > 0 && baselineIntervalSec / recentIntervalSec >= REGIME_CADENCE_FACTOR) {
+          const factor = (baselineIntervalSec / recentIntervalSec).toFixed(1);
+          shiftReasons.push(`cadence (inter-activity interval accelerated to ${recentIntervalSec.toFixed(0)}s vs baseline ${baselineIntervalSec.toFixed(0)}s, ${factor}x faster)`);
+          shiftedDimensions.add("cadence");
+        } else if (baselineIntervalSec > 0 && recentIntervalSec / baselineIntervalSec >= REGIME_CADENCE_FACTOR) {
+          const factor = (recentIntervalSec / baselineIntervalSec).toFixed(1);
+          shiftReasons.push(`cadence (inter-activity interval decelerated to ${recentIntervalSec.toFixed(0)}s vs baseline ${baselineIntervalSec.toFixed(0)}s, ${factor}x slower)`);
+          shiftedDimensions.add("cadence");
+        }
+      }
+    }
+  }
+
+  // Multi-anomaly correlation (anti-evasion): 3+ distinct anomaly types firing in the batch
   const distinctTypes = new Set(anomalies.map((a) => a.type));
-  if (distinctTypes.size >= 3) {
-    const types = Array.from(distinctTypes).join(", ");
+  const multiAnomalyShift = distinctTypes.size >= 3;
+
+  if (shiftedDimensions.size > 0 || multiAnomalyShift) {
+    if (multiAnomalyShift && shiftReasons.length === 0) {
+      const types = Array.from(distinctTypes).join(", ");
+      shiftReasons.push(`multi-anomaly shift (${distinctTypes.size} distinct anomaly types: ${types})`);
+      shiftedDimensions.add("multi_anomaly");
+    }
+    const reasons = [...shiftReasons];
+    const dimensions = Array.from(shiftedDimensions);
+    const severity: Severity = (shiftedDimensions.size >= 2 || multiAnomalyShift) ? "high" : "medium";
+    const newestTs = txs.length > 0 ? Math.max(...txs.map(ts)) : 0;
     anomalies.push({
       type: "REGIME_SHIFT",
       wallet,
-      severity: "high",
-      timestamp: Math.max(...txs.map(ts)),
-      evidence: { triggeredRules: Array.from(distinctTypes), count: distinctTypes.size },
-      text: `${distinctTypes.size} distinct anomaly types fired simultaneously (${types}). Wallet is in a new behavioral regime.`,
+      severity,
+      timestamp: newestTs,
+      evidence: {
+        reasons,
+        dimensions,
+        triggeredRules: Array.from(distinctTypes),
+        count: distinctTypes.size,
+        shiftedDimensionsCount: shiftedDimensions.size,
+        recentTxCount: txs.length,
+        baselineTxCount: baseline?.txCount ?? 0,
+      },
+      text: `Regime shift: ${reasons.join("; ")}.`,
     });
   }
 

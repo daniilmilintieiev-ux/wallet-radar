@@ -83,6 +83,7 @@ watchlist ──> collector (Helius Enhanced Transactions, read-only)
 | `CONCENTRATION` | Repeated swaps into the same token in a short window |
 | `NEW_PROTOCOL` | First interaction with an unseen program |
 | `TOXIC_MINT` | Swap involves a token with unrenounced mint/freeze authority **or** extreme top-holder concentration (top-10 wallets control ≥ 60% of supply; `high` severity at ≥ 80% or with a freeze authority) |
+| `REGIME_SHIFT` | Sustained structural break from baseline in swap size, venue diversity, protocol mix, or cadence (not a single spike) |
 
 ### USD normalization
 
@@ -386,7 +387,7 @@ deterministic baseline, risk score, digest — no watchlist, no state.
 paying an unverified wallet: **"is it safe to trust this wallet right now?"**
 Copy-trading bots (BonkBot, Maestro, Trojan, Axiom, Photon, BullX) surface wallets
 to copy but don't safety-gate them first — Radar is that gate. It combines the
-behavioral risk score (7 rules over the recent window) with payment capacity
+behavioral risk score (8 rules over the recent window) with payment capacity
 (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 
 ```bash
@@ -565,9 +566,9 @@ hackathon window, which opened **2026-09-14 15:00 UTC** and closed 2026-10-13.
 ### What Existed Before the Window (the `v0.0.0` foundation)
 The working product that preceded the hackathon (commits `20a965f` … `3e0e0ad`,
 frozen as the `v0.0.0-pre-hackathon` baseline):
-- **Deterministic Anomaly Rules Engine** — the 7 behavioral rules
+- **Deterministic Anomaly Rules Engine** — the 8 behavioral rules
   (`DORMANT_ACTIVE`, `ACTIVITY_BURST`, `NEW_VENUE`, `LARGE_SWAP`, `CONCENTRATION`,
-  `NEW_PROTOCOL`, `TOXIC_MINT`).
+  `NEW_PROTOCOL`, `TOXIC_MINT`, `REGIME_SHIFT`).
 - **Baseline Profiler** — Helius Enhanced Transactions + Jupiter USD
   normalization; per-wallet behavioral baseline in **SQLite**.
 - **Trust gate & explainability** — the `trust` verdict (`safe`/`hold`/`unknown`)
@@ -627,7 +628,7 @@ defense).
 
 **Early-access (v0.1.x)** — the core is production-usable and live: collector
 (Helius), per-wallet behavioral baseline (incl. USD median), deterministic
-analyzer (7 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict
+analyzer (8 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict
 (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data
 freshness), MCP server
 (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts,
