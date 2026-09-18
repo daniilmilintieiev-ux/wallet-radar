@@ -1,0 +1,16 @@
+[Unit]
+Description=Wallet Radar continuous watch loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orangepi
+WorkingDirectory=/mnt/storage/projects/wallet-radar
+EnvironmentFile=-/mnt/storage/projects/wallet-radar/radar.env
+ExecStart=/usr/bin/node dist/src/cli.js watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
