@@ -31,7 +31,9 @@
     "mcp": "node dist/src/mcp.js",
     "mcp:server": "node dist/src/mcp-server.js",
     "x402:server": "node dist/src/x402server.js",
-    "http": "node dist/src/http-server.js"
+    "http": "node dist/src/http-server.js",
+    "canary": "node dist/scripts/canary-agent.js",
+    "hook:devnet": "node dist/scripts/transfer-hook-devnet.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -23,3 +23,10 @@ spl-transfer-hook-interface = "0.6.3"
 spl-tlv-account-resolution = "0.6.3"
 spl-type-length-value = "0.4.3"
 thiserror = "1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+overflow-checks = true
+
