@@ -1,7 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
-use spl_tlv_account_resolution::account::ExtraAccountMeta;
-use spl_transfer_hook_interface::instruction::TransferHookInstruction;
 
 pub mod error;
 pub mod state;
