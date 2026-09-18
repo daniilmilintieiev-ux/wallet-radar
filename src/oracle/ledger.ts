@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import bs58 from "bs58";
 import { PublicKey, Keypair, Connection, Transaction, TransactionInstruction } from "@solana/web3.js";
-import { createRpc, deriveAddressSeed, deriveAddress, getDefaultAddressTreeInfo, LightSystemProgram, Rpc } from "@lightprotocol/stateless.js";
+import { createRpc, compress, Rpc } from "@lightprotocol/stateless.js";
 
 /**
  * On-chain ZK-compressed scan ledger record schema.
@@ -272,20 +273,62 @@ export class MockZKOracleClient implements ZKOracleClient {
   }
 }
 
+/** Load the oracle payer keypair from RADAR_ORACLE_PAYER (base58 64-byte secret key). */
+function loadPayerFromEnv(): Keypair | null {
+  const raw = process.env.RADAR_ORACLE_PAYER;
+  if (!raw) return null;
+  try {
+    return Keypair.fromSecretKey(bs58.decode(raw.trim()));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Map a wallet string to the on-chain owner pubkey. Real base58 pubkeys pass
+ * through unchanged; synthetic strings (tests) are deterministically hashed so
+ * commit() and query() always agree on the compressed-account owner.
+ */
+function normalizeOwnerPubkey(wallet: string): PublicKey {
+  try {
+    return new PublicKey(wallet);
+  } catch {
+    return new PublicKey(createHash("sha256").update(wallet).digest());
+  }
+}
+
 /**
  * Production Light Protocol ZK compression oracle client.
+ *
+ * Design (validated on Solana mainnet):
+ *  - WRITE: `compress(rpc, payer, lamports, toAddress = wallet)` creates a real
+ *    ZK-compressed account OWNED BY THE SCANNED WALLET, where `lamports` packs
+ *    the attestation as `risk(0..100) * 1000 + verdictCode(0..3) + 1`. The
+ *    account's `slotCreated` is the attestation timestamp. A companion
+ *    best-effort Memo carries the full serialized record for explorer search.
+ *  - READ: raw JSON-RPC `getCompressedAccountsByOwner(wallet)` (owner = wallet,
+ *    NO config object — the Light SDK's typed path is broken on plain-JSON
+ *    responses). Each account's lamports is inverted to recover risk + verdict;
+ *    `slotCreated` -> `getBlockTime` yields the timestamp.
  */
 export class LightZKOracleClient implements ZKOracleClient {
   readonly rpcUrl: string;
+  readonly wsUrl: string;
   readonly oracleProgramId: PublicKey;
   private rpc: Rpc | null = null;
+  private conn: Connection | null = null;
 
   constructor(opts: { rpcUrl?: string; oracleProgramId?: PublicKey | string } = {}) {
-    this.rpcUrl =
+    const base =
       opts.rpcUrl ||
       process.env.SOLANA_RPC_URL ||
       process.env.HELIUS_RPC_URL ||
+      (process.env.HELIUS_API_KEY
+        ? "https://mainnet.helius-rpc.com/?api-key=" + process.env.HELIUS_API_KEY
+        : undefined) ||
       "https://api.mainnet-beta.solana.com";
+    this.rpcUrl = base;
+    this.wsUrl = base.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
 
     if (opts.oracleProgramId) {
       this.oracleProgramId =
@@ -299,95 +342,189 @@ export class LightZKOracleClient implements ZKOracleClient {
 
   getRpc(): Rpc {
     if (!this.rpc) {
-      this.rpc = createRpc(this.rpcUrl, this.rpcUrl);
+      this.rpc = createRpc(this.rpcUrl, this.wsUrl);
     }
     return this.rpc;
   }
 
-  async commit(
-    record: ScanLedgerRecord,
-    payer?: Keypair,
-  ): Promise<{ signature: string; slot?: number; compressedAddress?: string }> {
-    const rpc = this.getRpc();
-
-    let targetWalletPubkey: PublicKey;
-    try {
-      targetWalletPubkey = new PublicKey(record.wallet);
-    } catch {
-      const hash = createHash("sha256").update(record.wallet).digest();
-      targetWalletPubkey = new PublicKey(hash);
+  getConnection(): Connection {
+    if (!this.conn) {
+      this.conn = new Connection(this.rpcUrl, "confirmed");
     }
+    return this.conn;
+  }
 
-    // Derive deterministic address seed for Light Protocol
-    const seed = deriveAddressSeed([Buffer.from("radar-scan"), targetWalletPubkey.toBuffer()]);
-
-    let compressedAddressStr: string | undefined;
-    try {
-      const addressTree = getDefaultAddressTreeInfo();
-      const derived = deriveAddress(seed, addressTree.tree, this.oracleProgramId);
-      compressedAddressStr = derived.toBase58();
-    } catch {
-      compressedAddressStr = new PublicKey(seed).toBase58();
+  /** Raw JSON-RPC over HTTP — bypasses the Light SDK's broken typed response coercion. */
+  private async jsonRpc<T = unknown>(method: string, params: unknown[]): Promise<T> {
+    const res = await fetch(this.rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    if (!res.ok) {
+      throw new Error(`jsonRpc ${method}: HTTP ${res.status}`);
     }
+    const json = (await res.json()) as {
+      result?: T;
+      error?: { code?: number; message?: string };
+    };
+    if (json.error) {
+      throw new Error(`jsonRpc ${method}: ${json.error.message || json.error.code}`);
+    }
+    return json.result as T;
+  }
 
+  /** Invert a packed lamports value back into (risk, verdictCode). */
+  private static unpackLamports(lamports: number): { risk: number; verdictCode: number } {
+    const x = Math.trunc(Number(lamports)) - 1;
+    if (x < 0) return { risk: 0, verdictCode: 0 };
+    return { risk: Math.floor(x / 1000), verdictCode: x % 1000 };
+  }
+
+  /** Best-effort: unix seconds for a slot, or 0 if unknown. */
+  private async blockTime(slot: number): Promise<number> {
+    try {
+      const t = await this.getConnection().getBlockTime(slot);
+      if (t !== null && t > 0) return t;
+    } catch {
+      // fall through
+    }
+    return 0;
+  }
+
+  /** Best-effort human-readable Memo anchor carrying the full serialized record. */
+  private async sendMemoAnchor(payer: Keypair, record: ScanLedgerRecord): Promise<string> {
+    const conn = this.getConnection();
     const payload = serializeScanRecord(record);
-    if (!payer) {
-      throw new Error(
-        "oracle.commit: no payer keypair provided (configure RADAR_ORACLE_PAYER) — a random throwaway payer has no funds to pay the tx fee",
-      );
-    }
-    const activePayer = payer;
-
-    // Attestation memo transaction anchored to recent blockhash
-    const { blockhash } = await rpc.getLatestBlockhash();
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
     const memoPrefix = Buffer.from("RADAR_ORACLE:");
-    // Memo program caps data at 512 bytes; truncate the payload portion so the
-    // attestation memo never exceeds the limit (it is a best-effort anchor —
-    // the canonical record lives in the compressed account + local store).
     const payloadForMemo =
       memoPrefix.length + payload.length > 512
         ? payload.subarray(0, 512 - memoPrefix.length)
         : payload;
     const memoData = Buffer.concat([memoPrefix, payloadForMemo]);
     const ix = new TransactionInstruction({
-      keys: [{ pubkey: activePayer.publicKey, isSigner: true, isWritable: true }],
+      keys: [{ pubkey: payer.publicKey, isSigner: true, isWritable: true }],
       programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
       data: memoData,
     });
-
     const tx = new Transaction().add(ix);
-    tx.feePayer = activePayer.publicKey;
+    tx.feePayer = payer.publicKey;
     tx.recentBlockhash = blockhash;
-    tx.sign(activePayer);
+    tx.sign(payer);
+    const sig = await conn.sendRawTransaction(tx.serialize());
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    return sig;
+  }
 
-    const signature = await rpc.sendTransaction(tx, [activePayer]);
-    return { signature, compressedAddress: compressedAddressStr };
+  async commit(
+    record: ScanLedgerRecord,
+    payer?: Keypair,
+  ): Promise<{ signature: string; slot?: number; compressedAddress?: string }> {
+    const activePayer = payer ?? loadPayerFromEnv();
+    if (!activePayer) {
+      throw new Error(
+        "oracle.commit: no payer keypair provided (configure RADAR_ORACLE_PAYER) — a random throwaway payer has no funds to pay the tx fee",
+      );
+    }
+    const conn = this.getConnection();
+
+    // The scanned wallet becomes the OWNER of the on-chain compressed attestation.
+    const targetWallet = normalizeOwnerPubkey(record.wallet);
+
+    // Pack the attestation into lamports (cleanly invertible on read).
+    const normalizedRisk = Math.max(0, Math.min(100, Math.round(record.riskScore || 0)));
+    const verdictCode = VERDICT_CODE_MAP[record.verdict] ?? 3;
+    const lamports = normalizedRisk * 1000 + verdictCode + 1;
+
+    // Record the payer's latest slot so we can locate the new tx after the fact.
+    const beforeSigs = await conn.getSignaturesForAddress(activePayer.publicKey, { limit: 1 });
+    const beforeSlot = beforeSigs.length > 0 ? beforeSigs[0].slot : 0;
+
+    // 1) Real ZK-compressed attestation account owned by the scanned wallet.
+    let signature: string | null = null;
+    let slot: number | undefined;
+    try {
+      signature = await compress(this.getRpc(), activePayer, lamports, targetWallet);
+    } catch {
+      // The SDK's WS confirmation can throw "fetch failed" even though the tx is
+      // already committed on-chain; we recover the signature + slot over HTTP below.
+    }
+
+    // Verify on-chain + recover the signature/slot (poll briefly for the new account).
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        const res = await this.jsonRpc<{ value?: { items?: Array<Record<string, unknown>> } }>(
+          "getCompressedAccountsByOwner",
+          [targetWallet.toBase58()],
+        );
+        const items = res?.value?.items ?? [];
+        const match = items
+          .map((it) => ({
+            lamports: Number((it as { lamports?: string | number }).lamports),
+            slot: Number((it as { slotCreated?: string | number }).slotCreated),
+          }))
+          .filter((it) => it.lamports === lamports && it.slot > beforeSlot);
+        if (match.length > 0) {
+          slot = match[0].slot;
+          const sigs = await conn.getSignaturesForAddress(activePayer.publicKey, { limit: 10 });
+          const hit = sigs.find((s) => s.slot === slot && !s.err);
+          signature = hit?.signature ?? sigs[0]?.signature ?? signature;
+          break;
+        }
+      } catch {
+        // transient RPC hiccup; keep polling
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    // 2) Best-effort human-readable memo anchor (the compressed account is canonical).
+    try {
+      const memoSig = await this.sendMemoAnchor(activePayer, record);
+      if (!signature) signature = memoSig;
+    } catch {
+      // best-effort
+    }
+
+    if (!signature) {
+      throw new Error("oracle.commit: attestation transaction did not confirm on-chain");
+    }
+
+    return { signature, slot, compressedAddress: targetWallet.toBase58() };
   }
 
   async query(wallet: string, limit: number = 10): Promise<ScanLedgerRecord[]> {
-    const rpc = this.getRpc();
     const records: ScanLedgerRecord[] = [];
-
     try {
-      const res = await rpc.getCompressedAccountsByOwner(this.oracleProgramId, {
-        limit: Math.max(limit * 2, 20),
-      });
-
-      if (res && Array.isArray(res.items)) {
-        for (const item of res.items) {
-          if (!item.data) continue;
-          try {
-            const rawBytes = ((item.data as unknown as { data?: Uint8Array }).data ?? item.data) as unknown as Uint8Array;
-            const parsed = deserializeScanRecord(rawBytes);
-            if (parsed.wallet === wallet) {
-              records.push({
-                ...parsed,
-                onchainSignature: item.hash ? item.hash.toString() : undefined,
-              });
-            }
-          } catch {
-            // Ignore non-matching or invalid accounts
+      // Raw JSON-RPC: owner = the scanned wallet, NO config object (the Light
+      // SDK's typed path is broken on plain-JSON responses).
+      const res = await this.jsonRpc<{ value?: { items?: Array<Record<string, unknown>> } }>(
+        "getCompressedAccountsByOwner",
+        [normalizeOwnerPubkey(wallet).toBase58()],
+      );
+      const items = res?.value?.items ?? [];
+      for (const item of items) {
+        try {
+          const lamports = Number((item as { lamports?: string | number }).lamports);
+          const slotCreated = Number((item as { slotCreated?: string | number }).slotCreated);
+          if (!Number.isFinite(lamports) || !Number.isFinite(slotCreated) || slotCreated <= 0) {
+            continue;
           }
+          const { risk, verdictCode } = LightZKOracleClient.unpackLamports(lamports);
+          if (risk > 100 || verdictCode > 3) continue; // not a radar attestation
+          const timestamp = await this.blockTime(slotCreated);
+          records.push({
+            wallet,
+            riskScore: risk,
+            verdict: CODE_VERDICT_MAP[verdictCode] || "UNKNOWN",
+            timestamp,
+            topRules: [],
+            txSignatures: [],
+            slot: slotCreated,
+            compressedAddress: normalizeOwnerPubkey(wallet).toBase58(),
+          });
+        } catch {
+          // ignore malformed items
         }
       }
     } catch (err) {

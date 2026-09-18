@@ -325,4 +325,22 @@ describe("ZK scan ledger oracle", () => {
     assert.equal(customClient.oracleProgramId.toBase58(), customPid.toBase58());
     assert.equal(customClient.rpcUrl, "https://custom.rpc");
   });
+
+  test("LightZKOracleClient: lamports pack/unpack round-trips risk (0..100) x verdict (0..3)", () => {
+    const unpack = (LightZKOracleClient as unknown as {
+      unpackLamports(n: number): { risk: number; verdictCode: number };
+    }).unpackLamports;
+
+    // Concrete on-chain example: risk=72, verdictCode=3 (HIGH RISK) -> 72004 -> back
+    assert.deepEqual(unpack(72004), { risk: 72, verdictCode: 3 });
+
+    for (let risk = 0; risk <= 100; risk++) {
+      for (let code = 0; code <= 3; code++) {
+        const lamports = risk * 1000 + code + 1;
+        const { risk: r2, verdictCode: c2 } = unpack(lamports);
+        assert.equal(r2, risk, `risk round-trip failed for risk=${risk} code=${code}`);
+        assert.equal(c2, code, `verdict round-trip failed for risk=${risk} code=${code}`);
+      }
+    }
+  });
 });
