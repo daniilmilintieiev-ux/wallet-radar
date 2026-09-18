@@ -668,7 +668,7 @@ test("x402: parameter validation errors do NOT settle payment signature", async 
     });
     assert.equal(resScan.status, 400);
     const dataScan = (await resScan.json()) as any;
-    assert.match(dataScan.error, /Missing or invalid wallet/);
+    assert.match(dataScan.error, /body.wallet must be a Solana base58 address/);
     assert.equal(store.hasSettledPayment(sigScan), false, "signature must not be settled on 400 error");
 
     // 2. POST /analyze with valid payment but missing txs -> 400
