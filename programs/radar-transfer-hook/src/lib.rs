@@ -6,7 +6,7 @@ pub mod state;
 use error::RadarHookError;
 use state::*;
 
-declare_id!("Hook111111111111111111111111111111111111111");
+declare_id!("ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz");
 
 pub const EXTRA_ACCOUNT_METAS_SEED: &[u8] = b"extra-account-metas";
 pub const RADAR_CONFIG_SEED: &[u8] = b"radar_config";

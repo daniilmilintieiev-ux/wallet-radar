@@ -41,12 +41,12 @@ export const TRANSFER_HOOK_EXECUTE_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
- * spl-transfer-hook-interface:initialize-extra-account-metas discriminator (8 bytes)
- * sha256("spl-transfer-hook-interface:initialize-extra-account-metas")[0..8]
- */
-export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
-  0x2b, 0x22, 0x0d, 0x31, 0xa7, 0x58, 0xeb, 0xeb,
-]);
+  * Anchor program `initialize` instruction discriminator (8 bytes)
+  * sha256("global:initialize")[0..8]
+  */
+ export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
+   0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed,
+ ]);
 
 /**
  * Radar Transfer Hook custom error codes matching the on-chain Rust program.
@@ -149,10 +149,9 @@ export function buildInitializeExtraAccountMetaListInstruction(params: {
 
   const keys: AccountMeta[] = [
     { pubkey: configPda, isSigner: false, isWritable: true },
-    { pubkey: extraAccountMetas, isSigner: false, isWritable: true },
     { pubkey: params.mint, isSigner: false, isWritable: false },
     { pubkey: params.authority, isSigner: true, isWritable: true },
-    { pubkey: PublicKey.default, isSigner: false, isWritable: false }, // System program placeholder
+    { pubkey: new PublicKey("11111111111111111111111111111111"), isSigner: false, isWritable: false }, // System program
   ];
 
   return new TransactionInstruction({

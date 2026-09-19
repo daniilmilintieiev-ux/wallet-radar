@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-radar_transfer_hook = "Hook111111111111111111111111111111111111111"
+radar_transfer_hook = "ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz"
 
 [programs.devnet]
-radar_transfer_hook = "Hook111111111111111111111111111111111111111"
+radar_transfer_hook = "ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz"
 
 [registry]
 url = "https://api.apr.dev"

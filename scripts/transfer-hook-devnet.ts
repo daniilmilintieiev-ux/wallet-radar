@@ -9,6 +9,7 @@ import {
   TransactionInstruction,
   SystemProgram,
   LAMPORTS_PER_SOL,
+  SYSVAR_RENT_PUBKEY,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
@@ -113,33 +114,30 @@ export function buildCreateToken22MintInstructions(params: {
     programId: TOKEN_2022_PROGRAM_ID,
   });
 
-  // TransferHookExtension instruction tag: 36, Initialize: 0
-  const hookData = Buffer.alloc(66);
-  hookData.writeUInt8(36, 0); // TransferHookExtension
-  hookData.writeUInt8(0, 1);  // Initialize
-  params.authority.toBuffer().copy(hookData, 2);
-  params.hookProgramId.toBuffer().copy(hookData, 34);
-
-  const initHookIx = new TransactionInstruction({
-    programId: TOKEN_2022_PROGRAM_ID,
-    keys: [{ pubkey: params.mint, isSigner: false, isWritable: true }],
-    data: hookData,
-  });
-
-  // InitializeMint2 instruction tag: 20
-  const mintData = Buffer.alloc(67);
-  mintData.writeUInt8(20, 0); // InitializeMint2
+  // InitializeMint v1 (tag 0) with TransferHook extension TLV:
+  // [0, decimals, mint_authority(32), freeze_tag(1), mint_rent(8),
+  //  ext_type(2)=36, ext_len(2)=64, hook_authority(32), hook_program_id(32)] = 111 bytes
+  const mintData = Buffer.alloc(111);
+  mintData.writeUInt8(0, 0); // InitializeMint v1
   mintData.writeUInt8(decimals, 1);
-  params.authority.toBuffer().copy(mintData, 2);
-  mintData.writeUInt8(0, 34); // freeze authority None
+  params.authority.toBuffer().copy(mintData, 2); // mint_authority
+  mintData.writeUInt8(0, 34); // freeze_tag None
+  mintData.writeBigUInt64LE(BigInt(params.rentExemptionLamports), 35); // mint_rent
+  mintData.writeUInt16LE(11, 43); // ext_type: TransferHook
+  mintData.writeUInt16LE(64, 45); // ext_len
+  params.authority.toBuffer().copy(mintData, 47); // hook authority
+  params.hookProgramId.toBuffer().copy(mintData, 79); // hook program_id
 
   const initMintIx = new TransactionInstruction({
     programId: TOKEN_2022_PROGRAM_ID,
-    keys: [{ pubkey: params.mint, isSigner: false, isWritable: true }],
+    keys: [
+      { pubkey: params.mint, isSigner: false, isWritable: true },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+    ],
     data: mintData,
   });
 
-  return [createAccountIx, initHookIx, initMintIx];
+  return [createAccountIx, initMintIx];
 }
 
 /**
@@ -202,7 +200,9 @@ export async function runTransferHookDevnet(options: {
       : "https://api.devnet.solana.com");
 
   const payer = loadDeployerKeypair(options.keypairPath);
-  const hookProgramId = DEFAULT_HOOK_PROGRAM_ID;
+  const hookProgramId = process.env.HOOK_PROGRAM_ID
+    ? new PublicKey(process.env.HOOK_PROGRAM_ID)
+    : DEFAULT_HOOK_PROGRAM_ID;
 
   console.log(`[transfer-hook] RPC: ${rpcUrl}`);
   console.log(`[transfer-hook] Deployer: ${payer.publicKey.toBase58()}`);
@@ -267,24 +267,35 @@ export async function runTransferHookDevnet(options: {
     }
   }
 
-  // If funded on devnet, proceed with live Token-22 mint creation and hook registration
-  const mintKp = Keypair.generate();
-  const rentExempt = await connection.getMinimumBalanceForRentExemption(150);
-  const mintIxs = buildCreateToken22MintInstructions({
-    payer: payer.publicKey,
-    mint: mintKp.publicKey,
-    authority: payer.publicKey,
-    hookProgramId,
-    decimals: 6,
-    rentExemptionLamports: rentExempt,
-  });
-
-  const tx = new Transaction().add(...mintIxs);
-  const mintSig = await sendAndConfirmTransaction(connection, tx, [payer, mintKp]);
-  console.log(`[transfer-hook] Token-22 mint created: ${mintKp.publicKey.toBase58()} (sig: ${mintSig})`);
+  // If MINT_ADDRESS is set, use the existing Token-22 mint (created via `spl-token create-token
+  // --program-2022 --transfer-hook <program>`); otherwise create a new mint in-transaction.
+  let mintPubkey: PublicKey;
+  let mintSig: string;
+  const mintAddressEnv = process.env.MINT_ADDRESS;
+  if (mintAddressEnv) {
+    mintPubkey = new PublicKey(mintAddressEnv);
+    mintSig = process.env.MINT_SIGNATURE || "";
+    console.log(
+      `[transfer-hook] Using existing Token-22 mint: ${mintPubkey.toBase58()} (sig: ${mintSig || "n/a"})`,
+    );
+  } else {
+    mintPubkey = Keypair.generate().publicKey;
+    const rentExempt = await connection.getMinimumBalanceForRentExemption(234);
+    const mintIxs = buildCreateToken22MintInstructions({
+      payer: payer.publicKey,
+      mint: mintPubkey,
+      authority: payer.publicKey,
+      hookProgramId,
+      decimals: 6,
+      rentExemptionLamports: rentExempt,
+    });
+    const tx = new Transaction().add(...mintIxs);
+    mintSig = await sendAndConfirmTransaction(connection, tx, [payer]);
+    console.log(`[transfer-hook] Token-22 mint created: ${mintPubkey.toBase58()} (sig: ${mintSig})`);
+  }
 
   const initMetaIx = buildInitializeExtraAccountMetaListInstruction({
-    mint: mintKp.publicKey,
+    mint: mintPubkey,
     authority: payer.publicKey,
     maxRiskScore: 80,
     allowUnverified: false,
@@ -298,9 +309,9 @@ export async function runTransferHookDevnet(options: {
 
   return {
     programId: hookProgramId.toBase58(),
-    mint: mintKp.publicKey.toBase58(),
+    mint: mintPubkey.toBase58(),
     flaggedWallet: "FlaggedWallet1111111111111111111111111111111",
-    unflaggedWallet: "UnflaggedWallet11111111111111111111111111111",
+    unflaggedWallet: "UnflaggedWallet1111111111111111111111111111111",
     flaggedRevertReason: proof.flaggedResult.reason,
     flaggedErrorCode: proof.flaggedResult.errorCode,
     successTxSignature: metaSig,
