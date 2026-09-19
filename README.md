@@ -657,12 +657,23 @@ The genuine in-window development is a real stream of focused commits that follo
 | `8f0226e` | 9/16 | x402server promoted to a systemd unit (survives ssh-close + reboot) |
 | `16ed9a4` | 9/17 | **Pillar 3 — Active Defense**: autonomous per-wallet stance (armed→alerting→gated→blocked), enforcement, audit trail |
 | `6a379b5` · `e46cc4d` | 9/17 | **Reliable-green CI**: `/scan` honors injected deps + `--test-force-exit`; deterministic canary |
+| `0eba3d8` · `32eb601` | 9/17 | Windows test-suite hardening (libuv double-close) + this before/after honesty note |
+| `93d32f6` · `c66eb55` · `e8b1f83` | 9/18 | **Batch 6**: security hardening (x402/HTTP/RL/timeouts), `REGIME_SHIFT` 8th rule, test expansion + config fail-fast |
+| `165b2a9` → `e2b2486` | 9/18 | Cross-batch **counterparty relationship memory** (3 branches merged: regime/harden/tests + counterparty) |
+| `78602b4` | 9/18 | **v7 CONSOLE dashboard** wired to live defense + scan ledger (487/487 tests) |
+| `fb10026` | 9/18 | **On-chain ZK oracle end-to-end**: real Light `compress()` attestations, live read/write verified (488/488) |
+| `3c2b4c3` · `364b221` · `5d2b870` · `9150d0e` | 9/18 | **Honest audit** (30 features classified, 5 gaps) + Blink-domain fix + canonical ATA ID fix + test-count correction |
+| `803556e` | 9/18 | **GAP 2 closed**: `radar-watch.service` systemd unit (all 4 services reboot-proof) |
+| `886579b` · `2ad4066` | 9/18 | **GAP 1 prep**: Token-22 transfer hook SBF build + devnet deploy script + revert-on-flagged test |
+| `7707e7d` | 9/18 | **WOW**: `GET /trust-proof` — independently verifiable on-chain attestation bundle |
+| `56d3caa` | 9/19 | **GAP 1 closed**: Transfer Hook **deployed end-to-end on devnet** (program `ASXvQY…`, Token-22 mint `9usnYu…`, config-init sig `FMKe3U…`, flagged REVERT / unflagged ALLOW proof) |
 
 **In short:** a pre-window `v0.0.0` foundation → one pre-window leap snapshot
-(`f2bc219`) at the boundary → 18 real incremental in-window commits (decision
+(`f2bc219`) at the boundary → **40 real incremental in-window commits** (decision
 engine, simulation, anti-evasion + benchmark, hardening, trust redesign, canary,
-and the three pillars: self-funding economics, multi-agent consensus, and active
-defense).
+the three pillars: self-funding economics / multi-agent consensus / active
+defense, on-chain ZK oracle end-to-end, honest audit + gap closure, and the
+Token-22 Transfer Hook deployed + proven on devnet).
 
 ## Status
 
