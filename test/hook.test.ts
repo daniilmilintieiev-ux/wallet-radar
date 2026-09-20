@@ -53,9 +53,10 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       .subarray(0, 8);
     assert.deepEqual(TRANSFER_HOOK_EXECUTE_DISCRIMINATOR, expectedExecDisc);
 
-    // Verify init discriminator sha256("spl-transfer-hook-interface:initialize-extra-account-metas")[0..8]
+    // Verify init discriminator: the hook program's Anchor `initialize` instruction
+    // = sha256("global:initialize")[0..8] (see programs/radar-transfer-hook/src/lib.rs)
     const expectedInitDisc = createHash("sha256")
-      .update("spl-transfer-hook-interface:initialize-extra-account-metas")
+      .update("global:initialize")
       .digest()
       .subarray(0, 8);
     assert.deepEqual(INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR, expectedInitDisc);
@@ -86,10 +87,12 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     });
 
     assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());
-    assert.equal(ix.keys.length, 5);
-    assert.equal(ix.keys[2].pubkey.toBase58(), mint.toBase58());
-    assert.equal(ix.keys[3].pubkey.toBase58(), authority.toBase58());
-    assert.equal(ix.keys[3].isSigner, true);
+    // Account order must match the Rust `Initialize` struct
+    // (programs/radar-transfer-hook/src/lib.rs): [config, mint, authority, system_program]
+    assert.equal(ix.keys.length, 4);
+    assert.equal(ix.keys[1].pubkey.toBase58(), mint.toBase58());
+    assert.equal(ix.keys[2].pubkey.toBase58(), authority.toBase58());
+    assert.equal(ix.keys[2].isSigner, true);
 
     // Verify data layout (18 bytes total)
     assert.equal(ix.data.length, 18);

@@ -28,18 +28,6 @@ import {
   serializeScanRecord,
 } from "../src/oracle/index.js";
 
-export interface DeployResult {
-  programId: string;
-  txSignature?: string;
-  success: boolean;
-  error?: string;
-}
-
-export interface MintResult {
-  mint: string;
-  txSignature: string;
-}
-
 export interface TransferProofResult {
   programId: string;
   mint: string;
@@ -80,14 +68,6 @@ export function loadDeployerKeypair(keypairPath?: string): Keypair {
   }
   return kp;
 }
-
-/**
- * Program ID declared for the radar transfer hook.
- */
-export const PROGRAM_SO_PATH = path.join(
-  process.cwd(),
-  "programs/radar-transfer-hook/target/deploy/radar_transfer_hook.so",
-);
 
 /**
  * Builds instructions to create a Token-22 mint with the TransferHook extension.

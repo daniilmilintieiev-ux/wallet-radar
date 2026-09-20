@@ -164,15 +164,3 @@ export function recordHeliusCost(store: Store, detail?: string, rates?: CostRate
     detail,
   });
 }
-
-/** Record one LLM digest cost. */
-export function recordLlmCost(store: Store, detail?: string, rates?: CostRates): void {
-  const r = rates ?? loadCostRates();
-  store.recordCostEvent({
-    category: "llm",
-    quantity: 1,
-    unitPriceUsd: r.llmPerCallUsd,
-    totalUsd: r.llmPerCallUsd,
-    detail,
-  });
-}
