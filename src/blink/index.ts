@@ -378,11 +378,14 @@ export async function handleBlinkHttpRequest(
     }
 
     if (method === "POST") {
-      let body: any = null;
+      let body: Record<string, unknown> | null = null;
       try {
         const raw = await readBody(req);
         if (raw.trim()) {
-          body = JSON.parse(raw);
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            body = parsed as Record<string, unknown>;
+          }
         }
       } catch {
         res.writeHead(400, ACTIONS_CORS_HEADERS);
@@ -397,7 +400,11 @@ export async function handleBlinkHttpRequest(
         return true;
       }
 
-      const targetWallet = url.searchParams.get("wallet") || body?.data?.wallet || body?.wallet;
+      const dataObj = (body?.data ?? undefined) as Record<string, unknown> | undefined;
+      const targetWallet =
+        url.searchParams.get("wallet") ||
+        (typeof dataObj?.wallet === "string" ? dataObj.wallet : undefined) ||
+        (typeof body?.wallet === "string" ? body.wallet : undefined);
       if (!targetWallet || typeof targetWallet !== "string") {
         res.writeHead(400, ACTIONS_CORS_HEADERS);
         res.end(JSON.stringify({ error: "Missing required 'wallet' parameter (query or body)" }));
@@ -415,9 +422,9 @@ export async function handleBlinkHttpRequest(
         res.writeHead(200, ACTIONS_CORS_HEADERS);
         res.end(JSON.stringify(postRes, null, 2));
         return true;
-      } catch (err: any) {
+      } catch (err: unknown) {
         res.writeHead(400, ACTIONS_CORS_HEADERS);
-        res.end(JSON.stringify({ error: err.message || String(err) }));
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
         return true;
       }
     }

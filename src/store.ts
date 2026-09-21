@@ -300,8 +300,9 @@ export class Store {
         )
         .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt, payment.wallet ?? null);
       return true;
-    } catch (err: any) {
-      if (err && (err.code === "ERR_SQLITE_ERROR" || String(err).includes("UNIQUE"))) {
+    } catch (err: unknown) {
+      const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+      if (code === "ERR_SQLITE_ERROR" || String(err).includes("UNIQUE")) {
         return false;
       }
       throw err;
@@ -347,7 +348,7 @@ export class Store {
       .prepare(
         "SELECT mint, mint_authority, freeze_authority, top10_pct, fetched_at, ttl_sec FROM mint_cache WHERE mint = ?",
       )
-      .get(mint) as any;
+       .get(mint) as Record<string, unknown> | undefined;
     if (!row) return null;
     if (nowSec > Number(row.fetched_at) + Number(row.ttl_sec)) {
       return null;

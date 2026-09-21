@@ -59,6 +59,7 @@ export function loadEnv(envPath?: string): void {
           }
         }
       }
+      console.warn(`[radar] loaded env file: ${candidate}`);
       break;
     }
   }

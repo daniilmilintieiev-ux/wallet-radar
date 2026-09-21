@@ -735,7 +735,7 @@ node dist/src/cli.js add <wallet> && node dist/src/cli.js watch --once   # conti
 
 ## Requirements
 
-- Node 22.13+ (uses the built-in `node:sqlite`, no deps)
+- Node 22.13+ (uses the built-in `node:sqlite`; the core CLI/watch pipeline has no npm deps — the optional oracle, x402 SDK, MCP, and Solana Actions features pull in the Solana/MCP libraries listed in `package.json`)
 - `HELIUS_API_KEY` env var (Enhanced Transactions API, read-only)
 - Jupiter Price API (keyless by default, `lite-api.jup.ag`). Optional:
   - `JUPITER_API_KEY` — uses the higher-limit `api.jup.ag` endpoint

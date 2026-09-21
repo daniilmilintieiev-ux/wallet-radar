@@ -1,6 +1,6 @@
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
-import { fetchWalletHistory, fetchWalletTransactions } from "./collector.js";
+import { fetchWalletHistory, fetchWalletTransactions, HttpError } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk, MintRiskMap } from "./mint.js";
 import { Store } from "./store.js";
@@ -241,7 +241,7 @@ export async function watchOnce(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`Watch fetch failed for ${wallet}: ${errMsg}`);
 
-        const status = typeof (err as any)?.status === "number" ? (err as any).status : undefined;
+        const status = err instanceof HttpError ? err.status : undefined;
         const isRateOrServerError = status === 429 || (status !== undefined && status >= 500 && status < 600);
 
         let backoffUntil: number | undefined;

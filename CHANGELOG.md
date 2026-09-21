@@ -60,8 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `commitScan` / `readScanLedger` with Light RPC validity-proof fallback.
 - **Autonomous Agent SDK (`src/sdk`)**: TypeScript/JavaScript client
   (`createRadarClient`) with automated x402 payment (signed Solana
-  transactions) and on-chain ZK attestation reading. Zero-dependency base58
-  encoder, ATA derivation, and SPL transfer instruction builders.
+   transactions) and on-chain ZK attestation reading. Self-contained base58
+   encoder, ATA derivation, and SPL transfer instruction builders.
 - **Solana Actions & Blinks v1 (`src/blink`)**: Official Solana Actions
   specification (`/actions.json` discovery, `ActionGetResponse` /
   `ActionPostResponse` endpoints), one-tap Blink URL generators and deep
