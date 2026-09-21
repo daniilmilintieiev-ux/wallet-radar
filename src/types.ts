@@ -80,8 +80,20 @@ export interface Baseline {
   recentSwapAmounts?: number[];
   /** Most-recent USD swap values, most-recent last (bounded), when prices exist. */
   recentSwapAmountsUsd?: number[];
+  /**
+   * Lifetime activity rate in transactions PER MINUTE: total tx count divided
+   * by the observed activity span (clamped to at least one minute). Drives the
+   * ACTIVITY_BURST reference and REGIME_SHIFT's cadence dimension.
+   */
   medianTps: number;
+  /**
+   * 24-bucket histogram of transaction counts by UTC hour (index = UTC hour).
+   * Drives the OFF_HOURS rule (activity in hours with no historical activity).
+   * Legacy baselines have an empty array and are treated as an all-zero profile.
+   */
   activeHours: number[];
+  /** Unix seconds of the oldest observed transaction (first activity ever seen). */
+  firstSeenAt?: number | null;
   lastSeenAt: number | null;
   txCount: number;
   /**
@@ -126,9 +138,10 @@ export type AnomalyType =
   | "NEW_COUNTERPARTY"
   | "COUNTERPARTY_HUB"
   | "COUNTERPARTY_ESCALATION"
-  | "TOXIC_MINT"
-  | "REGIME_SHIFT"
-  | "WARMING";
+   | "TOXIC_MINT"
+   | "OFF_HOURS"
+   | "REGIME_SHIFT"
+   | "WARMING";
 
 export interface MintRiskInfo {
   mint: string;

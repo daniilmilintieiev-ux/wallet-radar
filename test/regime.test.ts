@@ -282,18 +282,19 @@ describe("REGIME_SHIFT (8th deterministic anomaly rule)", () => {
     );
     const mcp = fs.readFileSync(path.join(rootDir, "src/mcp.ts"), "utf-8");
 
-    // Check README
+    // Check README (current-state sections say 9 rules; the pre-hackathon
+    // history section intentionally still lists the original 8).
     assert.ok(
-      readme.includes("8 rules over the recent window"),
-      "README must reference 8 rules in trust description",
+      readme.includes("9 rules over the recent window"),
+      "README must reference 9 rules in trust description",
     );
     assert.ok(
       readme.includes("the 8 behavioral rules"),
-      "README must reference 8 behavioral rules in engine list",
+      "README pre-hackathon history section must still list the original 8 behavioral rules",
     );
     assert.ok(
-      readme.includes("analyzer (8 rules"),
-      "README must reference 8 rules in status section",
+      readme.includes("analyzer (9 rules"),
+      "README must reference 9 rules in status section",
     );
     assert.ok(
       !readme.includes("7 rules over the recent window"),
@@ -302,32 +303,32 @@ describe("REGIME_SHIFT (8th deterministic anomaly rule)", () => {
 
     // Check docs/index.html
     assert.ok(
-      indexHtml.includes("eight deterministic rules"),
-      "index.html must reference eight deterministic rules",
+      indexHtml.includes("nine deterministic rules"),
+      "index.html must reference nine deterministic rules",
     );
     assert.ok(
-      indexHtml.includes("<b>8 deterministic rules</b>"),
-      "index.html pipeline step must state 8 deterministic rules",
+      indexHtml.includes("<b>9 deterministic rules</b>"),
+      "index.html pipeline step must state 9 deterministic rules",
     );
 
     // Check http-server.ts
     assert.ok(
-      httpServer.includes("8 deterministic anomaly rules"),
-      "http-server /scan description must reference 8 deterministic anomaly rules",
+      httpServer.includes("9 deterministic anomaly rules"),
+      "http-server /scan description must reference 9 deterministic anomaly rules",
     );
 
     // Check mcp.ts
     assert.ok(
-      mcp.includes("runs 8 deterministic anomaly rules"),
-      "mcp radar_scan must state 8 deterministic anomaly rules",
+      mcp.includes("runs 9 deterministic anomaly rules"),
+      "mcp radar_scan must state 9 deterministic anomaly rules",
     );
     assert.ok(
-      mcp.includes("Runs the 8 deterministic anomaly rules"),
-      "mcp radar_analyze must state 8 deterministic anomaly rules",
+      mcp.includes("Runs the 9 deterministic anomaly rules"),
+      "mcp radar_analyze must state 9 deterministic anomaly rules",
     );
     assert.ok(
-      mcp.includes("8 deterministic rules over the recent window"),
-      "mcp radar_trust must state 8 deterministic rules",
+      mcp.includes("9 deterministic rules over the recent window"),
+      "mcp radar_trust must state 9 deterministic rules",
     );
   });
 });

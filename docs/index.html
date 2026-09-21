@@ -70,11 +70,11 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
 
 <section>
   <h2>How it works</h2>
-  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and eight deterministic rules, each with a human-readable reason.</div>
+  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and nine deterministic rules, each with a human-readable reason.</div>
   <div class="pipeline">
     <div class="step"><div class="k">COLLECT</div><b>Helius enhanced tx</b><span>Full per-wallet history, paged, straight from mainnet.</span></div>
     <div class="step"><div class="k">BASELINE</div><b>Learn the normal</b><span>Median size, venues, programs, cadence — per wallet.</span></div>
-    <div class="step"><div class="k">DETECT</div><b>8 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers) and a per-rule reason.</span></div>
+    <div class="step"><div class="k">DETECT</div><b>9 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers) and a per-rule reason.</span></div>
     <div class="step"><div class="k">ACT</div><b>Score + alert</b><span>Risk 0–100 → Telegram, optional LLM digest, MCP call.</span></div>
   </div>
   <div class="rules">
@@ -85,6 +85,7 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <div class="row"><span class="n">CONCENTRATION</span><span class="d">repeated swaps into the same token</span></div>
     <div class="row"><span class="n">NEW_PROTOCOL</span><span class="d">first interaction with an unseen program</span></div>
     <div class="row"><span class="n">TOXIC_MINT</span><span class="d">unrenounced mint / freeze authority, or top-10 holders controlling ≥60% of supply</span></div>
+    <div class="row"><span class="n">OFF_HOURS</span><span class="d">activity in UTC hours with no historical activity in the baseline profile</span></div>
     <div class="row"><span class="n">REGIME_SHIFT</span><span class="d">sustained structural break from baseline in swap size, venue diversity, protocol mix, or cadence</span></div>
   </div>
 </section>

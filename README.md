@@ -83,6 +83,7 @@ watchlist ──> collector (Helius Enhanced Transactions, read-only)
 | `CONCENTRATION` | Repeated swaps into the same token in a short window |
 | `NEW_PROTOCOL` | First interaction with an unseen program |
 | `TOXIC_MINT` | Swap involves a token with unrenounced mint/freeze authority **or** extreme top-holder concentration (top-10 wallets control ≥ 60% of supply; `high` severity at ≥ 80% or with a freeze authority) |
+| `OFF_HOURS` | A majority of recent txs land in UTC hours with no activity in the wallet's historical hour profile |
 | `REGIME_SHIFT` | Sustained structural break from baseline in swap size, venue diversity, protocol mix, or cadence (not a single spike) |
 
 ### USD normalization
@@ -92,8 +93,9 @@ normalizes swap sizes to USD with the Jupiter Price API (read-only, keyless):
 
 - `USDC`/`USDT` legs are 1:1 with USD — no price feed needed.
 - Any other leg is valued with its Jupiter USD price.
-- The baseline tracks a running **median swap size in USD** across all mints,
-  so `LARGE_SWAP` works for any token, not just the majors.
+- The baseline tracks the **median swap size in USD over the most recent window**
+  (bounded, old outliers fall out) across all mints, so `LARGE_SWAP` works for any
+  token, not just the majors.
 - The baseline computes **PnL-lite** (`pnl: { realizedUsd, winRate, roundTrips }`) via FIFO over closed swap legs; unpriced or one-sided legs emit `null`.
 - If the price feed is unavailable (or a swap can't be priced), the rule falls
   back to major-only raw quantities — a scan never fails because of prices.
@@ -427,7 +429,7 @@ deterministic baseline, risk score, digest — no watchlist, no state.
 paying an unverified wallet: **"is it safe to trust this wallet right now?"**
 Copy-trading bots (BonkBot, Maestro, Trojan, Axiom, Photon, BullX) surface wallets
 to copy but don't safety-gate them first — Radar is that gate. It combines the
-behavioral risk score (8 rules over the recent window) with payment capacity
+behavioral risk score (9 rules over the recent window) with payment capacity
 (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 
 ```bash
@@ -592,7 +594,7 @@ template without throwing into the continuous watch loop.
 ## Current scope & known limitations
 
 - **Cold start**: Baseline is seeded from recent history on the first watch (paged up to 300 txs + priced). Historical anomalies inside this initial seed window are intentionally not alerted; a brand-new wallet with zero transaction history starts with an empty baseline.
-- **Baseline drift / Sybil**: Baseline medians use a weighted blend between existing and new batches, so sustained micro-swap activity over time dilutes `LARGE_SWAP` sensitivity. Known venues and programs are append-only, meaning malicious pre-warming suppresses `NEW_VENUE` and `NEW_PROTOCOL`. Planned mitigations: sample floor before trusting medians, robust statistics, and recency decay.
+- **Baseline drift / Sybil**: Reference swap-size medians now track a bounded recent window, so old outliers fall out and the profile follows current behavior — but sustained micro-swap activity still lowers the reference and dilutes `LARGE_SWAP` sensitivity. Known venues and programs are append-only, meaning malicious pre-warming suppresses `NEW_VENUE` and `NEW_PROTOCOL`. Planned mitigations: sample floor before trusting medians and robust statistics.
 - **Helius credit consumption**: Continuous watching consumes 1 Enhanced Transactions request per polled wallet (free tier: ~100k credits/month). Exponential 429/5xx backoff and adaptive quiet-wallet pacing (stretching intervals up to 60m) mitigate credit exhaustion.
 - **Price feed dependency**: If Jupiter Price API is unreachable or tokens cannot be priced in USD, `LARGE_SWAP` falls back to major-only sizing (evaluating raw quantities on SOL, USDC, and USDT only).
 
@@ -679,7 +681,7 @@ Token-22 Transfer Hook deployed + proven on devnet).
 
 **Early-access (v0.1.x)** — the core is production-usable and live: collector
 (Helius), per-wallet behavioral baseline (incl. USD median), deterministic
-analyzer (8 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict
+analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict
 (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data
 freshness), MCP server
 (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts,

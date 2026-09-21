@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectAnomalies, extractSwap, computeRiskScore, txCounterparties, SOL_MINT, USDC_MINT, MAJOR_MINTS } from "../src/analyzer.js";
-import { updateBaseline } from "../src/baseline.js";
+import { detectAnomalies, extractSwap, computeRiskScore, txCounterparties, SOL_MINT, USDC_MINT, MAJOR_MINTS, OFF_HOURS_MIN_BASELINE_TXS } from "../src/analyzer.js";
+import { updateBaseline, RECENT_SWAP_WINDOW } from "../src/baseline.js";
 import { EnhancedTx, Baseline, Anomaly, DEFAULT_CONFIG } from "../src/types.js";
 
 const WALLET = "DemoWallet11111111111111111111111111111111";
@@ -501,8 +501,8 @@ test("CONCENTRATION: window boundary (span == windowSec fires, span > windowSec 
   assert.equal(detectAnomalies(WALLET, txsWide, null).filter((a) => a.type === "CONCENTRATION").length, 0);
 });
 
-test("updateBaseline: weighted blending of swap medians (raw and USD)", () => {
-  // Initial baseline with 10 txs: medianSwapAmount = 50, medianSwapAmountUsd = 500
+test("updateBaseline: swap medians track the most-recent window (raw and USD)", () => {
+  // Initial baseline with 10 txs: stored medians 50 / $500, no recent window yet
   const prev: Baseline = {
     walletAddress: WALLET,
     updatedAt: 1_700_000_000,
@@ -516,8 +516,8 @@ test("updateBaseline: weighted blending of swap medians (raw and USD)", () => {
     txCount: 10,
   };
 
-  // New batch: 2 swaps with raw SOL inputs [100, 200] (median 150)
-  // Priced at $20/SOL -> USD values [2000, 4000] (median 3000)
+  // New batch: 2 swaps with raw SOL inputs [100, 200]
+  // Priced at $20/SOL -> USD values [2000, 4000]
   const txs = [
     makeSwapTx("nb1", 1_700_000_100, SOL_MINT, 100, USDC_MINT, 2000),
     makeSwapTx("nb2", 1_700_000_200, SOL_MINT, 200, USDC_MINT, 4000),
@@ -526,17 +526,74 @@ test("updateBaseline: weighted blending of swap medians (raw and USD)", () => {
 
   const updated = updateBaseline(WALLET, prev, txs, 1_700_000_300, prices);
 
-  // Blending formula: (prevMedian * prevCount + newMedian * newCount) / (prevCount + newCount)
-  // Raw: (50 * 10 + 150 * 2) / (10 + 2) = 800 / 12 = 66.66666666666667
-  const expectedRaw = (50 * 10 + 150 * 2) / 12;
-  assert.equal(updated.medianSwapAmount, expectedRaw);
-
-  // USD: (500 * 10 + 3000 * 2) / (10 + 2) = 11000 / 12 = 916.6666666666666
-  const expectedUsd = (500 * 10 + 3000 * 2) / 12;
-  assert.equal(updated.medianSwapAmountUsd, expectedUsd);
+  // The reference size is the median of the most-recent window, NOT a blend
+  // with the historical value: raw median([100,200]) = 150, USD median([2000,4000]) = 3000.
+  assert.equal(updated.medianSwapAmount, 150);
+  assert.equal(updated.medianSwapAmountUsd, 3000);
+  assert.deepEqual(updated.recentSwapAmounts, [100, 200]);
+  assert.deepEqual(updated.recentSwapAmountsUsd!, [2000, 4000]);
 
   assert.equal(updated.txCount, 12);
   assert.equal(updated.lastSeenAt, 1_700_000_200);
+});
+
+test("updateBaseline: recent window is bounded and old outliers fall out (no median drift)", () => {
+  // Previous window is full of large swaps; the wallet now swaps small amounts.
+  const prev: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: [],
+    knownPrograms: [],
+    medianSwapAmount: 1000,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 40,
+    recentSwapAmounts: Array.from({ length: RECENT_SWAP_WINDOW }, () => 1000),
+  };
+
+  // 40 small swaps in the new batch push every large sample out of the window.
+  const txs = Array.from({ length: RECENT_SWAP_WINDOW }, (_, i) =>
+    makeSwapTx(`sm${i}`, 1_700_001_000 + i * 10, SOL_MINT, 2, USDC_MINT, 40),
+  );
+
+  const updated = updateBaseline(WALLET, prev, txs, 1_700_002_000);
+
+  assert.equal(updated.medianSwapAmount, 2);
+  assert.equal(updated.recentSwapAmounts!.length, RECENT_SWAP_WINDOW);
+});
+
+test("updateBaseline: medianTps is lifetime tx-per-minute and activeHours is a 24-bucket UTC histogram", () => {
+  // First batch: 12 txs spanning 30 minutes (1800s).
+  const t0 = 1_700_000_000;
+  const txs = Array.from({ length: 12 }, (_, i) => ({
+    signature: `t${i}`,
+    timestamp: t0 + i * 150, // 0..1650s span
+  }) as EnhancedTx);
+
+  const b1 = updateBaseline(WALLET, null, txs, t0 + 1800);
+
+  // Span 1650s = 27.5 min -> 12 / 27.5 = 0.43636... tx/min
+  assert.ok(Math.abs(b1.medianTps - 12 / 27.5) < 1e-9);
+  assert.equal(b1.firstSeenAt, t0);
+  assert.equal(b1.lastSeenAt, t0 + 1650);
+  assert.equal(b1.activeHours.length, 24);
+  assert.equal(b1.activeHours.reduce((s, v) => s + v, 0), 12);
+
+  // Second batch: 3 more txs -> lifetime rate uses the full span.
+  const txs2 = [
+    { signature: "x1", timestamp: t0 + 1800 } as EnhancedTx,
+    { signature: "x2", timestamp: t0 + 1900 } as EnhancedTx,
+    { signature: "x3", timestamp: t0 + 2000 } as EnhancedTx,
+  ];
+  const b2 = updateBaseline(WALLET, b1, txs2, t0 + 2100);
+  const spanMin = (b2.lastSeenAt! - b2.firstSeenAt!) / 60; // (t0+2000 - t0)/60 = 33.333
+  assert.ok(Math.abs(b2.medianTps - 15 / spanMin) < 1e-9);
+  assert.equal(b2.activeHours.reduce((s, v) => s + v, 0), 15);
+
+  // A single-tx baseline never reports a rate (span 0, one sample).
+  const single = updateBaseline(WALLET, null, [{ signature: "solo", timestamp: t0 }] as EnhancedTx[], t0);
+  assert.equal(single.medianTps, 0);
 });
 
 test("updateBaseline: non-swap transactions preserve existing medians untouched", () => {
@@ -694,5 +751,75 @@ test("txCounterparties derives the counterparty from transfer lists (self exclud
     tokenTransfers: [{ fromUserAccount: WALLET, toUserAccount: "Payee11111111111111111111111111111111111", tokenAmount: 5 }],
   };
   assert.deepEqual(txCounterparties(tx), ["Payee11111111111111111111111111111111111"]);
+});
+
+// OFF_HOURS (9th rule): activity in UTC hours the wallet has never been active in.
+const atUtc = (day: number, hour: number, min: number) => Math.floor(Date.UTC(2026, 8, day, hour, min) / 1000);
+
+function offHoursHistory(): Baseline {
+  const history: EnhancedTx[] = [];
+  for (let i = 0; i < 24; i++) history.push({ signature: `h${i}`, timestamp: atUtc(1, 14, i) } as EnhancedTx);
+  history.push({ signature: "h24", timestamp: atUtc(2, 15, 30) } as EnhancedTx);
+  return updateBaseline(WALLET, null, history, atUtc(2, 15, 40));
+}
+
+test("OFF_HOURS fires when a majority of the batch lands in historically-dead UTC hours", () => {
+  const baseline = offHoursHistory();
+  assert.equal(baseline.activeHours.length, 24);
+  assert.equal(baseline.activeHours[14], 24);
+  assert.equal(baseline.activeHours[15], 1);
+  assert.ok(baseline.txCount >= OFF_HOURS_MIN_BASELINE_TXS);
+
+  const batch = [
+    { signature: "o1", timestamp: atUtc(3, 3, 10) },
+    { signature: "o2", timestamp: atUtc(3, 3, 20) },
+    { signature: "o3", timestamp: atUtc(3, 3, 30) },
+    { signature: "k1", timestamp: atUtc(3, 14, 45) },
+    { signature: "k2", timestamp: atUtc(3, 15, 10) },
+  ] as EnhancedTx[];
+
+  const off = detectAnomalies(WALLET, batch, baseline).find((a) => a.type === "OFF_HOURS");
+  assert.ok(off, "expected OFF_HOURS anomaly");
+  assert.equal(off.severity, "medium");
+  assert.deepEqual(off.evidence.offHours, [3]);
+  assert.equal(off.evidence.offCount, 3);
+  assert.equal(off.evidence.batchTxCount, 5);
+});
+
+test("OFF_HOURS stays silent when fewer than half the batch is off-hours", () => {
+  const baseline = offHoursHistory();
+  const batch = [
+    { signature: "o1", timestamp: atUtc(3, 3, 10) },
+    { signature: "k1", timestamp: atUtc(3, 14, 15) },
+    { signature: "k2", timestamp: atUtc(3, 14, 30) },
+    { signature: "k3", timestamp: atUtc(3, 15, 5) },
+  ] as EnhancedTx[];
+  assert.equal(detectAnomalies(WALLET, batch, baseline).some((a) => a.type === "OFF_HOURS"), false);
+});
+
+test("OFF_HOURS stays silent with a thin baseline (insufficient history) or legacy empty profile", () => {
+  const thinHistory = Array.from({ length: 10 }, (_, i) => ({ signature: `t${i}`, timestamp: atUtc(1, 14, i) }) as EnhancedTx);
+  const thin = updateBaseline(WALLET, null, thinHistory, atUtc(1, 14, 30));
+  const batch = [
+    { signature: "o1", timestamp: atUtc(2, 3, 10) },
+    { signature: "o2", timestamp: atUtc(2, 3, 20) },
+    { signature: "o3", timestamp: atUtc(2, 3, 30) },
+  ] as EnhancedTx[];
+  assert.equal(thin.txCount, 10);
+  assert.equal(detectAnomalies(WALLET, batch, thin).some((a) => a.type === "OFF_HOURS"), false);
+
+  // Legacy baseline (pre-feature): activeHours empty -> no profile -> silent.
+  const legacy: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: [],
+    knownPrograms: [],
+    medianSwapAmount: 10,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 500,
+  };
+  assert.equal(detectAnomalies(WALLET, batch, legacy).some((a) => a.type === "OFF_HOURS"), false);
 });
 

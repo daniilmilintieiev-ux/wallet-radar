@@ -60,7 +60,7 @@ README/report claims more than is true today (see the 5 gaps below).
 |---|---|---|---|
 | 1 | Collector (Helius enhanced tx) | LIVE | `/scan` fetched 7 real txs |
 | 2 | Baseline profiler (USD median, PnL-lite) | LIVE | `/scan` returns `pnl`, baseline used |
-| 3 | Analyzer — 8 deterministic rules | LIVE | `ACTIVITY_BURST` fired; 8 rules unit-tested |
+| 3 | Analyzer — 9 deterministic rules | LIVE | `ACTIVITY_BURST` fired; 9 rules unit-tested |
 | 4 | Digest (LLM + deterministic template) | CODE | tested; template used live (no LLM key on pi) |
 | 5 | Alerts (Telegram / Webhook / console) | CODE | sinks tested (best-effort, non-throwing) |
 | 6 | Trust gate `safe`/`hold`/`unknown` | LIVE | `/a2a` returned `hold` with real balances |

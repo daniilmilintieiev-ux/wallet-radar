@@ -60,8 +60,24 @@ export const REGIME_DOMINANT_RATIO = 0.7;
 /** Ratio threshold for inter-activity interval shift (acceleration or deceleration). */
 export const REGIME_CADENCE_FACTOR = 4;
 
+/**
+ * OFF_HOURS thresholds: the baseline hour profile must rest on at least this
+ * many historical txs, the fresh batch must contain at least this many txs,
+ * and at least this share of the batch must fall in UTC hours with ZERO
+ * historical activity.
+ */
+export const OFF_HOURS_MIN_BASELINE_TXS = 20;
+export const OFF_HOURS_MIN_BATCH_TXS = 3;
+export const OFF_HOURS_MIN_RATIO = 0.5;
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** Human formatting for a lifetime tx-per-minute rate (avoids long floats in digest text). */
+function formatTps(tps: number | undefined | null): string {
+  if (tps === null || tps === undefined || tps <= 0) return "unknown";
+  return tps >= 1 ? tps.toFixed(1) : tps.toFixed(3);
 }
 
 function fmtUsd(n: number): string {
@@ -226,7 +242,7 @@ export function detectAnomalies(
           windowMin: config.burstWindowMin,
           baselineTps: baseline?.medianTps ?? null,
         },
-        text: `${inWindow} transactions in ${config.burstWindowMin} min (baseline ~${baseline?.medianTps ?? "unknown"}/min).`,
+        text: `${inWindow} transactions in ${config.burstWindowMin} min (baseline ~${formatTps(baseline?.medianTps)}/min).`,
       });
     }
   }
@@ -439,6 +455,41 @@ export function detectAnomalies(
   // dominant hub, relationship escalation). Emitted before the anti-evasion
   // meta-rules so they participate in REGIME_SHIFT's distinct-type count.
   anomalies.push(...detectCounterpartyAnomalies(wallet, txs, baseline?.counterparties ?? null));
+
+  // OFF_HOURS (9th rule): activity in UTC hours the wallet has never been
+  // active in. Compares the fresh batch's hour distribution against the
+  // baseline's 24-bucket UTC histogram; a majority of the batch landing in
+  // historically-dead hours is a classic bot/takeover signature.
+  if (
+    baseline !== null &&
+    baseline.txCount >= OFF_HOURS_MIN_BASELINE_TXS &&
+    txs.length >= OFF_HOURS_MIN_BATCH_TXS
+  ) {
+    const profile = baseline.activeHours.length === 24 ? baseline.activeHours : null;
+    if (profile) {
+      let offCount = 0;
+      const offHours = new Set<number>();
+      for (const t of txs) {
+        if (typeof t.timestamp !== "number") continue;
+        const h = new Date(t.timestamp * 1000).getUTCHours();
+        if (profile[h] === 0) {
+          offCount += 1;
+          offHours.add(h);
+        }
+      }
+      if (offCount >= 2 && offCount / txs.length >= OFF_HOURS_MIN_RATIO) {
+        const hours = [...offHours].sort((a, b) => a - b);
+        anomalies.push({
+          type: "OFF_HOURS",
+          wallet,
+          severity: "medium",
+          timestamp: maxOf(txs.map(ts)),
+          evidence: { offHours: hours, offCount, batchTxCount: txs.length },
+          text: `${offCount} of ${txs.length} recent txs at ${hours.map((h) => "UTC" + String(h).padStart(2, "0")).join(", ")} — hours with no historical activity in the baseline profile.`,
+        });
+      }
+    }
+  }
 
   // --- REGIME_SHIFT (8th rule): Behavioral Drift Detector ---
   // Fires when a wallet's recent behavior is a STRUCTURAL break from its own

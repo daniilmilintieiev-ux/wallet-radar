@@ -49,6 +49,11 @@ export function updateBaseline(
   const swapSizes: number[] = [];
   const swapSizesUsd: number[] = [];
   let lastSeen = prevB.lastSeenAt;
+  let firstSeen = prevB.firstSeenAt ?? null;
+
+  // 24-bucket histogram of tx counts by UTC hour (legacy baselines start empty).
+  const activeHours =
+    prevB.activeHours.length === 24 ? [...prevB.activeHours] : new Array<number>(24).fill(0);
 
   for (const tx of txs) {
     if (tx.source) venues.add(tx.source);
@@ -66,26 +71,28 @@ export function updateBaseline(
       if (lastSeen === null || tx.timestamp > lastSeen) {
         lastSeen = tx.timestamp;
       }
+      if (firstSeen === null || tx.timestamp < firstSeen) {
+        firstSeen = tx.timestamp;
+      }
+      activeHours[new Date(tx.timestamp * 1000).getUTCHours()] += 1;
     }
   }
 
-  // Recompute median over previous + new samples (approximate: keep running
-  // median cheap by blending — good enough for v1 behavioral profile).
-  const medianSwapAmount =
-    swapSizes.length > 0
-      ? (prevB.medianSwapAmount * prevB.txCount +
-          median(swapSizes) * swapSizes.length) /
-        (prevB.txCount + swapSizes.length)
-      : prevB.medianSwapAmount;
-
+  // Reference swap size = median of the most-recent bounded window, so the
+  // stored median tracks CURRENT behavior and old outliers fall out of the
+  // window instead of being blended in forever. Falls back to the previous
+  // value until the window has samples.
+  const recentSwapAmounts = pushWindow(prevB.recentSwapAmounts, swapSizes, RECENT_SWAP_WINDOW);
+  const recentSwapAmountsUsd = pushWindow(prevB.recentSwapAmountsUsd, swapSizesUsd, RECENT_SWAP_WINDOW);
+  const medianSwapAmount = recentSwapAmounts.length > 0 ? median(recentSwapAmounts) : prevB.medianSwapAmount;
   const medianSwapAmountUsd =
-    swapSizesUsd.length > 0
-      ? prevB.medianSwapAmountUsd !== undefined
-        ? (prevB.medianSwapAmountUsd * prevB.txCount +
-            median(swapSizesUsd) * swapSizesUsd.length) /
-          (prevB.txCount + swapSizesUsd.length)
-        : median(swapSizesUsd)
-      : prevB.medianSwapAmountUsd;
+    recentSwapAmountsUsd.length > 0 ? median(recentSwapAmountsUsd) : prevB.medianSwapAmountUsd;
+
+  // Lifetime activity rate (tx per minute) over the full observed span,
+  // clamped to at least one minute so same-second bursts do not divide by zero.
+  const txTotal = prevB.txCount + txs.length;
+  const spanMin = firstSeen !== null && lastSeen !== null ? (lastSeen - firstSeen) / 60 : 0;
+  const medianTps = txTotal > 1 ? txTotal / Math.max(spanMin, 1) : 0;
 
   const batchPnl = computePnlLite(txs, prices, prevB.openLots);
   const pnl = mergePnl(prevB.pnl, batchPnl);
@@ -104,12 +111,13 @@ export function updateBaseline(
       roundTrips: pnl.roundTrips,
     },
     openLots,
-    medianTps: prevB.medianTps,
-    activeHours: prevB.activeHours,
-    recentSwapAmounts: pushWindow(prevB.recentSwapAmounts, swapSizes, RECENT_SWAP_WINDOW),
-    recentSwapAmountsUsd: pushWindow(prevB.recentSwapAmountsUsd, swapSizesUsd, RECENT_SWAP_WINDOW),
+    medianTps,
+    activeHours,
+    firstSeenAt: firstSeen,
+    recentSwapAmounts,
+    recentSwapAmountsUsd,
     lastSeenAt: lastSeen,
-    txCount: prevB.txCount + txs.length,
+    txCount: txTotal,
     counterparties: foldCounterparties(prevB.counterparties, txs, nowSec, prices),
   };
 }
