@@ -1,5 +1,6 @@
 import { extractSwap, MAJOR_MINTS } from "./analyzer.js";
 import { Store } from "./store.js";
+import { isValidBase58 } from "./config.js";
 import { EnhancedTx, MintRiskInfo, MintRiskMap } from "./types.js";
 
 export { MintRiskInfo, MintRiskMap };
@@ -116,7 +117,6 @@ export function computeTop10Pct(
   return Math.max(0, Math.min(100, Math.round(pct * 100) / 100));
 }
 
-const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
 const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
 
 async function fetchTop10Pct(
@@ -126,7 +126,7 @@ async function fetchTop10Pct(
   supplyBaseUnits: string,
   decimals: number,
 ): Promise<number | null> {
-  if (!BASE58_ADDR_REGEX.test(mint)) return null;
+  if (!isValidBase58(mint)) return null;
   try {
     const res = await fetchFn(rpcUrl, {
       method: "POST",
@@ -178,7 +178,7 @@ export async function fetchMintMetadata(
   mint: string,
   opts: FetchMintOptions = {},
 ): Promise<MintRiskInfo | null> {
-  if (!BASE58_ADDR_REGEX.test(mint)) {
+  if (!isValidBase58(mint)) {
     return null;
   }
 

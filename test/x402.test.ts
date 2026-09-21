@@ -77,7 +77,7 @@ test("x402: GET /selftest is free (no payment needed)", async () => {
 
 test("x402: POST /scan returns 402 without payment", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
   const server = createX402Server({ store, recipient });
   const { port, close } = await startServer(server);
 
@@ -85,7 +85,7 @@ test("x402: POST /scan returns 402 without payment", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/scan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wallet: "DemoWallet11111111111111111111111111111111" }),
+      body: JSON.stringify({ wallet: "DemoWappet11111111111111111111111111111111" }),
     });
 
     assert.equal(res.status, 402);
@@ -109,7 +109,7 @@ test("x402: POST /scan returns 402 without payment", async () => {
 
 test("x402: POST /scan returns 402 on insufficient amount", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
   const stubVerifier = async (proof: PaymentProof, req: PaymentRequirement) => {
     return {
       valid: false,
@@ -131,9 +131,9 @@ test("x402: POST /scan returns 402 on insufficient amount", async () => {
       headers: {
         "Content-Type": "application/json",
         "X-Payment-Signature": "sig_insufficient_123",
-        "X-Payment-Payer": "PayerWallet1111111111111111111111111111111",
+        "X-Payment-Payer": "PayerWappet1111111111111111111111111111111",
       },
-      body: JSON.stringify({ wallet: "DemoWallet11111111111111111111111111111111" }),
+      body: JSON.stringify({ wallet: "DemoWappet11111111111111111111111111111111" }),
     });
 
     assert.equal(res.status, 402);
@@ -151,8 +151,8 @@ test("x402: POST /scan returns 402 on insufficient amount", async () => {
 
 test("x402: 200 + correct result on valid payment, then 402 on replayed signature", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
-  const payer = "PayerWallet1111111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
   const sig = "sig_valid_payment_456";
 
   const stubVerifier = async (proof: PaymentProof, req: PaymentRequirement) => {
@@ -187,12 +187,12 @@ test("x402: 200 + correct result on valid payment, then 402 on replayed signatur
         "X-Payment-Signature": sig,
         "X-Payment-Payer": payer,
       },
-      body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+      body: JSON.stringify({ wallet: "TargetWappet111111111111111111111111111111" }),
     });
 
     assert.equal(res1.status, 200);
     const body1 = (await res1.json()) as any;
-    assert.equal(body1.wallet, "TargetWallet111111111111111111111111111111");
+    assert.equal(body1.wallet, "TargetWappet111111111111111111111111111111");
     assert.equal(body1.txCount, 42);
     assert.equal(body1.riskScore, 15);
 
@@ -211,7 +211,7 @@ test("x402: 200 + correct result on valid payment, then 402 on replayed signatur
         "X-Payment-Signature": sig,
         "X-Payment-Payer": payer,
       },
-      body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+      body: JSON.stringify({ wallet: "TargetWappet111111111111111111111111111111" }),
     });
 
     assert.equal(res2.status, 402);
@@ -227,7 +227,7 @@ test("x402: 200 + correct result on valid payment, then 402 on replayed signatur
 
 test("x402: POST /analyze with Authorization and JSON header proof schemes", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
 
   const stubVerifier = async (proof: PaymentProof, req: PaymentRequirement) => {
     assert.equal(req.minAmount, 0.001); // analyze pricing
@@ -639,8 +639,8 @@ test("verifySolanaPaymentRpc: ignores non-target mint balances and handles RPC e
 
 test("x402: parameter validation errors do NOT settle payment signature", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
-  const payer = "PayerWallet1111111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
   const sigScan = "sig_valid_but_missing_wallet_param";
   const sigAnalyze = "sig_valid_but_missing_txs_param";
 
@@ -701,8 +701,8 @@ test("x402: parameter validation errors do NOT settle payment signature", async 
 
 test("x402: paid endpoint rejects X-Payment-Dry-Run: true", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
-  const payer = "PayerWallet1111111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
 
   const server = createX402Server({
     store,
@@ -721,7 +721,7 @@ test("x402: paid endpoint rejects X-Payment-Dry-Run: true", async () => {
         "X-Payment-Payer": payer,
         "X-Payment-Dry-Run": "true",
       },
-      body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+      body: JSON.stringify({ wallet: "TargetWappet111111111111111111111111111111" }),
     });
 
     assert.equal(res.status, 402);
@@ -736,8 +736,8 @@ test("x402: paid endpoint rejects X-Payment-Dry-Run: true", async () => {
 
 test("x402: concurrent requests with identical signature are guarded against replay", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
-  const payer = "PayerWallet1111111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
   const sig = "sig_concurrent_replay_race";
 
   let verifierDelayMs = 50;
@@ -762,7 +762,7 @@ test("x402: concurrent requests with identical signature are guarded against rep
           "X-Payment-Signature": sig,
           "X-Payment-Payer": payer,
         },
-        body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+        body: JSON.stringify({ wallet: "TargetWappet111111111111111111111111111111" }),
       }),
       fetch(`http://127.0.0.1:${port}/scan`, {
         method: "POST",
@@ -771,7 +771,7 @@ test("x402: concurrent requests with identical signature are guarded against rep
           "X-Payment-Signature": sig,
           "X-Payment-Payer": payer,
         },
-        body: JSON.stringify({ wallet: "TargetWallet111111111111111111111111111111" }),
+        body: JSON.stringify({ wallet: "TargetWappet111111111111111111111111111111" }),
       }),
     ]);
 
@@ -787,7 +787,7 @@ test("x402: concurrent requests with identical signature are guarded against rep
 
 test("x402: body > 1MB returns 413 Payload Too Large", async () => {
   const { store, dir } = tmpDb();
-  const recipient = "RecipientWallet111111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
   const server = createX402Server({ store, recipient });
   const { port, close } = await startServer(server);
 

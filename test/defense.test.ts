@@ -242,7 +242,7 @@ describe("defense store persistence", () => {
 describe("defense in the watch loop (autonomous)", () => {
   test("escalates to blocked on a high-severity anomaly, then de-escalates on sustained quiet", async () => {
     const store = new Store(":memory:");
-    const wallet = "Defen5eWallet1111111111111111111111111111";
+    const wallet = "Defen5eWappet1111111111111111111111111111";
     store.addWallet(wallet);
 
     // 1. Seed a baseline (defense is not evaluated on the seed tick).
@@ -323,7 +323,7 @@ async function withServer(store: Store, fn: (base: string) => Promise<void>): Pr
 describe("defense over HTTP", () => {
   test("GET /defense lists stances with enforcement; GET /defense/:wallet shows the audit trail; POST clear resets to armed", async () => {
     const store = new Store(":memory:");
-    const wallet = "Defen5eWallet1111111111111111111111111111";
+    const wallet = "Defen5eWappet1111111111111111111111111111";
     store.addWallet(wallet);
     store.setDefenseState(wallet, { state: "gated", riskAt: 62, setAt: NOW, quietStreak: 0, actions: 1 });
     store.recordDefenseEvent({ wallet, ts: NOW, fromState: "armed", toState: "gated", action: "escalate", risk: 62, reason: "risk fired" });
@@ -355,7 +355,7 @@ describe("defense over HTTP", () => {
 
   test("an offline tool response is annotated with the active defense stance", async () => {
     const store = new Store(":memory:");
-    const wallet = "Defen5eWallet1111111111111111111111111111";
+    const wallet = "Defen5eWappet1111111111111111111111111111";
     store.setDefenseState(wallet, { state: "blocked", riskAt: 90, setAt: NOW, quietStreak: 0, actions: 1 });
 
     await withServer(store, async (base) => {
@@ -373,7 +373,7 @@ describe("defense over HTTP", () => {
 
   test("GET /defense/:wallet returns null state for wallet without stance; POST clear returns 404", async () => {
     const store = new Store(":memory:");
-    const unescalated = "UnescalatedWallet111111111111111111111111";
+    const unescalated = "UnescapatedWappet111111111111111111111111";
 
     await withServer(store, async (base) => {
       // 1. GET returns 200 with state null

@@ -37,7 +37,12 @@ export interface ConfigValidationResult {
   warnings: string[];
 }
 
-function isValidBase58(addr: string): boolean {
+/**
+ * Strict base58 check for Solana addresses/mints: the base58 alphabet excludes
+ * 0, O, I, l, so those characters always mark an invalid address. Shared by all
+ * API surfaces (collector, http, x402, trust, mint) so validation is consistent.
+ */
+export function isValidBase58(addr: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr.trim());
 }
 
@@ -134,6 +139,28 @@ export function validateConfig(
         );
       }
     }
+  }
+
+  // 7. Warnings: configurations that work but are likely incomplete
+  if (env.RADAR_ORACLE === "1" && !env.RADAR_ORACLE_PAYER?.trim()) {
+    warnings.push(
+      "RADAR_ORACLE=1 is set but RADAR_ORACLE_PAYER is missing — on-chain scan commits will fail until a payer keypair is configured",
+    );
+  }
+  if (watchEnabled && !env.TG_BOT_TOKEN?.trim() && !env.WEBHOOK_URL?.trim()) {
+    warnings.push(
+      "RADAR_WATCH=1 is enabled but neither TG_BOT_TOKEN nor WEBHOOK_URL is set — alerts will only be logged to the console",
+    );
+  }
+  if (env.TG_CHAT_ID?.trim() && !env.TG_BOT_TOKEN?.trim()) {
+    warnings.push(
+      "TG_CHAT_ID is set but TG_BOT_TOKEN is missing — Telegram alerts will not be sent",
+    );
+  }
+  if (paywallEnabled && !env.RADAR_X402_RECIPIENT?.trim()) {
+    warnings.push(
+      "Paywall is enabled but RADAR_X402_RECIPIENT is not set — x402 challenges will use the built-in fallback recipient",
+    );
   }
 
   return { valid: true, warnings };

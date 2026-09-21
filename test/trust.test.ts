@@ -309,7 +309,7 @@ test("computeTrustVerdict: confirmed PDA owner forces hold even when risk is 0 a
 
 test("formatTrustLine formats one-line summaries correctly", () => {
   const safeRes: TrustResult = {
-    wallet: "WalletSafe111111111111111111111111111",
+    wallet: "WappetSafe111111111111111111111111111",
     verdict: "safe",
     riskScore: 10,
     anomalyCount: 0,
@@ -326,7 +326,7 @@ test("formatTrustLine formats one-line summaries correctly", () => {
     medianSwapAmountUsd: null,
   };
   const lineSafe = formatTrustLine(safeRes);
-  assert.match(lineSafe, /WalletSafe111111111111111111111111111 — SAFE — risk 10\/100, liquidity \$200\.00/);
+  assert.match(lineSafe, /WappetSafe111111111111111111111111111 — SAFE — risk 10\/100, liquidity \$200\.00/);
 
   const unpricedRes: TrustResult = {
     ...safeRes,
@@ -371,7 +371,7 @@ test("formatShortlist renders formatted summary with all sections", () => {
 
 test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async () => {
   const originalFetch = globalThis.fetch;
-  const targetWallet = "WalletTest1111111111111111111111111111";
+  const targetWallet = "WappetTest1111111111111111111111111111";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const urlStr = String(input);
@@ -463,7 +463,7 @@ test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async ()
 
 test("runTrustCheck: error handling when history or balances fail", async () => {
   const originalFetch = globalThis.fetch;
-  const targetWallet = "WalletTest1111111111111111111111111111";
+  const targetWallet = "WappetTest1111111111111111111111111111";
 
   try {
     // 1. History fetch fails -> risk is null, verdict is unknown
@@ -501,8 +501,8 @@ test("runTrustCheck: error handling when history or balances fail", async () => 
 
 test("runTrustChecks: batches wallets and isolates errors", async () => {
   const originalFetch = globalThis.fetch;
-  const wSuccess = "WalletGood1111111111111111111111111111";
-  const wFail = "WalletFail1111111111111111111111111111";
+  const wSuccess = "WappetGood1111111111111111111111111111";
+  const wFail = "WappetFaip1111111111111111111111111111";
 
   globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -540,8 +540,8 @@ test("runTrustChecks: batches wallets and isolates errors", async () => {
 
 test("runTrustChecks: handles unhandled runTrustCheck exception in batch", async () => {
   const originalFetch = globalThis.fetch;
-  const wSuccess = "WalletGood1111111111111111111111111111";
-  const wFail = "WalletFail1111111111111111111111111111";
+  const wSuccess = "WappetGood1111111111111111111111111111";
+  const wFail = "WappetFaip1111111111111111111111111111";
 
   globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = String(input);

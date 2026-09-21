@@ -1,4 +1,5 @@
 import { EnhancedTx } from "./types.js";
+import { isValidBase58 } from "./config.js";
 
 export class HttpError extends Error {
   status: number;
@@ -9,7 +10,6 @@ export class HttpError extends Error {
   }
 }
 
-const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
 const BASE58_SIG_REGEX = /^[A-Za-z0-9_-]{1,128}$/;
 const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
 
@@ -26,7 +26,7 @@ export async function fetchWalletTransactions(
   before?: string,
   after?: string,
 ): Promise<EnhancedTx[]> {
-  if (!BASE58_ADDR_REGEX.test(walletAddress)) {
+  if (!isValidBase58(walletAddress)) {
     throw new HttpError("Invalid Solana wallet address", 400);
   }
   if (before && !BASE58_SIG_REGEX.test(before)) {
@@ -82,7 +82,7 @@ export async function fetchWalletHistory(
   walletAddress: string,
   query: HistoryQuery = {},
 ): Promise<EnhancedTx[]> {
-  if (!BASE58_ADDR_REGEX.test(walletAddress)) {
+  if (!isValidBase58(walletAddress)) {
     throw new HttpError("Invalid Solana wallet address", 400);
   }
 

@@ -32,9 +32,9 @@ function startServer(server: http.Server): Promise<{ port: number; close: () => 
 }
 
 describe("Wire oracle into scan path (x402 and MCP)", () => {
-  const recipient = "RecipientWallet111111111111111111111111111";
-  const payer = "PayerWallet1111111111111111111111111111111";
-  const targetWallet = "DemoTargetWallet1111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
+  const targetWallet = "DemoTargetWappet1111111111111111111111111";
 
   const stubVerifier = async (proof: PaymentProof, req: PaymentRequirement) => {
     return { valid: true, amount: req.minAmount, payer: proof.payer, recipient: req.recipient };

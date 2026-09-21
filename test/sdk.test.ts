@@ -39,8 +39,8 @@ function startServer(server: http.Server): Promise<{ port: number; close: () => 
 }
 
 describe("Agent SDK v1 (src/sdk)", () => {
-  const targetWallet = "DemoTargetWallet1111111111111111111111111";
-  const recipient = "RecipientWallet111111111111111111111111111";
+  const targetWallet = "DemoTargetWappet1111111111111111111111111";
+  const recipient = "RecipientWappet111111111111111111111111111";
   const payerKeypair = Keypair.generate();
 
   test("encodeBase58: accurately encodes bytes matching Solana Keypair public keys", () => {
@@ -230,7 +230,7 @@ describe("Agent SDK v1 (src/sdk)", () => {
       assert.equal(req.recipient, recipient);
       return {
         signature: "sig_custom_callback_999",
-        payer: "CustomSignerWallet111111111111111111111",
+        payer: "CustomSignerWappet111111111111111111111",
       };
     };
 

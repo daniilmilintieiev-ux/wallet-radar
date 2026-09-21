@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { loadEnv, getVersion } from "./mcp-server.js";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
+import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
@@ -27,7 +28,7 @@ import { commitScan, type ZKOracleClient } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
-import { validateConfig } from "./config.js";
+import { isValidBase58, validateConfig } from "./config.js";
 import { buildTrustProof } from "./trust-proof.js";
 
 const SERVICE = "wallet-radar";
@@ -109,7 +110,7 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 function isBase58Address(v: unknown): v is string {
-  return typeof v === "string" && /^[A-Za-z0-9]{32,44}$/.test(v);
+  return typeof v === "string" && isValidBase58(v);
 }
 
 async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
@@ -123,8 +124,8 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
   const baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
   const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
   const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
-  const lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
-  const windowStart = stamps.length > 0 ? Math.min(...stamps) : null;
+  const lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
+  const windowStart = stamps.length > 0 ? minOf(stamps) : null;
   const nowSec = Math.floor(Date.now() / 1000);
   const riskScore = computeRiskScore(anomalies);
   const verdict = computeVerdict(riskScore);
@@ -937,7 +938,6 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
   const watchEnabled = process.env.RADAR_WATCH === "1" || args.includes("--watch");
   validateConfig(process.env, {
     watch: watchEnabled,
-    rpcMode: process.env.RADAR_RPC_MODE as any,
   });
   const port = Number(process.env.PORT ?? 7690);
   const host = process.env.HOST ?? "0.0.0.0";

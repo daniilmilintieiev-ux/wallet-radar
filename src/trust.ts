@@ -2,9 +2,11 @@ import { SOL_MINT, USDC_MINT, USDT_MINT } from "./types.js";
 import { Anomaly, EnhancedTx, Freshness } from "./types.js";
 import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
+import { maxOf } from "./stats.js";
 import { fetchWalletHistory } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
 import { anomalyReasons, anomalySummary, buildFreshness, buildAuditTrail, type AnomalyReason, type AuditTrail } from "./explain.js";
+import { isValidBase58 } from "./config.js";
 import { computeDecision, type DecisionResult } from "./decision.js";
 import {
   aggregateConsensus,
@@ -85,7 +87,7 @@ export const TRUST_DEFAULTS = {
   windowDays: 7,
 };
 
-const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
+
 const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
 
 export function liquidityOf(inputs: TrustInputs): number {
@@ -188,7 +190,7 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
  * program-derived (PDA) accounts.
  */
 export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise<string | null> {
-  if (!BASE58_ADDR_REGEX.test(wallet)) throw new Error("Invalid Solana wallet address");
+  if (!isValidBase58(wallet)) throw new Error("Invalid Solana wallet address");
   const res = (await rpcCall(rpcUrl, "getAccountInfo", [wallet, { encoding: "base64" }])) as
     | { value: { owner: string } | null }
     | null;
@@ -200,12 +202,12 @@ export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise
  * Only these are counted — deliberately conservative.
  */
 export async function fetchLiquidity(rpcUrl: string, wallet: string): Promise<TrustBalances> {
-  if (!BASE58_ADDR_REGEX.test(wallet)) throw new Error("Invalid Solana wallet address");
+  if (!isValidBase58(wallet)) throw new Error("Invalid Solana wallet address");
   const balRes = (await rpcCall(rpcUrl, "getBalance", [wallet])) as { value: number };
   const sol = balRes.value / 1e9;
 
   async function stableBalance(mint: string): Promise<number> {
-    if (!BASE58_ADDR_REGEX.test(mint)) throw new Error("Invalid token mint address");
+    if (!isValidBase58(mint)) throw new Error("Invalid token mint address");
     const res = (await rpcCall(rpcUrl, "getTokenAccountsByOwner", [
       wallet,
       { mint },
@@ -297,7 +299,7 @@ export async function runTrustCheck(
       maxPages: 2,
     });
     const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
-    lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
+    lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
     const prices = opts.noPrices ? null : await fetchSwapPrices(txs);
     const { baselineTxs, evalTxs } = selectScoring(txs, windowStart);
     const baseline = updateBaseline(wallet, null, baselineTxs, generatedAt, prices);

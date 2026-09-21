@@ -17,7 +17,7 @@ import { computeVerdict } from "./htmlreport.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { recordHeliusCost } from "./economics.js";
-import { validateConfig } from "./config.js";
+import { isValidBase58, validateConfig } from "./config.js";
 import { buildTrustProof } from "./trust-proof.js";
 
 /** Pricing in USDC per endpoint matching AgenticTrade manifest. */
@@ -78,7 +78,6 @@ function getRpcUrl(): string {
   return "https://api.mainnet-beta.solana.com";
 }
 
-const BASE58_ADDR_REGEX = /^[A-Za-z0-9]{32,44}$/;
 const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
 
 export async function verifySolanaPaymentRpc(
@@ -457,7 +456,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           res.end(JSON.stringify({ error: "wallet query parameter is required (Solana base58 address)." }));
           return;
         }
-        if (!/^[A-Za-z0-9]{32,44}$/.test(wallet)) {
+        if (!isValidBase58(wallet)) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "wallet query parameter must be a Solana base58 address." }));
           return;
@@ -493,7 +492,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
 
         const requiredPrice = X402_PRICING[pathname];
 
-        let body: any = null;
+        let body: Record<string, unknown> | null = null;
         try {
           const raw = await readBody(req);
           if (raw.trim()) {
@@ -505,8 +504,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             }
             body = parsed;
           }
-        } catch (err: any) {
-          if (err instanceof PayloadTooLargeError || err?.status === 413) {
+        } catch (err: unknown) {
+          if (err instanceof PayloadTooLargeError || (err as { status?: number }).status === 413) {
             res.writeHead(413, { "Content-Type": "application/json", "Connection": "close" });
             res.end(JSON.stringify({ error: "Payload Too Large" }));
             return;
@@ -555,7 +554,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           // request that is missing its parameters 400s without marking the
           // signature settled
           if (pathname === "/scan") {
-            if (!body?.wallet || !BASE58_ADDR_REGEX.test(body.wallet)) {
+            if (typeof body?.wallet !== "string" || !isValidBase58(body.wallet)) {
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ error: "body.wallet must be a Solana base58 address" }));
               return;
@@ -578,6 +577,11 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               return;
             }
           }
+          if (!body) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Missing JSON body" }));
+            return;
+          }
 
           // 4. Settle signature in store
           const settled = store.recordSettledPayment({
@@ -595,7 +599,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
 
           // 5. Execute endpoint handler
           if (pathname === "/scan") {
-            const rawScanRes = (await scanHandler(body.wallet)) as Record<string, any>;
+            const rawScanRes = (await scanHandler(body.wallet as string)) as Record<string, any>;
             recordHeliusCost(store, "/scan");
             const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
 
@@ -624,7 +628,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
                   const commitFn = options.commitScanFn ?? commitScan;
                   const commitRes = await commitFn(
                     {
-                      wallet: body.wallet,
+                      wallet: body.wallet as string,
                       riskScore,
                       verdict,
                       timestamp: Math.floor(Date.now() / 1000),
@@ -652,7 +656,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           }
 
           if (pathname === "/analyze") {
-            const analyzeRes = await analyzeHandler(body.wallet, body.txs);
+            const analyzeRes = await analyzeHandler(body.wallet as string, body.txs as EnhancedTx[] | string);
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(analyzeRes, null, 2));
             return;
@@ -664,8 +668,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
 
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not Found" }));
-    } catch (err: any) {
-      if (err instanceof PayloadTooLargeError || err?.status === 413) {
+    } catch (err: unknown) {
+      if (err instanceof PayloadTooLargeError || (err as { status?: number }).status === 413) {
         res.writeHead(413, { "Content-Type": "application/json", "Connection": "close" });
         res.end(JSON.stringify({ error: "Payload Too Large" }));
         return;
@@ -706,7 +710,6 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
 
   validateConfig(process.env, {
     paywall: Boolean(process.env.RADAR_PAYWALL === "1" || process.env.RADAR_X402_PAYWALL === "1"),
-    rpcMode: process.env.RADAR_RPC_MODE as any,
   });
 
   let port = Number(process.env.RADAR_X402_PORT || process.env.PORT || 4020);
