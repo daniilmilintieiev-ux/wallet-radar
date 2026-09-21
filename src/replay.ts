@@ -1,5 +1,6 @@
 import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
+import { maxOf } from "./stats.js";
 import { fetchWalletHistory, HistoryQuery } from "./collector.js";
 import { fetchSwapPrices, UsdPriceMap } from "./pricing.js";
 import { fetchSwapMintRisk, MintRiskMap } from "./mint.js";
@@ -94,7 +95,7 @@ export function buildReplay(
   config: RadarConfig = DEFAULT_CONFIG,
   mintRisk: MintRiskMap | null = null,
 ): ReplayAnalysis {
-  const burstNewest = burst.length > 0 ? Math.max(...burst.map((t) => t.timestamp ?? 0)) : 0;
+  const burstNewest = burst.length > 0 ? maxOf(burst.map((t) => t.timestamp ?? 0)) : 0;
   const baseline = updateBaseline(wallet, null, history, burstNewest, prices);
   const anomalies = detectAnomalies(wallet, burst, baseline, config, prices, mintRisk);
   return { baseline, anomalies, riskScore: computeRiskScore(anomalies) };

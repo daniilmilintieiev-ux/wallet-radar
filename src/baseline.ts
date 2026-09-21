@@ -3,6 +3,7 @@ import { extractSwap, MAJOR_MINTS, txPrograms } from "./analyzer.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
 import { computePnlLite, mergePnl } from "./pnl.js";
 import { foldCounterparties } from "./counterparty.js";
+import { median } from "./stats.js";
 
 export { computePnlLite, mergePnl };
 
@@ -12,13 +13,6 @@ export { computePnlLite, mergePnl };
  * blended in forever, so a wallet's *current* behavior defines "normal".
  */
 export const RECENT_SWAP_WINDOW = 32;
-
-function median(nums: number[]): number {
-  if (nums.length === 0) return 0;
-  const s = [...nums].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
-}
 
 /** Append values to a most-recent window, keeping only the last `windowSize`. */
 function pushWindow(prev: number[] | undefined, values: number[], windowSize: number): number[] {

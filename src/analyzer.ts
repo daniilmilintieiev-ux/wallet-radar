@@ -13,6 +13,7 @@ import {
 } from "./types.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
 import { detectCounterpartyAnomalies } from "./counterparty.js";
+import { median, maxOf, minOf } from "./stats.js";
 
 /** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
 export const TOP10_CONCENTRATION_PCT = 60;
@@ -61,14 +62,6 @@ export const REGIME_CADENCE_FACTOR = 4;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-/** Median of a numeric list (0 for empty). Local copy — analyzer is a leaf module. */
-function median(nums: number[]): number {
-  if (nums.length === 0) return 0;
-  const s = [...nums].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
 }
 
 function fmtUsd(n: number): string {
@@ -202,7 +195,7 @@ export function detectAnomalies(
   // Judge the gap by the NEWEST tx only: the batch may legitimately contain
   // an already-seen tx (pagination overlap), which must not suppress the alert.
   if (baseline?.lastSeenAt && txs.length > 0) {
-    const newest = Math.max(...txs.map(ts));
+    const newest = maxOf(txs.map(ts));
     const daysSince = (newest - baseline.lastSeenAt) / 86_400;
     if (daysSince >= config.dormantDays) {
       anomalies.push({
@@ -219,7 +212,7 @@ export function detectAnomalies(
   // ACTIVITY_BURST: K+ tx within a short window.
   // NOTE: Helius timestamps are Unix SECONDS — the window must be in seconds too.
   if (txs.length > 0) {
-    const newest = Math.max(...txs.map(ts));
+    const newest = maxOf(txs.map(ts));
     const windowSec = config.burstWindowMin * 60;
     const inWindow = txs.filter((t) => newest - ts(t) <= windowSec).length;
     if (inWindow >= config.burstThreshold) {
@@ -327,10 +320,10 @@ export function detectAnomalies(
   }
   for (const [mint, list] of byToken) {
     if (list.length < config.concentrationCount) continue;
-    const newest = Math.max(...list.map((s) => s.timestamp));
+    const newest = maxOf(list.map((s) => s.timestamp));
     // Timestamps are Unix SECONDS.
     const windowSec = config.concentrationWindowMin * 60;
-    if (newest - Math.min(...list.map((s) => s.timestamp)) <= windowSec) {
+    if (newest - minOf(list.map((s) => s.timestamp)) <= windowSec) {
       anomalies.push({
         type: "CONCENTRATION",
         wallet,
@@ -370,7 +363,7 @@ export function detectAnomalies(
           type: "COUNTERPARTY_CLUSTER",
           wallet,
           severity: "low",
-          timestamp: Math.max(...txs.map(ts)),
+          timestamp: maxOf(txs.map(ts)),
           evidence: { topCounterparty: top, topCount, total, pct, distinct: freq.size },
           text: `${pct}% of ${total} counterparty interactions go to one wallet (${top}). Possible coordinated activity.`,
         });
@@ -392,7 +385,7 @@ export function detectAnomalies(
         type: "NEW_PROTOCOL",
         wallet,
         severity: "low",
-        timestamp: Math.max(...txs.map(ts)),
+        timestamp: maxOf(txs.map(ts)),
         evidence: { program: p },
         text: `First interaction with program ${p}.`,
       });
@@ -581,7 +574,7 @@ export function detectAnomalies(
     const reasons = [...shiftReasons];
     const dimensions = Array.from(shiftedDimensions);
     const severity: Severity = (shiftedDimensions.size >= 2 || multiAnomalyShift) ? "high" : "medium";
-    const newestTs = txs.length > 0 ? Math.max(...txs.map(ts)) : 0;
+    const newestTs = txs.length > 0 ? maxOf(txs.map(ts)) : 0;
     anomalies.push({
       type: "REGIME_SHIFT",
       wallet,
@@ -614,7 +607,7 @@ export function detectAnomalies(
         type: "WARMING",
         wallet,
         severity: "medium",
-        timestamp: Math.max(...txs.map(ts)),
+        timestamp: maxOf(txs.map(ts)),
         evidence: { baselineTxCount: baseline.txCount, currentAnomalies: anomalies.filter((a) => a.severity === "high").length },
         text: `Baseline is thin (${baseline.txCount} tx) yet current activity triggers high-severity anomalies. Possible manufactured baseline ("warming").`,
       });

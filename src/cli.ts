@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
+import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
@@ -205,8 +206,8 @@ async function main(): Promise<void> {
         if (anomalies.length > 0) {
           const timestamps = anomalies.map((a) => a.timestamp).filter(Number.isFinite);
           if (timestamps.length > 0) {
-            windowSince = Math.min(...timestamps);
-            windowUntil = Math.max(...timestamps);
+            windowSince = minOf(timestamps);
+            windowUntil = maxOf(timestamps);
           }
         }
         if (baseline?.lastSeenAt != null) {

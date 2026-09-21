@@ -5,6 +5,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
+import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
@@ -62,8 +63,8 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
         const riskScore = computeRiskScore(anomalies);
         const verdict = computeVerdict(riskScore);
         const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
-        const lastActivity = stamps.length > 0 ? Math.max(...stamps) : null;
-        const windowStart = stamps.length > 0 ? Math.min(...stamps) : null;
+        const lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
+        const windowStart = stamps.length > 0 ? minOf(stamps) : null;
 
         const payload: Record<string, unknown> = {
           wallet,
