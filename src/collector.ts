@@ -1,5 +1,45 @@
 import { EnhancedTx } from "./types.js";
 import { isValidBase58 } from "./config.js";
+import * as z from "zod/v4";
+
+/**
+ * Permissive runtime schema for Helius enhanced transactions. Only the key
+ * fields the pipeline depends on are validated (signature for paging/dedupe,
+ * timestamp for time-based rules); every other field passes through untouched
+ * so newer Helius response shapes keep working.
+ */
+const ENHANCED_TX_SCHEMA = z.looseObject({
+  signature: z.string().min(1),
+  timestamp: z.number(),
+});
+
+/**
+ * Validate a raw Helius response body. Non-array bodies degrade to an empty
+ * list; individual malformed items are skipped (with a warning) instead of
+ * being cast blindly into the pipeline.
+ */
+function parseEnhancedTxArray(data: unknown, context: string): EnhancedTx[] {
+  if (!Array.isArray(data)) {
+    console.warn(
+      `[collector] ${context}: expected array from Helius, got ${typeof data}; degrading to empty list`,
+    );
+    return [];
+  }
+  const valid: EnhancedTx[] = [];
+  let skipped = 0;
+  for (const item of data) {
+    const result = ENHANCED_TX_SCHEMA.safeParse(item);
+    if (result.success) {
+      valid.push(result.data as EnhancedTx);
+    } else {
+      skipped += 1;
+    }
+  }
+  if (skipped > 0) {
+    console.warn(`[collector] ${context}: skipped ${skipped}/${data.length} malformed tx item(s)`);
+  }
+  return valid;
+}
 
 export class HttpError extends Error {
   status: number;
@@ -54,7 +94,7 @@ export async function fetchWalletTransactions(
     throw new HttpError(`Helius fetch failed: ${response.status} ${response.statusText}`, response.status);
   }
   const data: unknown = await response.json();
-  return Array.isArray(data) ? (data as EnhancedTx[]) : [];
+  return parseEnhancedTxArray(data, "fetchWalletTransactions");
 }
 
 export interface HistoryQuery {
@@ -116,7 +156,7 @@ export async function fetchWalletHistory(
       throw new HttpError(`Helius history fetch failed: ${response.status} ${response.statusText}`, response.status);
     }
     const data: unknown = await response.json();
-    const batch: EnhancedTx[] = Array.isArray(data) ? data : [];
+    const batch: EnhancedTx[] = parseEnhancedTxArray(data, "fetchWalletHistory");
     out.push(...batch);
     if (batch.length < limit) break;
     cursor = batch[batch.length - 1].signature;
