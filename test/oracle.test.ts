@@ -1,6 +1,10 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
+import bs58 from "bs58";
 import {
   ScanLedgerRecord,
   serializeScanRecord,
@@ -9,6 +13,7 @@ import {
   MockZKOracleClient,
   LightZKOracleClient,
   DEFAULT_ORACLE_PROGRAM_ID,
+  loadPayerFromEnv,
   commitScan,
   readScanLedger,
 } from "../src/oracle/index.js";
@@ -324,6 +329,95 @@ describe("ZK scan ledger oracle", () => {
     const customClient = new LightZKOracleClient({ oracleProgramId: customPid, rpcUrl: "https://custom.rpc" });
     assert.equal(customClient.oracleProgramId.toBase58(), customPid.toBase58());
     assert.equal(customClient.rpcUrl, "https://custom.rpc");
+  });
+
+  test("loadPayerFromEnv: returns null when neither keypair source is configured", () => {
+    const saved = {
+      keypair: process.env.RADAR_ORACLE_KEYPAIR,
+      payer: process.env.RADAR_ORACLE_PAYER,
+    };
+    delete process.env.RADAR_ORACLE_KEYPAIR;
+    delete process.env.RADAR_ORACLE_PAYER;
+    try {
+      assert.equal(loadPayerFromEnv(), null);
+    } finally {
+      process.env.RADAR_ORACLE_KEYPAIR = saved.keypair;
+      process.env.RADAR_ORACLE_PAYER = saved.payer;
+    }
+  });
+
+  test("loadPayerFromEnv: reads a valid 64-byte keypair file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "radar-kp-test-"));
+    const kp = Keypair.generate();
+    const file = join(dir, "payer.json");
+    writeFileSync(file, JSON.stringify(Array.from(kp.secretKey)));
+    const saved = {
+      keypair: process.env.RADAR_ORACLE_KEYPAIR,
+      payer: process.env.RADAR_ORACLE_PAYER,
+    };
+    process.env.RADAR_ORACLE_KEYPAIR = file;
+    delete process.env.RADAR_ORACLE_PAYER;
+    try {
+      const loaded = loadPayerFromEnv();
+      assert.ok(loaded, "expected a keypair to be loaded");
+      assert.equal(loaded.publicKey.toBase58(), kp.publicKey.toBase58());
+    } finally {
+      process.env.RADAR_ORACLE_KEYPAIR = saved.keypair;
+      process.env.RADAR_ORACLE_PAYER = saved.payer;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loadPayerFromEnv: prefers the keypair file over RADAR_ORACLE_PAYER", () => {
+    const dir = mkdtempSync(join(tmpdir(), "radar-kp-test-"));
+    const fileKp = Keypair.generate();
+    const envKp = Keypair.generate();
+    const file = join(dir, "payer.json");
+    writeFileSync(file, JSON.stringify(Array.from(fileKp.secretKey)));
+    const saved = {
+      keypair: process.env.RADAR_ORACLE_KEYPAIR,
+      payer: process.env.RADAR_ORACLE_PAYER,
+    };
+    process.env.RADAR_ORACLE_KEYPAIR = file;
+    process.env.RADAR_ORACLE_PAYER = bs58.encode(envKp.secretKey);
+    try {
+      const loaded = loadPayerFromEnv();
+      assert.ok(loaded, "expected a keypair to be loaded");
+      assert.equal(loaded.publicKey.toBase58(), fileKp.publicKey.toBase58(), "file must win over env");
+    } finally {
+      process.env.RADAR_ORACLE_KEYPAIR = saved.keypair;
+      process.env.RADAR_ORACLE_PAYER = saved.payer;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loadPayerFromEnv: falls back to RADAR_ORACLE_PAYER when the file is missing or malformed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "radar-kp-test-"));
+    const envKp = Keypair.generate();
+    const saved = {
+      keypair: process.env.RADAR_ORACLE_KEYPAIR,
+      payer: process.env.RADAR_ORACLE_PAYER,
+    };
+    process.env.RADAR_ORACLE_PAYER = bs58.encode(envKp.secretKey);
+    try {
+      // Missing file -> fallback to env
+      process.env.RADAR_ORACLE_KEYPAIR = join(dir, "does-not-exist.json");
+      let loaded = loadPayerFromEnv();
+      assert.ok(loaded, "expected fallback to env keypair");
+      assert.equal(loaded.publicKey.toBase58(), envKp.publicKey.toBase58());
+
+      // Malformed file (wrong length) -> fallback to env
+      const bad = join(dir, "bad.json");
+      writeFileSync(bad, JSON.stringify([1, 2, 3]));
+      process.env.RADAR_ORACLE_KEYPAIR = bad;
+      loaded = loadPayerFromEnv();
+      assert.ok(loaded, "expected fallback to env keypair on malformed file");
+      assert.equal(loaded.publicKey.toBase58(), envKp.publicKey.toBase58());
+    } finally {
+      process.env.RADAR_ORACLE_KEYPAIR = saved.keypair;
+      process.env.RADAR_ORACLE_PAYER = saved.payer;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("LightZKOracleClient: lamports pack/unpack round-trips risk (0..100) x verdict (0..3)", () => {

@@ -14,6 +14,7 @@ export {
   deserializeScanRecord,
   MockZKOracleClient,
   LightZKOracleClient,
+  loadPayerFromEnv,
   commitScan,
   readScanLedger,
 } from "./ledger.js";

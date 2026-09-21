@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import bs58 from "bs58";
 import { PublicKey, Keypair, Connection, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { createRpc, compress, Rpc } from "@lightprotocol/stateless.js";
@@ -273,8 +274,36 @@ export class MockZKOracleClient implements ZKOracleClient {
   }
 }
 
-/** Load the oracle payer keypair from RADAR_ORACLE_PAYER (base58 64-byte secret key). */
-function loadPayerFromEnv(): Keypair | null {
+/**
+ * Load the oracle payer keypair.
+ *
+ * Primary: `RADAR_ORACLE_KEYPAIR` — path to a keypair file (JSON array of 64
+ * byte values, the format produced by `solana-keygen`). File-based storage is
+ * the recommended default: the secret never appears in the process
+ * environment. See SECURITY.md for the env/file/KMS trade-off.
+ *
+ * Fallback: `RADAR_ORACLE_PAYER` — base58-encoded 64-byte secret key stored
+ * directly in the environment (prototype convenience).
+ */
+export function loadPayerFromEnv(): Keypair | null {
+  const keypairPath = process.env.RADAR_ORACLE_KEYPAIR?.trim();
+  if (keypairPath) {
+    try {
+      const raw: unknown = JSON.parse(readFileSync(keypairPath, "utf8"));
+      if (
+        Array.isArray(raw) &&
+        raw.length === 64 &&
+        raw.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)
+      ) {
+        return Keypair.fromSecretKey(Uint8Array.from(raw as number[]));
+      }
+      console.warn("[oracle] RADAR_ORACLE_KEYPAIR is not a 64-byte JSON array — trying RADAR_ORACLE_PAYER");
+    } catch (err) {
+      console.warn(
+        `[oracle] failed to read RADAR_ORACLE_KEYPAIR: ${err instanceof Error ? err.message : String(err)} — trying RADAR_ORACLE_PAYER`,
+      );
+    }
+  }
   const raw = process.env.RADAR_ORACLE_PAYER;
   if (!raw) return null;
   try {
@@ -424,7 +453,7 @@ export class LightZKOracleClient implements ZKOracleClient {
     const activePayer = payer ?? loadPayerFromEnv();
     if (!activePayer) {
       throw new Error(
-        "oracle.commit: no payer keypair provided (configure RADAR_ORACLE_PAYER) — a random throwaway payer has no funds to pay the tx fee",
+        "oracle.commit: no payer keypair provided (configure RADAR_ORACLE_KEYPAIR or RADAR_ORACLE_PAYER) — a random throwaway payer has no funds to pay the tx fee",
       );
     }
     const conn = this.getConnection();

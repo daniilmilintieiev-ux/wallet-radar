@@ -64,6 +64,68 @@ Wallet Radar is designed to be read-only and custody-free:
   an LLM in the verdict path — the `safe`/`hold`/`unknown` decision and risk
   score are deterministic and recomputable from the same evidence.
 
+## Key material (oracle payer)
+
+When `RADAR_ORACLE=1` is enabled, the service pays the tx fees for on-chain
+attestation commits from a dedicated **payer** wallet. How the payer secret is
+provided changes its exposure:
+
+| Method | Configuration | When to use |
+|--------|---------------|-------------|
+| Keypair **file** (JSON array of 64 bytes, `solana-keygen` format) | `RADAR_ORACLE_KEYPAIR=/path/to/payer.json` | **Recommended.** The secret lives on disk with file permissions and never appears in the process environment, shell history, or `systemctl` output. |
+| Base58 secret in env | `RADAR_ORACLE_PAYER=<base58>` | **Prototype convenience.** The secret is readable from the process environment (`/proc/<pid>/environ` on Linux) and is inherited by child processes. |
+| KMS / HSM-backed signer | — | **Production.** The raw 64 bytes never exist on the host; a signer service produces signatures on demand. It plugs in where `loadPayerFromEnv()` returns the keypair. |
+
+Notes:
+
+- Use a **low-balance dedicated payer** — attestation fees are a few hundred
+  lamports per commit. Never a wallet that also holds other value.
+- The payer only signs the attestation commits; it is never the x402 payment
+  recipient.
+- `RADAR_ORACLE_KEYPAIR` takes precedence over `RADAR_ORACLE_PAYER`; an
+  unreadable or malformed file falls back to the env var with a warning.
+
+## x402 payment replay protection
+
+Paid endpoints (`POST /scan`, `POST /analyze`) accept x402 USDC payments. A
+payment signature may be redeemed exactly once. Two layers enforce this:
+
+1. **In-process (fast path).** `inFlightPayments` — an in-memory `Set` of
+   signatures currently being verified/settled. Stops two *concurrent*
+   requests in the same process from settling the same signature.
+2. **Durable (source of truth).** The SQLite `settled_payments` table has
+   `signature TEXT PRIMARY KEY`. Every verified payment is recorded there
+   atomically before the endpoint is served, and every incoming payment is
+   checked against it first. This survives restarts.
+
+**Known window (prototype trade-off).** The in-memory entry is added *before*
+verification; the durable row is written *after* verification. If the process
+crashes between those two points, the payment is confirmed on-chain but absent
+from the database, and after a restart the same signature could be redeemed
+again (the endpoint runs a second time for the same payment). Impact is
+bounded: it requires a crash inside that window **and** a client deliberately
+re-presenting the same payment signature. Production mitigation: write a
+`pending` row before verification and reconcile `pending` rows against the
+chain after restart (or verify only after a durable pre-record).
+
+## HTTP service hardening
+
+- **Authentication (opt-in).** `RADAR_API_TOKEN`, when set, requires
+  `Authorization: Bearer <token>` (or an `x-api-token` header) on the mutating
+  endpoints (`POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`);
+  comparison is timing-safe. Read endpoints stay open. When watch mode is
+  enabled without a token, `validateConfig` warns at startup.
+- **CORS.** Open by default (`Access-Control-Allow-Origin: *` — responses
+  contain data about wallets the caller chose). `RADAR_CORS_ORIGINS` restricts
+  which browser origins may read responses cross-origin.
+- **Rate limiting.** Per-IP limit (`RADAR_RATE_LIMIT_PER_MIN`, default
+  120/min); `/health` and `/metrics` are exempt.
+- **Input validation.** Wallet parameters are strict-base58-validated at every
+  API surface (the `0/O/I/l` lookalikes are rejected); JSON bodies are capped
+  at ~1 MB (413 above that); Helius responses are runtime-validated (zod,
+  permissive) — malformed items degrade with a warning instead of being cast
+  blindly into the pipeline.
+
 ## Threat-model notes
 
 - The verdict path (risk score + liquidity → verdict) is deterministic and

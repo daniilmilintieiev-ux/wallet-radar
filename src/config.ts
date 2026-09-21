@@ -172,9 +172,9 @@ export function validateConfig(
   }
 
   // 7. Warnings: configurations that work but are likely incomplete
-  if (env.RADAR_ORACLE === "1" && !env.RADAR_ORACLE_PAYER?.trim()) {
+  if (env.RADAR_ORACLE === "1" && !env.RADAR_ORACLE_KEYPAIR?.trim() && !env.RADAR_ORACLE_PAYER?.trim()) {
     warnings.push(
-      "RADAR_ORACLE=1 is set but RADAR_ORACLE_PAYER is missing — on-chain scan commits will fail until a payer keypair is configured",
+      "RADAR_ORACLE=1 is set but no payer keypair is configured (RADAR_ORACLE_KEYPAIR or RADAR_ORACLE_PAYER) — on-chain scan commits will fail until one is set",
     );
   }
   if (watchEnabled && !env.TG_BOT_TOKEN?.trim() && !env.WEBHOOK_URL?.trim()) {
