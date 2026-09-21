@@ -5,17 +5,36 @@ pub mod state;
 
 use error::RadarHookError;
 use state::*;
+use spl_tlv_account_resolution::account::ExtraAccountMeta;
+use spl_tlv_account_resolution::state::ExtraAccountMetaList;
+use spl_transfer_hook_interface::instruction::ExecuteInstruction;
 
 declare_id!("ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz");
 
 pub const EXTRA_ACCOUNT_METAS_SEED: &[u8] = b"extra-account-metas";
 pub const RADAR_CONFIG_SEED: &[u8] = b"radar_config";
+pub const RADAR_RECORD_SEED: &[u8] = b"radar_record";
+
+/// Account size for the ExtraAccountMetaList PDA holding two
+/// `ExtraAccountMeta` entries (config + scan-record):
+///   get_base_len() [12] + PodSlice header [4] + 2 * ExtraAccountMeta [35] = 86
+pub const EXTRA_ACCOUNT_METAS_SPACE: usize = 12 + 4 + 2 * 35;
+
+/// Borsh-serializable mirror of `ExtraAccountMeta` (35 bytes) so the meta list
+/// can be passed as an instruction argument.
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct MetaArg {
+    pub discriminator: u8,
+    pub address_config: [u8; 32],
+    pub is_signer: u8,
+    pub is_writable: u8,
+}
 
 #[program]
 pub mod radar_transfer_hook {
     use super::*;
 
-    /// Initializes the transfer hook configuration and ExtraAccountMetaList for an SPL Token-22 mint.
+    /// Initializes the transfer hook configuration for an SPL Token-22 mint.
     pub fn initialize(
         ctx: Context<Initialize>,
         max_risk_score: u8,
@@ -25,7 +44,11 @@ pub mod radar_transfer_hook {
         let config = &mut ctx.accounts.config;
         config.authority = ctx.accounts.authority.key();
         config.mint = ctx.accounts.mint.key();
-        config.max_risk_score = if max_risk_score == 0 { 80 } else { max_risk_score.min(100) };
+        config.max_risk_score = if max_risk_score == 0 {
+            80
+        } else {
+            max_risk_score.min(100)
+        };
         config.allow_unverified = allow_unverified;
         config.max_attestation_age_sec = max_attestation_age_sec;
         config.bump = ctx.bumps.config;
@@ -61,39 +84,41 @@ pub mod radar_transfer_hook {
 
     /// Main transfer hook execution path ("scan-on-transfer").
     /// Invoked on-chain by the SPL Token-22 program on every transfer.
-    pub fn transfer_hook(ctx: Context<TransferHook>, amount: u64) -> Result<()> {
+    ///
+    /// Account order matches the transfer-hook `execute` interface:
+    ///   0 source, 1 mint, 2 destination, 3 authority, 4 validate_state,
+    ///   then the additional accounts from the ExtraAccountMetaList
+    ///   (5 config PDA, 6 scan-record PDA).
+    #[interface(spl_transfer_hook_interface::execute)]
+    pub fn execute(ctx: Context<Execute>, amount: u64) -> Result<()> {
         if amount == 0 {
             return Err(RadarHookError::InvalidTransferAmount.into());
         }
 
         let config = &ctx.accounts.config;
-        let remaining = ctx.remaining_accounts;
 
-        // Verify destination oracle record if supplied in extra accounts
-        if remaining.is_empty() {
-            if config.allow_unverified {
-                msg!("RadarHook: no oracle account provided; unverified counterparty allowed by config");
-                return Ok(());
-            } else {
-                msg!("RadarHook: transfer rejected; destination has no verified scan record on-chain");
-                return Err(RadarHookError::UnverifiedCounterparty.into());
-            }
+        // Destination owner = owner field of the token account (bytes 32..64).
+        let dest_data = ctx.accounts.destination.try_borrow_data()?;
+        if dest_data.len() < 64 {
+            return Err(RadarHookError::InvalidDestination.into());
+        }
+        let mut owner_bytes = [0u8; 32];
+        owner_bytes.copy_from_slice(&dest_data[32..64]);
+        let destination_owner = Pubkey::new_from_array(owner_bytes);
+        drop(dest_data);
+
+        // Verify the scan-record PDA is derived from the destination owner.
+        let (expected_record, _bump) = Pubkey::find_program_address(
+            &[RADAR_RECORD_SEED, destination_owner.as_ref()],
+            &crate::ID,
+        );
+        if ctx.accounts.record.key() != expected_record {
+            msg!("RadarHook: REJECTED - scan record PDA does not match destination owner");
+            return Err(RadarHookError::RecordPdaMismatch.into());
         }
 
-        let oracle_acc = &remaining[0];
-        let data = oracle_acc.try_borrow_data()?;
-
-        if data.is_empty() {
-            if config.allow_unverified {
-                msg!("RadarHook: oracle record empty; allowed by allow_unverified policy");
-                return Ok(());
-            } else {
-                return Err(RadarHookError::UnverifiedCounterparty.into());
-            }
-        }
-
-        // Parse binary ScanLedgerRecord header ("RS01")
-        let header = ScanRecordHeader::try_parse(&data)
+        let record_data = ctx.accounts.record.try_borrow_data()?;
+        let header = ScanRecordHeader::try_parse(&record_data)
             .ok_or(RadarHookError::InvalidScanRecordMagic)?;
 
         msg!(
@@ -124,13 +149,79 @@ pub mod radar_transfer_hook {
         if config.max_attestation_age_sec > 0 {
             let clock = Clock::get()?;
             let current_ts = clock.unix_timestamp as u64;
-            if current_ts > header.timestamp && (current_ts - header.timestamp) > config.max_attestation_age_sec {
-                msg!("RadarHook: REJECTED - attestation expired (age > {}s)", config.max_attestation_age_sec);
+            if current_ts > header.timestamp
+                && (current_ts - header.timestamp) > config.max_attestation_age_sec
+            {
+                msg!(
+                    "RadarHook: REJECTED - attestation expired (age > {}s)",
+                    config.max_attestation_age_sec
+                );
                 return Err(RadarHookError::StaleOracleAttestation.into());
             }
         }
 
         msg!("RadarHook: transfer allowed for amount {}", amount);
+        Ok(())
+    }
+
+    /// Initializes the ExtraAccountMetaList PDA for a mint, registering the
+    /// additional accounts (config + scan-record) that the hook receives on
+    /// every transfer.
+    ///
+    /// Account order matches the transfer-hook interface:
+    ///   0 extra_account_metas (writable), 1 mint, 2 authority (signer),
+    ///   3 system program.
+    #[interface(spl_transfer_hook_interface::initialize_extra_account_meta_list)]
+    pub fn initialize_extra_account_meta_list(
+        ctx: Context<InitializeExtraAccountMetaList>,
+        metas: Vec<MetaArg>,
+    ) -> Result<()> {
+        let extra_metas = metas
+            .iter()
+            .map(|m| {
+                let pubkey = Pubkey::new_from_array(m.address_config);
+                ExtraAccountMeta::new_with_pubkey(&pubkey, m.is_signer != 0, m.is_writable != 0)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| RadarHookError::InvalidExtraMeta)?;
+
+        let data = &mut ctx.accounts.extra_account_metas.try_borrow_mut_data()?;
+        ExtraAccountMetaList::init::<ExecuteInstruction>(data, &extra_metas)?;
+
+        msg!(
+            "RadarHook: initialized extra-account-metas for mint {} ({} entries)",
+            ctx.accounts.mint.key(),
+            extra_metas.len()
+        );
+        Ok(())
+    }
+
+    /// Writes a 48-byte scan-record header for a wallet. The record PDA is
+    /// derived from the wallet and referenced by the mint's meta list.
+    pub fn write_scan_record(
+        ctx: Context<WriteScanRecord>,
+        risk_score: u8,
+        verdict_code: u8,
+        timestamp: u64,
+        payload_len: u16,
+    ) -> Result<()> {
+        let record = &mut ctx.accounts.record;
+        let mut data = record.try_borrow_mut_data()?;
+
+        data[0..4].copy_from_slice(&SCAN_RECORD_MAGIC);
+        data[4..36].copy_from_slice(ctx.accounts.wallet.key().as_ref());
+        data[36] = risk_score;
+        data[37] = verdict_code;
+        data[38..46].copy_from_slice(&timestamp.to_le_bytes());
+        data[46..48].copy_from_slice(&payload_len.to_le_bytes());
+
+        msg!(
+            "RadarHook: wrote scan record for {} (score: {}, verdict: {}, ts: {})",
+            ctx.accounts.wallet.key(),
+            risk_score,
+            verdict_code,
+            timestamp
+        );
         Ok(())
     }
 }
@@ -169,7 +260,7 @@ pub struct UpdateConfig<'info> {
 }
 
 #[derive(Accounts)]
-pub struct TransferHook<'info> {
+pub struct Execute<'info> {
     /// CHECK: Source token account (checked by Token-22)
     pub source: AccountInfo<'info>,
 
@@ -180,14 +271,11 @@ pub struct TransferHook<'info> {
     pub destination: AccountInfo<'info>,
 
     /// CHECK: Source account owner or delegate authority
-    pub owner: AccountInfo<'info>,
+    pub authority: AccountInfo<'info>,
 
     /// CHECK: ExtraAccountMetaList PDA for the transfer hook
-    #[account(
-        seeds = [EXTRA_ACCOUNT_METAS_SEED, mint.key().as_ref()],
-        bump
-    )]
-    pub extra_account_metas: AccountInfo<'info>,
+    #[account(seeds = [EXTRA_ACCOUNT_METAS_SEED, mint.key().as_ref()], bump)]
+    pub validate_state: AccountInfo<'info>,
 
     /// Configuration account governing this mint's risk limits
     #[account(
@@ -195,4 +283,47 @@ pub struct TransferHook<'info> {
         bump = config.bump
     )]
     pub config: Account<'info, RadarHookConfig>,
+
+    /// CHECK: Destination scan-record PDA (derived from destination owner)
+    pub record: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeExtraAccountMetaList<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = EXTRA_ACCOUNT_METAS_SPACE,
+        seeds = [EXTRA_ACCOUNT_METAS_SEED, mint.key().as_ref()],
+        bump
+    )]
+    pub extra_account_metas: UncheckedAccount<'info>,
+
+    /// CHECK: Token-22 mint account
+    pub mint: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WriteScanRecord<'info> {
+    /// CHECK: Counterparty wallet (used as PDA seed)
+    pub wallet: AccountInfo<'info>,
+
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = ScanRecordHeader::HEADER_LEN,
+        seeds = [RADAR_RECORD_SEED, wallet.key().as_ref()],
+        bump
+    )]
+    pub record: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
 }

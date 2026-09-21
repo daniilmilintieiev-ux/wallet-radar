@@ -53,10 +53,11 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       .subarray(0, 8);
     assert.deepEqual(TRANSFER_HOOK_EXECUTE_DISCRIMINATOR, expectedExecDisc);
 
-    // Verify init discriminator: the hook program's Anchor `initialize` instruction
-    // = sha256("global:initialize")[0..8] (see programs/radar-transfer-hook/src/lib.rs)
+    // Verify the initialize-extra-account-metas discriminator: inherited from
+    // spl-transfer-hook-interface = sha256("spl-transfer-hook-interface:initialize-extra-account-metas")[0..8]
+    // (see anchor-syn parse_interface_instruction).
     const expectedInitDisc = createHash("sha256")
-      .update("global:initialize")
+      .update("spl-transfer-hook-interface:initialize-extra-account-metas")
       .digest()
       .subarray(0, 8);
     assert.deepEqual(INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR, expectedInitDisc);
@@ -78,31 +79,41 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
   });
 
   test("buildInitializeExtraAccountMetaListInstruction: constructs valid initialization layout", () => {
+    const [configPda] = deriveRadarConfigPda(mint);
+    const [recordPda] = deriveRadarRecordPda(destWallet);
+    const metas = [
+      { pubkey: configPda, isSigner: false, isWritable: false },
+      { pubkey: recordPda, isSigner: false, isWritable: false },
+    ];
+
     const ix = buildInitializeExtraAccountMetaListInstruction({
       mint,
       authority,
-      maxRiskScore: 75,
-      allowUnverified: false,
-      maxAttestationAgeSec: 3600,
+      metas,
     });
 
     assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());
-    // Account order must match the Rust `Initialize` struct
-    // (programs/radar-transfer-hook/src/lib.rs): [config, mint, authority, system_program]
+    // Account order must match the transfer-hook interface:
+    // [meta-list PDA (w), mint (r), authority (s), system_program (r)]
     assert.equal(ix.keys.length, 4);
     assert.equal(ix.keys[1].pubkey.toBase58(), mint.toBase58());
     assert.equal(ix.keys[2].pubkey.toBase58(), authority.toBase58());
     assert.equal(ix.keys[2].isSigner, true);
 
-    // Verify data layout (18 bytes total)
-    assert.equal(ix.data.length, 18);
+    // Verify data layout: 8 disc + 4 (u32 count) + 2 * 35 (metas) = 82 bytes
+    assert.equal(ix.data.length, 8 + 4 + 2 * 35);
     assert.deepEqual(
       ix.data.subarray(0, 8),
       INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR,
     );
-    assert.equal(ix.data.readUInt8(8), 75); // maxRiskScore
-    assert.equal(ix.data.readUInt8(9), 0); // allowUnverified: false
-    assert.equal(ix.data.readBigUInt64LE(10), 3600n); // maxAttestationAgeSec
+    assert.equal(ix.data.readUInt32LE(8), 2); // metas count
+    // First meta entry at offset 12: discriminator(1) + address(32) + is_signer(1) + is_writable(1)
+    assert.equal(ix.data.readUInt8(12), 0); // standard pubkey meta discriminator
+    assert.deepEqual(ix.data.subarray(13, 45), configPda.toBuffer());
+    assert.equal(ix.data.readUInt8(45), 0); // is_signer: false
+    assert.equal(ix.data.readUInt8(46), 0); // is_writable: false
+    // Second meta entry at offset 12 + 35 = 47
+    assert.deepEqual(ix.data.subarray(47 + 1, 47 + 33), recordPda.toBuffer());
   });
 
   test("buildTransferHookExecuteInstruction: constructs valid transfer hook execute layout", () => {
@@ -115,7 +126,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       destination: dest,
       owner: authority,
       amount,
-      oracleRecord: recordPda,
+      record: recordPda,
     });
 
     assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());

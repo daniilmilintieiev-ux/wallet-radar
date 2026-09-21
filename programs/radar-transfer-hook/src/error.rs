@@ -25,4 +25,13 @@ pub enum RadarHookError {
 
     #[msg("Missing expected destination oracle record account")]
     MissingOracleAccount = 6007,
+
+    #[msg("Invalid extra-account-meta entry")]
+    InvalidExtraMeta = 6008,
+
+    #[msg("Scan-record PDA does not match destination owner")]
+    RecordPdaMismatch = 6009,
+
+    #[msg("Destination token account is too small to read owner")]
+    InvalidDestination = 6010,
 }

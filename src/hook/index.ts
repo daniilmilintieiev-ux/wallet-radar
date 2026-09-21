@@ -41,12 +41,28 @@ export const TRANSFER_HOOK_EXECUTE_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
-  * Anchor program `initialize` instruction discriminator (8 bytes)
-  * sha256("global:initialize")[0..8]
-  */
- export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
-   0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed,
- ]);
+ * spl-transfer-hook-interface:initialize-extra-account-metas discriminator (8 bytes)
+ * sha256("spl-transfer-hook-interface:initialize-extra-account-metas")[0..8]
+ */
+export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
+  0x2b, 0x22, 0x0d, 0x31, 0xa7, 0x58, 0xeb, 0xeb,
+]);
+
+/**
+ * Anchor program `initialize` (config) instruction discriminator (8 bytes)
+ * sha256("global:radar_transfer_hook:initialize")[0..8]
+ */
+export const RADAR_INITIALIZE_DISCRIMINATOR = Buffer.from([
+  0x32, 0xda, 0x05, 0x08, 0xac, 0x8e, 0xbd, 0xf3,
+]);
+
+/**
+ * Anchor program `write_scan_record` instruction discriminator (8 bytes)
+ * sha256("global:radar_transfer_hook:write_scan_record")[0..8]
+ */
+export const WRITE_SCAN_RECORD_DISCRIMINATOR = Buffer.from([
+  0x8d, 0x00, 0xd9, 0x2a, 0x22, 0xd5, 0xbb, 0xbb,
+]);
 
 /**
  * Radar Transfer Hook custom error codes matching the on-chain Rust program.
@@ -60,6 +76,9 @@ export enum RadarHookErrorCode {
   Unauthorized = 6005,
   InvalidTransferAmount = 6006,
   MissingOracleAccount = 6007,
+  InvalidExtraMeta = 6008,
+  RecordPdaMismatch = 6009,
+  InvalidDestination = 6010,
 }
 
 export interface TransferHookConfig {
@@ -121,10 +140,33 @@ export function deriveRadarRecordPda(
   );
 }
 
+const SYSTEM_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
+
 /**
- * Builds an InitializeExtraAccountMetaList instruction for the transfer hook.
+ * Serializes a single `ExtraAccountMeta` entry (35 bytes) for a standard
+ * (fixed-pubkey) account meta: discriminator(1) + address(32) + is_signer(1) +
+ * is_writable(1).
  */
-export function buildInitializeExtraAccountMetaListInstruction(params: {
+export function serializeExtraAccountMeta(meta: {
+  pubkey: PublicKey;
+  isSigner?: boolean;
+  isWritable?: boolean;
+}): Buffer {
+  const buf = Buffer.alloc(35);
+  buf.writeUInt8(0, 0); // discriminator: 0 = standard AccountMeta (pubkey)
+  meta.pubkey.toBuffer().copy(buf, 1);
+  buf.writeUInt8(meta.isSigner ? 1 : 0, 33);
+  buf.writeUInt8(meta.isWritable ? 1 : 0, 34);
+  return buf;
+}
+
+/**
+ * Builds the anchor `initialize` (config) instruction: creates the
+ * RadarHookConfig PDA for a mint.
+ *
+ * Keys: [0] config PDA (w), [1] mint (r), [2] authority (s, w), [3] system (r)
+ */
+export function buildInitializeInstruction(params: {
   mint: PublicKey;
   authority: PublicKey;
   maxRiskScore?: number;
@@ -133,16 +175,15 @@ export function buildInitializeExtraAccountMetaListInstruction(params: {
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
-  const [extraAccountMetas] = deriveExtraAccountMetaListPda(params.mint, programId);
   const [configPda] = deriveRadarConfigPda(params.mint, programId);
 
   const maxRisk = Math.max(0, Math.min(100, params.maxRiskScore ?? 80));
   const allowUnverified = params.allowUnverified ?? false;
   const maxAge = BigInt(Math.max(0, params.maxAttestationAgeSec ?? 0));
 
-  // Instruction data: 8 bytes discriminator + 1 byte maxRisk + 1 byte allowUnverified + 8 bytes maxAge
+  // Data: 8 disc + 1 maxRisk + 1 allowUnverified + 8 maxAge
   const data = Buffer.alloc(18);
-  INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR.copy(data, 0);
+  RADAR_INITIALIZE_DISCRIMINATOR.copy(data, 0);
   data.writeUInt8(maxRisk, 8);
   data.writeUInt8(allowUnverified ? 1 : 0, 9);
   data.writeBigUInt64LE(maxAge, 10);
@@ -151,14 +192,81 @@ export function buildInitializeExtraAccountMetaListInstruction(params: {
     { pubkey: configPda, isSigner: false, isWritable: true },
     { pubkey: params.mint, isSigner: false, isWritable: false },
     { pubkey: params.authority, isSigner: true, isWritable: true },
-    { pubkey: new PublicKey("11111111111111111111111111111111"), isSigner: false, isWritable: false }, // System program
+    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
   ];
 
-  return new TransactionInstruction({
-    programId,
-    keys,
-    data,
+  return new TransactionInstruction({ programId, keys, data });
+}
+
+/**
+ * Builds the transfer-hook `initialize_extra_account_meta_list` instruction:
+ * creates the ExtraAccountMetaList PDA registering the additional accounts the
+ * hook receives on every transfer.
+ *
+ * Data: 8 disc + u32 count (LE) + count * 35-byte ExtraAccountMeta entries.
+ * Keys: [0] meta-list PDA (w), [1] mint (r), [2] authority (s, w), [3] system (r)
+ */
+export function buildInitializeExtraAccountMetaListInstruction(params: {
+  mint: PublicKey;
+  authority: PublicKey;
+  metas: { pubkey: PublicKey; isSigner?: boolean; isWritable?: boolean }[];
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const [extraAccountMetas] = deriveExtraAccountMetaListPda(params.mint, programId);
+
+  const count = params.metas.length;
+  const data = Buffer.alloc(8 + 4 + count * 35);
+  INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR.copy(data, 0);
+  data.writeUInt32LE(count, 8);
+  params.metas.forEach((meta, i) => {
+    serializeExtraAccountMeta(meta).copy(data, 12 + i * 35);
   });
+
+  const keys: AccountMeta[] = [
+    { pubkey: extraAccountMetas, isSigner: false, isWritable: true },
+    { pubkey: params.mint, isSigner: false, isWritable: false },
+    { pubkey: params.authority, isSigner: true, isWritable: true },
+    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+  ];
+
+  return new TransactionInstruction({ programId, keys, data });
+}
+
+/**
+ * Builds the anchor `write_scan_record` instruction: writes a 48-byte scan
+ * record header for a wallet (the PDA is derived from the wallet).
+ *
+ * Data: 8 disc + 1 riskScore + 1 verdictCode + 8 timestamp + 2 payloadLen.
+ * Keys: [0] wallet (r), [1] record PDA (w), [2] authority (s, w), [3] system (r)
+ */
+export function buildWriteScanRecordInstruction(params: {
+  wallet: PublicKey;
+  riskScore: number;
+  verdictCode: number;
+  timestamp: bigint | number;
+  payloadLen?: number;
+  authority: PublicKey;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const [recordPda] = deriveRadarRecordPda(params.wallet, programId);
+
+  const data = Buffer.alloc(8 + 1 + 1 + 8 + 2);
+  WRITE_SCAN_RECORD_DISCRIMINATOR.copy(data, 0);
+  data.writeUInt8(Math.max(0, Math.min(255, params.riskScore)), 8);
+  data.writeUInt8(params.verdictCode & 0xff, 9);
+  data.writeBigUInt64LE(BigInt(params.timestamp), 10);
+  data.writeUInt16LE(params.payloadLen ?? 0, 18);
+
+  const keys: AccountMeta[] = [
+    { pubkey: params.wallet, isSigner: false, isWritable: false },
+    { pubkey: recordPda, isSigner: false, isWritable: true },
+    { pubkey: params.authority, isSigner: true, isWritable: true },
+    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+  ];
+
+  return new TransactionInstruction({ programId, keys, data });
 }
 
 /**
@@ -170,7 +278,7 @@ export function buildTransferHookExecuteInstruction(params: {
   destination: PublicKey;
   owner: PublicKey;
   amount: bigint | number;
-  oracleRecord?: PublicKey;
+  record: PublicKey;
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
@@ -181,6 +289,9 @@ export function buildTransferHookExecuteInstruction(params: {
   TRANSFER_HOOK_EXECUTE_DISCRIMINATOR.copy(data, 0);
   data.writeBigUInt64LE(BigInt(params.amount), 8);
 
+  // Account order matches the transfer-hook `execute` interface:
+  // [0] source, [1] mint, [2] destination, [3] authority, [4] validate_state,
+  // [5] config PDA, [6] scan-record PDA.
   const keys: AccountMeta[] = [
     { pubkey: params.source, isSigner: false, isWritable: false },
     { pubkey: params.mint, isSigner: false, isWritable: false },
@@ -188,11 +299,8 @@ export function buildTransferHookExecuteInstruction(params: {
     { pubkey: params.owner, isSigner: false, isWritable: false },
     { pubkey: extraAccountMetas, isSigner: false, isWritable: false },
     { pubkey: configPda, isSigner: false, isWritable: false },
+    { pubkey: params.record, isSigner: false, isWritable: false },
   ];
-
-  if (params.oracleRecord) {
-    keys.push({ pubkey: params.oracleRecord, isSigner: false, isWritable: false });
-  }
 
   return new TransactionInstruction({
     programId,
@@ -211,12 +319,15 @@ export function createRiskGatedTransferCheckedInstruction(params: {
   owner: PublicKey;
   amount: bigint | number;
   decimals: number;
-  destinationWallet?: PublicKey;
+  /** Destination wallet (owner of `destination`) — its scan-record PDA is
+   *  registered in the meta list and must be provided here. */
+  destinationWallet: PublicKey;
   hookProgramId?: PublicKey;
 }): TransactionInstruction {
   const hookProgramId = params.hookProgramId || DEFAULT_HOOK_PROGRAM_ID;
   const [extraAccountMetas] = deriveExtraAccountMetaListPda(params.mint, hookProgramId);
   const [configPda] = deriveRadarConfigPda(params.mint, hookProgramId);
+  const [oracleRecord] = deriveRadarRecordPda(params.destinationWallet, hookProgramId);
 
   // Token-22 TransferChecked layout:
   // [0]: Instruction index (12 = TransferChecked)
@@ -227,21 +338,19 @@ export function createRiskGatedTransferCheckedInstruction(params: {
   data.writeBigUInt64LE(BigInt(params.amount), 1);
   data.writeUInt8(params.decimals, 9);
 
+  // Account layout: [0] source, [1] mint, [2] destination, [3] owner, then
+  // the additional accounts the hook resolves by key: extra_account_metas PDA,
+  // hook program id, and the meta-list accounts (config PDA, scan-record PDA).
   const keys: AccountMeta[] = [
     { pubkey: params.source, isSigner: false, isWritable: true },
     { pubkey: params.mint, isSigner: false, isWritable: false },
     { pubkey: params.destination, isSigner: false, isWritable: true },
     { pubkey: params.owner, isSigner: true, isWritable: false },
-    // Transfer hook program + extra accounts
     { pubkey: extraAccountMetas, isSigner: false, isWritable: false },
     { pubkey: hookProgramId, isSigner: false, isWritable: false },
     { pubkey: configPda, isSigner: false, isWritable: false },
+    { pubkey: oracleRecord, isSigner: false, isWritable: false },
   ];
-
-  if (params.destinationWallet) {
-    const [oracleRecord] = deriveRadarRecordPda(params.destinationWallet, hookProgramId);
-    keys.push({ pubkey: oracleRecord, isSigner: false, isWritable: false });
-  }
 
   return new TransactionInstruction({
     programId: TOKEN_2022_PROGRAM_ID,
