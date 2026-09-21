@@ -2,6 +2,7 @@ import http from "node:http";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "./oracle/index.js";
 import { escapeHtml, computeVerdict } from "./htmlreport.js";
 import { Store } from "./store.js";
+import { corsHeaders } from "./config.js";
 import { enforcementFor, DEFENSE_THRESHOLDS, DefenseState, DefenseEnforcement } from "./defense.js";
 
 /**
@@ -644,7 +645,7 @@ export async function handleDashboardHttpRequest(
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Content-Length": bodyBuf.length,
-      "Access-Control-Allow-Origin": "*",
+      ...corsHeaders(req.headers.origin as string | undefined),
     });
     res.end(bodyBuf);
     return true;
@@ -683,7 +684,7 @@ export async function handleDashboardHttpRequest(
 
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
+      ...corsHeaders(req.headers.origin as string | undefined),
     });
     res.end(payload);
     return true;

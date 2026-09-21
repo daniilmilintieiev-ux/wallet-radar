@@ -457,6 +457,85 @@ test("http-server: watch endpoints return 503 when no store is configured", asyn
   }
 });
 
+test("http-server: RADAR_API_TOKEN gates mutating endpoints (401 without/with wrong token, 200 with Bearer)", async () => {
+  const { store, dir } = tmpStore();
+  const prev = process.env.RADAR_API_TOKEN;
+  process.env.RADAR_API_TOKEN = "secret-token-123";
+  const r = await startWatchServer(store, { apiKey: "key" });
+  const wallet = "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8";
+  try {
+    const noAuth = await fetch(`${r.base}/watch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ wallet }) });
+    assert.equal(noAuth.status, 401);
+
+    const wrongToken = await fetch(`${r.base}/watch`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer wrong-token" }, body: JSON.stringify({ wallet }) });
+    assert.equal(wrongToken.status, 401);
+
+    const ok = await fetch(`${r.base}/watch`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer secret-token-123" }, body: JSON.stringify({ wallet }) });
+    assert.equal(ok.status, 200);
+
+    const viaHeader = await fetch(`${r.base}/unwatch`, { method: "POST", headers: { "Content-Type": "application/json", "x-api-token": "secret-token-123" }, body: JSON.stringify({ wallet }) });
+    assert.equal(viaHeader.status, 200);
+
+    // Read endpoints and read-only POSTs stay open.
+    assert.equal((await fetch(`${r.base}/watch`)).status, 200);
+    assert.equal((await fetch(`${r.base}/alerts`)).status, 200);
+    const selftest = await fetch(`${r.base}/selftest`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(selftest.status, 200);
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+    if (prev === undefined) delete process.env.RADAR_API_TOKEN;
+    else process.env.RADAR_API_TOKEN = prev;
+  }
+});
+
+test("http-server: RADAR_CORS_ORIGINS allowlist echoes listed origins and omits ACAO for others", async () => {
+  const { store, dir } = tmpStore();
+  const prev = process.env.RADAR_CORS_ORIGINS;
+  process.env.RADAR_CORS_ORIGINS = "https://agent.example.com,https://other.example.com";
+  const r = await startWatchServer(store, { apiKey: "key" });
+  try {
+    const listed = await fetch(`${r.base}/health`, { headers: { Origin: "https://agent.example.com" } });
+    assert.equal(listed.status, 200);
+    assert.equal(listed.headers.get("access-control-allow-origin"), "https://agent.example.com");
+    assert.equal(listed.headers.get("vary"), "Origin");
+
+    const stranger = await fetch(`${r.base}/health`, { headers: { Origin: "https://evil.example.com" } });
+    assert.equal(stranger.status, 200);
+    assert.equal(stranger.headers.get("access-control-allow-origin"), null);
+    assert.equal(stranger.headers.get("vary"), "Origin");
+
+    // Non-browser request (no Origin header) gets no ACAO header in allowlist mode.
+    const noOrigin = await fetch(`${r.base}/health`);
+    assert.equal(noOrigin.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+    if (prev === undefined) delete process.env.RADAR_CORS_ORIGINS;
+    else process.env.RADAR_CORS_ORIGINS = prev;
+  }
+});
+
+test("http-server: CORS stays open (*) when RADAR_CORS_ORIGINS is unset", async () => {
+  const { store, dir } = tmpStore();
+  const prev = process.env.RADAR_CORS_ORIGINS;
+  delete process.env.RADAR_CORS_ORIGINS;
+  const r = await startWatchServer(store, { apiKey: "key" });
+  try {
+    const res = await fetch(`${r.base}/health`, { headers: { Origin: "https://any.example.com" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("access-control-allow-origin"), "*");
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+    if (prev === undefined) delete process.env.RADAR_CORS_ORIGINS;
+    else process.env.RADAR_CORS_ORIGINS = prev;
+  }
+});
+
 test("http-server: POST /watch with an invalid wallet returns 400", async () => {
   const { store, dir } = tmpStore();
   const r = await startWatchServer(store, { apiKey: "key" });

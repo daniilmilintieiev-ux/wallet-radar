@@ -53,6 +53,8 @@ npm test
 | `RADAR_THRESHOLD_SCALE` | `1.0` | Multiplier on all detection thresholds. `<1.0` = stricter (harder to trigger), `>1.0` = more permissive. Example: `0.5` makes burst require 10 tx instead of 5. |
 | `RADAR_WATCH` | `0` | Set to `1` to enable the HTTP monitoring endpoints (`/watch`, `/alerts`, `/poll`). |
 | `RADAR_RATE_LIMIT_PER_MIN` | `60` | Per-IP request rate limit (exempt: `/health`, `/metrics`). |
+| `RADAR_API_TOKEN` | — | Optional. When set, the mutating endpoints (`POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`) require `Authorization: Bearer <token>` (or `x-api-token`). Read endpoints and read-only POSTs stay open. |
+| `RADAR_CORS_ORIGINS` | — (open `*`) | Optional comma-separated CORS origin allowlist. When set, only listed origins (or `*`) receive an `Access-Control-Allow-Origin` header; unmatched origins get none. |
 
 ## How it works
 

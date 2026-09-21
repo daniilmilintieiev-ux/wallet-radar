@@ -23,12 +23,13 @@ import type { ActionVerdict } from "./decision.js";
 import { makeSink, type AlertSink } from "./alerts.js";
 import type { MintRiskMap } from "./mint.js";
 import { homedir } from "node:os";
+import { timingSafeEqual } from "node:crypto";
 import type { EnhancedTx } from "./types.js";
 import { commitScan, type ZKOracleClient } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
-import { isValidBase58, validateConfig } from "./config.js";
+import { isValidBase58, validateConfig, corsHeaders } from "./config.js";
 import { buildTrustProof } from "./trust-proof.js";
 
 const SERVICE = "wallet-radar";
@@ -73,18 +74,44 @@ class HttpError extends Error {
   }
 }
 
-function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+function sendJson(res: http.ServerResponse, status: number, payload: unknown, origin?: string): void {
   const body = JSON.stringify(payload, null, 2);
   const headers: Record<string, string | number> = {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Access-Control-Allow-Origin": "*",
+    ...corsHeaders(origin),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
   if (status === 413) headers["Connection"] = "close";
   res.writeHead(status, headers);
   res.end(body);
+}
+
+/** Constant-time string compare (length-guarded) for the shared API token. */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+/**
+ * API auth (opt-in via RADAR_API_TOKEN): only the mutating watch/defense
+ * endpoints are gated; read endpoints stay open. Returns true when the
+ * request is allowed, false when it must be rejected with 401.
+ */
+function authorizeMutating(method: string, p: string, req: http.IncomingMessage, token: string | undefined): boolean {
+  if (!token) return true;
+  const isMutating =
+    method === "POST" &&
+    (p === "/watch" || p === "/unwatch" || p === "/poll" || /^\/defense\/[^/]+\/clear$/.test(p));
+  if (!isMutating) return true;
+  const header = req.headers.authorization;
+  const provided =
+    typeof header === "string" && header.startsWith("Bearer ")
+      ? header.slice("Bearer ".length).trim()
+      : (req.headers["x-api-token"] as string | undefined);
+  return typeof provided === "string" && provided.length > 0 && timingSafeEqualStr(token, provided);
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -460,6 +487,7 @@ async function handleA2A(
   body: Record<string, unknown>,
   recordCost?: (detail?: string) => void,
   store?: Store,
+  origin?: string,
 ): Promise<void> {
   const isRpc = body.jsonrpc === "2.0";
   const id = body.id !== undefined ? body.id : "1";
@@ -470,7 +498,7 @@ async function handleA2A(
         jsonrpc: "2.0",
         id,
         error: { code: -32602, message: "No Solana wallet address found. Send it in the message text (e.g. 'Screen wallet <address>') or as body.wallet." },
-      });
+      }, origin);
       return;
     }
     throw new HttpError(400, "Provide a Solana wallet address in the message text or as body.wallet.");
@@ -478,7 +506,7 @@ async function handleA2A(
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) {
     if (isRpc) {
-      sendJson(res, 200, { jsonrpc: "2.0", id, error: { code: -32603, message: "HELIUS_API_KEY is not set on the server." } });
+      sendJson(res, 200, { jsonrpc: "2.0", id, error: { code: -32603, message: "HELIUS_API_KEY is not set on the server." } }, origin);
       return;
     }
     throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
@@ -499,9 +527,9 @@ async function handleA2A(
         role: "agent",
         parts: [{ kind: "text", text: formatTrustLine(result) }, { kind: "data", data: result }],
       },
-    });
+    }, origin);
   } else {
-    sendJson(res, 200, result);
+    sendJson(res, 200, result, origin);
   }
 }
 
@@ -550,6 +578,8 @@ export interface RequestContext {
   store?: Store;
   sink?: AlertSink;
   apiKey?: string;
+  /** Shared API token gating mutating endpoints (env RADAR_API_TOKEN if omitted). */
+  apiToken?: string;
   rpcUrl?: string;
   oracleClient?: ZKOracleClient;
   fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
@@ -577,13 +607,18 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   const url = new URL(req.url ?? "/", "http://localhost");
   const p = url.pathname;
   const method = req.method ?? "GET";
+  const origin = req.headers.origin as string | undefined;
 
   if (method === "OPTIONS") {
-    sendJson(res, 204, {});
+    sendJson(res, 204, {}, origin);
     return;
   }
 
   try {
+    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN)) {
+      throw new HttpError(401, "Unauthorized: provide Authorization: Bearer <RADAR_API_TOKEN> (or x-api-token).");
+    }
+
     // Dashboard & ZK Ledger routes
     if (p === "/dashboard" || p === "/api/ledger") {
       const handled = await handleDashboardHttpRequest(req, res, {
@@ -596,12 +631,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
     if (method === "GET") {
       if (p === "/health") {
-        sendJson(res, 200, healthPayload());
+        sendJson(res, 200, healthPayload(), origin);
         return;
       }
       if (p === "/economics") {
         if (!ctx.store) throw new HttpError(503, "economics store not available (start the server with a shared RADAR_DB).");
-        sendJson(res, 200, computeEconomics(ctx.store));
+        sendJson(res, 200, computeEconomics(ctx.store), origin);
         return;
       }
       if (p === "/trust-proof") {
@@ -617,7 +652,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           rpcUrl: ctx.rpcUrl,
           store: ctx.store,
         });
-        sendJson(res, 200, proof);
+        sendJson(res, 200, proof, origin);
         return;
       }
       if (p === "/" || p === "") {
@@ -626,12 +661,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           version: getVersion(),
           description: "Solana wallet & transaction risk scoring. POST /scan, /analyze, /trust, /selftest. GET /health.",
           endpoints: ENDPOINTS,
-        });
+        }, origin);
         return;
       }
       // Monitoring watchlist (store-backed, enabled with RADAR_WATCH=1).
       if (p === "/watch") {
-        sendJson(res, 200, watchListPayload(requireStore(ctx)));
+        sendJson(res, 200, watchListPayload(requireStore(ctx)), origin);
         return;
       }
       if (p === "/alerts") {
@@ -639,7 +674,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const limitRaw = url.searchParams.get("limit");
         const limit = limitRaw ? Math.max(1, Math.min(100, parseInt(limitRaw, 10) || 20)) : 20;
         const anomalies = store.recentAnomalies(null, limit);
-        sendJson(res, 200, { anomalies, count: anomalies.length });
+        sendJson(res, 200, { anomalies, count: anomalies.length }, origin);
         return;
       }
       // Active defense (Pillar 3): stance list + per-wallet stance & audit trail.
@@ -649,7 +684,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         sendJson(res, 200, {
           count: states.length,
           states: states.map((s) => defenseView(s.wallet, s.state)),
-        });
+        }, origin);
         return;
       }
       const defenseMatch = p.match(/^\/defense\/([^/]+)$/);
@@ -664,18 +699,18 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           state: st,
           enforcement: st ? enforcementFor(st.state) : null,
           events,
-        });
+        }, origin);
         return;
       }
       // A2A agent card (a2a-protocol.org well-known location).
       if (p === "/.well-known/agent.json") {
-        sendJson(res, 200, a2aCard());
+        sendJson(res, 200, a2aCard(), origin);
         return;
       }
       // Health-friendly: a GET on a tool path returns 200 with its descriptor.
       const info = ENDPOINTS.find((e) => e.path === p);
       if (info) {
-        sendJson(res, 200, { tool: info.tool, method: info.method, path: info.path, description: info.description });
+        sendJson(res, 200, { tool: info.tool, method: info.method, path: info.path, description: info.description }, origin);
         return;
       }
       throw new HttpError(404, `unknown GET route ${p}`);
@@ -700,7 +735,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const wallet = body.wallet;
         if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
         store.addWallet(wallet);
-        sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() });
+        sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() }, origin);
         return;
       }
       if (p === "/unwatch") {
@@ -708,7 +743,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const wallet = body.wallet;
         if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
         store.removeWallet(wallet);
-        sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() });
+        sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() }, origin);
         return;
       }
       const defenseClearMatch = p.match(/^\/defense\/([^/]+)\/clear$/);
@@ -730,7 +765,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           risk: st.riskAt,
           reason: "Manual clear: operator reset the defense stance to armed.",
         });
-        sendJson(res, 200, { wallet, cleared: true, from: st.state, state: next });
+        sendJson(res, 200, { wallet, cleared: true, from: st.state, state: next }, origin);
         return;
       }
       if (p === "/poll") {
@@ -744,14 +779,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           fetchMintRisk: ctx.fetchMintRisk,
           usePrices: typeof body.usePrices === "boolean" ? body.usePrices : true,
         });
-        sendJson(res, 200, report);
+        sendJson(res, 200, report, origin);
         return;
       }
 
       // A2A JSON-RPC trust-gate endpoint.
       if (p === "/a2a") {
         const a2aStore = ctx.store;
-        await handleA2A(res, body, a2aStore ? (d?: string) => recordHeliusCost(a2aStore, d) : undefined, ctx.store);
+        await handleA2A(res, body, a2aStore ? (d?: string) => recordHeliusCost(a2aStore, d) : undefined, ctx.store, origin);
         return;
       }
 
@@ -761,7 +796,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         let out = await byPath(body, ctx);
         if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
         if (ctx.store && LIVE_HELIUS_PATHS.has(p)) recordHeliusCost(ctx.store, p);
-        sendJson(res, 200, out);
+        sendJson(res, 200, out, origin);
         return;
       }
 
@@ -773,7 +808,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         if (target) {
           let out = await target(body, ctx);
           if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
-          sendJson(res, 200, out);
+          sendJson(res, 200, out, origin);
           return;
         }
         throw new HttpError(400, 'POST / requires body.tool or body.action to be one of: scan, analyze, trust, selftest.');
@@ -785,12 +820,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     throw new HttpError(405, `method ${method} not allowed for ${p}`);
   } catch (err) {
     if (err instanceof HttpError) {
-      sendJson(res, err.status, { error: err.message });
+      sendJson(res, err.status, { error: err.message }, origin);
     } else {
       if (process.env.RADAR_DEBUG === "1") {
         console.error("[http-server] unhandled error:", err);
       }
-      sendJson(res, 500, { error: "Internal server error" });
+      sendJson(res, 500, { error: "Internal server error" }, origin);
     }
   }
 }
@@ -846,6 +881,8 @@ export interface ServerOptions {
   rpcUrl?: string;
   /** Injectable ZK oracle client */
   oracleClient?: ZKOracleClient;
+  /** Shared API token for mutating endpoints (env RADAR_API_TOKEN if omitted). */
+  apiToken?: string;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
@@ -855,6 +892,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
     store: options.store,
     sink: options.sink,
     apiKey: options.apiKey,
+    apiToken: options.apiToken,
     rpcUrl: options.rpcUrl,
     oracleClient: options.oracleClient,
     fetchTxs: options.fetchTxs,
@@ -864,6 +902,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
   const server = http.createServer((req, res) => {
     const rawUrl = req.url ?? "/";
     const pathname = new URL(rawUrl, "http://localhost").pathname;
+    const reqOrigin = req.headers.origin as string | undefined;
     const isExempt = pathname === "/health" || (req.method ?? "GET") === "OPTIONS";
     if (rateLimiter && !isExempt) {
       const rawIp = req.socket.remoteAddress ?? "unknown";
@@ -873,7 +912,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
         res.writeHead(429, {
           "Content-Type": "application/json; charset=utf-8",
           "Retry-After": String(rl.retryAfterSec ?? 60),
-          "Access-Control-Allow-Origin": "*",
+          ...corsHeaders(reqOrigin),
         });
         res.end(JSON.stringify({ error: "Too Many Requests", retryAfterSec: rl.retryAfterSec ?? 60 }));
         return;
@@ -963,6 +1002,9 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
     console.log(`${SERVICE} economics store ready — ${dbPath} (set RADAR_WATCH=1 to also run the live watch loop).`);
   }
 
+  if (process.env.RADAR_API_TOKEN) {
+    console.log(`${SERVICE} API auth enabled — mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) require a Bearer token.`);
+  }
   const server = startServer(port, host, options);
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   console.log(`${SERVICE} HTTP server listening on http://${host}:${port}`);

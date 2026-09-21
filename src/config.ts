@@ -47,6 +47,36 @@ export function isValidBase58(addr: string): boolean {
 }
 
 /**
+ * Parse the RADAR_CORS_ORIGINS allowlist (comma-separated origins).
+ * Returns null when unset/empty (CORS stays open, `Access-Control-Allow-Origin: *`).
+ */
+export function parseCorsOrigins(env: NodeJS.ProcessEnv = process.env): string[] | null {
+  const raw = env.RADAR_CORS_ORIGINS;
+  if (!raw || !raw.trim()) return null;
+  const origins = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  return origins.length > 0 ? origins : null;
+}
+
+/**
+ * CORS response headers for a request. With no allowlist (default) the server
+ * stays open (`*`). With an allowlist, the request Origin is echoed back only
+ * when listed (`*` in the list keeps the open behavior); otherwise no
+ * Access-Control-Allow-Origin header is emitted and the browser blocks the read.
+ */
+export function corsHeaders(
+  origin: string | undefined,
+  allowList: string[] | null = parseCorsOrigins(),
+): Record<string, string> {
+  if (!allowList || allowList.length === 0 || allowList.includes("*")) {
+    return { "Access-Control-Allow-Origin": "*" };
+  }
+  if (origin && allowList.includes(origin)) {
+    return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+  }
+  return { Vary: "Origin" };
+}
+
+/**
  * Validate configuration environment variables against requested runtime mode.
  * Throws a descriptive ConfigError on invalid or missing required variables.
  */
@@ -160,6 +190,11 @@ export function validateConfig(
   if (paywallEnabled && !env.RADAR_X402_RECIPIENT?.trim()) {
     warnings.push(
       "Paywall is enabled but RADAR_X402_RECIPIENT is not set — x402 challenges will use the built-in fallback recipient",
+    );
+  }
+  if (watchEnabled && !env.RADAR_API_TOKEN?.trim()) {
+    warnings.push(
+      "RADAR_WATCH=1 is enabled but RADAR_API_TOKEN is not set — the mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) are open to any client that can reach the port",
     );
   }
 
