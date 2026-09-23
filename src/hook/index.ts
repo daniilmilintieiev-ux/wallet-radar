@@ -18,9 +18,18 @@ export const TOKEN_2022_PROGRAM_ID = new PublicKey(
 
 /**
  * Default Radar Transfer Hook Program ID.
+ *
+ * The identity of the deployed radar-transfer-hook program (declare_id! in
+ * programs/radar-transfer-hook/src/lib.rs; the program keypair is the same
+ * across clusters). This is NOT the SPL dispatcher `Hook111...` — the
+ * dispatcher is invoked internally by the Token-2022 program, while clients
+ * target the hook implementation directly, and all hook PDAs (config,
+ * meta-list, records) are derived under THIS program ID. Verified against
+ * devnet: the on-chain record PDA `3FDmzLG6...` for cp wallet
+ * `4UAH3q1p...` only reproduces with this program ID.
  */
 export const DEFAULT_HOOK_PROGRAM_ID = new PublicKey(
-  "Hook111111111111111111111111111111111111111",
+  "wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",
 );
 
 /** PDA seed for ExtraAccountMetaList */

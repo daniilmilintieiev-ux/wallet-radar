@@ -7,6 +7,7 @@ import {
   ActionPostResponse,
   ActionsJson,
 } from "@solana/actions";
+import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
 import { deriveAssociatedTokenAddress, buildSplTransferInstruction } from "../sdk/index.js";
 import { USDC_MINT } from "../types.js";
 
@@ -201,11 +202,17 @@ export async function buildRadarScanActionPost(
     }),
   );
 
-  // 2. x402 USDC micropayment instruction
+  // 2. x402 USDC micropayment instruction.
+  // Audit 2.7: idempotently ensure both token accounts exist first. The
+  // recipient's USDC ATA may not exist yet, in which case the raw SPL transfer
+  // fails ("could not find account"). The idempotent create is a no-op when the
+  // account already exists; the user funds rent for any account created.
   if (amountUnits > 0n) {
     const mintPubkey = new PublicKey(USDC_MINT);
     const sourceAta = deriveAssociatedTokenAddress(userPubkey, mintPubkey);
     const destAta = deriveAssociatedTokenAddress(recipientPubkey, mintPubkey);
+    tx.add(createAssociatedTokenAccountIdempotentInstruction(userPubkey, sourceAta, userPubkey, mintPubkey));
+    tx.add(createAssociatedTokenAccountIdempotentInstruction(userPubkey, destAta, recipientPubkey, mintPubkey));
     tx.add(buildSplTransferInstruction(sourceAta, destAta, userPubkey, amountUnits));
   }
 

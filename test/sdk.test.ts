@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import {
   createRadarClient,
   encodeBase58,
@@ -40,7 +40,8 @@ function startServer(server: http.Server): Promise<{ port: number; close: () => 
 
 describe("Agent SDK v1 (src/sdk)", () => {
   const targetWallet = "DemoTargetWappet1111111111111111111111111";
-  const recipient = "RecipientWappet111111111111111111111111111";
+  // Must be a valid base58 32-byte key: the on-chain payment path parses it
+  const recipient = Keypair.generate().publicKey.toBase58();
   const payerKeypair = Keypair.generate();
 
   test("encodeBase58: accurately encodes bytes matching Solana Keypair public keys", () => {
@@ -213,6 +214,170 @@ describe("Agent SDK v1 (src/sdk)", () => {
       assert.ok(settled, "payment signature must be recorded in store settled ledger");
       assert.equal(settled.payer, payerKeypair.publicKey.toBase58());
       assert.equal(settled.amount, 0.005);
+    } finally {
+      await close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("audit 2.6: on-chain payment tx is CONFIRMED before the proof is returned", async () => {
+    const { store, dir } = tmpDb();
+    const fakeSig = "FakeOnChainSig1111111111111111111111111111111111111111111111111";
+    const confirmCalls: Array<Record<string, unknown>> = [];
+    const sent: Array<Record<string, unknown>> = [];
+
+    const stubConn: any = {
+      _rpcEndpoint: "https://rpc.example.com",
+      async getLatestBlockhash() {
+        return { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 12345 };
+      },
+      async sendRawTransaction() {
+        sent.push({ kind: "sendRawTransaction" });
+        return fakeSig;
+      },
+      async confirmTransaction(args: Record<string, unknown>) {
+        confirmCalls.push(args);
+        return { value: null };
+      },
+    };
+
+    let proofSig = "";
+    const stubVerifier = async (proof: PaymentProof) => {
+      proofSig = proof.signature;
+      return { valid: true, amount: 0.005, payer: proof.payer, recipient };
+    };
+    const stubScan = async (wallet: string) => ({
+      wallet, riskScore: 10, verdict: "LOW RISK", anomalies: [], digest: "ok", txCount: 1,
+    });
+
+    const server = createX402Server({ store, recipient, paymentVerifier: stubVerifier, scanHandler: stubScan });
+    const { port, close } = await startServer(server);
+
+    try {
+      const client = createRadarClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        rpc: stubConn,
+        x402Payer: payerKeypair,
+        recipient,
+      });
+
+      const result = await client.scan(targetWallet);
+      assert.equal(result.riskScore, 10);
+
+      // The on-chain path was used and the exact broadcast signature was handed to x402
+      assert.equal(proofSig, fakeSig);
+      assert.equal(sent.length, 1);
+      // The fix: confirmation happened (with the broadcast signature) before the proof returned
+      assert.equal(confirmCalls.length, 1);
+      assert.equal(confirmCalls[0].signature, fakeSig);
+      assert.equal(typeof confirmCalls[0].lastValidBlockHeight, "number");
+    } finally {
+      await close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("audit 2.6: failed confirmation falls back to the offline signed proof", async () => {
+    const { store, dir } = tmpDb();
+    const fakeSig = "FakeOnChainSig22222222222222222222222222222222222222222222222222222";
+
+    const stubConn: any = {
+      _rpcEndpoint: "https://rpc.example.com",
+      async getLatestBlockhash() {
+        return { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 12345 };
+      },
+      async sendRawTransaction() {
+        return fakeSig;
+      },
+      async confirmTransaction() {
+        throw new Error("confirmation timed out (block height exceeded)");
+      },
+    };
+
+    let proofSig = "";
+    const stubVerifier = async (proof: PaymentProof) => {
+      proofSig = proof.signature;
+      return { valid: true, amount: 0.005, payer: proof.payer, recipient };
+    };
+    const stubScan = async (wallet: string) => ({
+      wallet, riskScore: 10, verdict: "LOW RISK", anomalies: [], digest: "ok", txCount: 1,
+    });
+
+    const server = createX402Server({ store, recipient, paymentVerifier: stubVerifier, scanHandler: stubScan });
+    const { port, close } = await startServer(server);
+
+    try {
+      const client = createRadarClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        rpc: stubConn,
+        x402Payer: payerKeypair,
+        recipient,
+      });
+
+      const result = await client.scan(targetWallet);
+      assert.equal(result.riskScore, 10);
+
+      // Confirmation failed, so the unconfirmed on-chain signature must NOT be used
+      assert.notEqual(proofSig, fakeSig);
+      assert.ok(proofSig.length > 10, "offline fallback proof signature present");
+    } finally {
+      await close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("audit 2.7: payment tx creates source+dest ATA (idempotent) before the transfer", async () => {
+    const { store, dir } = tmpDb();
+    const ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+    const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+    let captured: Buffer | null = null;
+
+    const stubConn: any = {
+      _rpcEndpoint: "https://rpc.example.com",
+      async getLatestBlockhash() {
+        return { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 12345 };
+      },
+      async sendRawTransaction(bytes: Buffer) {
+        captured = bytes;
+        return "FakeSig27111111111111111111111111111111111111111111111111111111111111";
+      },
+      async confirmTransaction() {
+        return { value: null };
+      },
+    };
+
+    const stubVerifier = async (proof: PaymentProof) =>
+      ({ valid: true, amount: 0.005, payer: proof.payer, recipient });
+    const stubScan = async (wallet: string) => ({
+      wallet, riskScore: 10, verdict: "LOW RISK", anomalies: [], digest: "ok", txCount: 1,
+    });
+
+    const server = createX402Server({ store, recipient, paymentVerifier: stubVerifier, scanHandler: stubScan });
+    const { port, close } = await startServer(server);
+
+    try {
+      const client = createRadarClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        rpc: stubConn,
+        x402Payer: payerKeypair,
+        recipient,
+      });
+      const result = await client.scan(targetWallet);
+      assert.equal(result.riskScore, 10);
+
+      assert.ok(captured, "on-chain payment tx must be broadcast");
+      const tx = Transaction.from(captured!);
+      // [ataSource, ataDest, transfer]
+      assert.equal(tx.instructions.length, 3);
+      assert.equal(tx.instructions[0].programId.toBase58(), ATA_PROGRAM);
+      assert.equal(tx.instructions[0].data.readUInt8(0), 1); // create_idempotent
+      assert.equal(tx.instructions[1].programId.toBase58(), ATA_PROGRAM);
+      assert.equal(tx.instructions[1].data.readUInt8(0), 1);
+      assert.equal(tx.instructions[2].programId.toBase58(), TOKEN_PROGRAM);
+      assert.equal(tx.instructions[2].data.readUInt8(0), 3); // SPL transfer
     } finally {
       await close();
       store.close();

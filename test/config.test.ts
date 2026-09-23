@@ -1,6 +1,7 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { validateConfig, ConfigError } from "../src/config.js";
+import { loadConfig, DEFAULT_CONFIG } from "../src/types.js";
 
 describe("startup config validation", () => {
   it("passes default offline environment", () => {
@@ -160,5 +161,38 @@ describe("startup config validation", () => {
 
     const ok = validateConfig({ PORT: "7690", RADAR_X402_PORT: "4020" });
     assert.equal(ok.valid, true);
+  });
+});
+
+describe("RADAR_THRESHOLD_SCALE direction (audit 4.5)", () => {
+  const prevScale = process.env.RADAR_THRESHOLD_SCALE;
+  afterEach(() => {
+    if (prevScale === undefined) delete process.env.RADAR_THRESHOLD_SCALE;
+    else process.env.RADAR_THRESHOLD_SCALE = prevScale;
+  });
+
+  it("scale=0.5 makes every threshold STRICTER, including dormantDays", () => {
+    process.env.RADAR_THRESHOLD_SCALE = "0.5";
+    const c = loadConfig();
+    // dormantDays must DOUBLE (wallet must be dormant longer) — was 7*0.5=4.
+    assert.equal(c.dormantDays, DEFAULT_CONFIG.dormantDays * 2);
+    assert.ok(c.dormantDays > DEFAULT_CONFIG.dormantDays);
+    // The other thresholds scale in the strict direction too.
+    assert.equal(c.burstThreshold, DEFAULT_CONFIG.burstThreshold * 2);
+    assert.equal(c.burstWindowMin, DEFAULT_CONFIG.burstWindowMin * 2);
+    assert.ok(c.largeSwapMultiplier > DEFAULT_CONFIG.largeSwapMultiplier);
+  });
+
+  it("scale=2.0 makes every threshold LOOSER, including dormantDays", () => {
+    process.env.RADAR_THRESHOLD_SCALE = "2.0";
+    const c = loadConfig();
+    assert.ok(c.dormantDays < DEFAULT_CONFIG.dormantDays);
+    assert.equal(c.dormantDays, Math.round(DEFAULT_CONFIG.dormantDays / 2));
+    assert.ok(c.burstThreshold < DEFAULT_CONFIG.burstThreshold);
+  });
+
+  it("scale=1.0 returns the defaults unchanged", () => {
+    process.env.RADAR_THRESHOLD_SCALE = "1.0";
+    assert.deepEqual(loadConfig(), DEFAULT_CONFIG);
   });
 });

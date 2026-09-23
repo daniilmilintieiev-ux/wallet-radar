@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { buildServer } from "./mcp.js";
+import { buildServer, MCP_TOOL_NAMES } from "./mcp.js";
 import { Store } from "./store.js";
 
 export function getVersion(): string {
@@ -74,7 +74,7 @@ export function getHealth(): McpHealth {
     name: "wallet-radar",
     version: getVersion(),
     transport: "stdio",
-    tools: ["radar_scan", "radar_analyze", "radar_selftest", "radar_trust"],
+    tools: [...MCP_TOOL_NAMES],
     env: {
       heliusConfigured: Boolean(process.env.HELIUS_API_KEY),
       webhookConfigured: Boolean(process.env.WEBHOOK_URL),

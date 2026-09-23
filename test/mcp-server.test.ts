@@ -43,10 +43,16 @@ test("mcp-server CLI: --health outputs valid JSON health object and exits 0", as
   assert.equal(health.name, "wallet-radar");
   assert.equal(health.version, getVersion());
   assert.equal(health.transport, "stdio");
-  assert.ok(Array.isArray(health.tools));
-  assert.ok(health.tools.includes("radar_scan"));
-  assert.ok(health.tools.includes("radar_analyze"));
-  assert.ok(health.tools.includes("radar_selftest"));
+  // audit 4.6: health must report ALL registered MCP tools, not a stale subset
+  assert.deepEqual(health.tools, [
+    "radar_scan",
+    "radar_analyze",
+    "radar_trust",
+    "radar_batch",
+    "radar_simulate",
+    "radar_selftest",
+    "radar_benchmark",
+  ]);
   assert.equal(typeof health.env, "object");
 });
 

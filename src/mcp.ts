@@ -22,6 +22,21 @@ function json(payload: unknown): { content: Array<{ type: "text"; text: string }
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
 }
 
+/**
+ * All tool names registered in buildServer — single source of truth for the
+ * MCP health report (mcp-server.ts getHealth). Keep in sync when registering
+ * tools.
+ */
+export const MCP_TOOL_NAMES = [
+  "radar_scan",
+  "radar_analyze",
+  "radar_trust",
+  "radar_batch",
+  "radar_simulate",
+  "radar_selftest",
+  "radar_benchmark",
+] as const;
+
 export interface McpServerOptions {
   oracleClient?: ZKOracleClient;
   commitScanFn?: typeof commitScan;

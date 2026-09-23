@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "../oracle/index.js";
 import { USDC_MINT } from "../types.js";
 import type { TrustProofBundle } from "../trust-proof.js";
@@ -246,24 +247,48 @@ export class RadarClientImpl implements RadarClient {
           const destAta = deriveAssociatedTokenAddress(recipientPubkey, mintPubkey);
           const amountUnits = BigInt(Math.round(requirement.amount * 1e6));
 
-          const ix = buildSplTransferInstruction(sourceAta, destAta, payerPubkey, amountUnits);
-          const tx = new Transaction().add(ix);
+          // Audit 2.7: idempotently ensure BOTH token accounts exist before the
+          // transfer. The recipient's USDC ATA may not exist yet, in which case
+          // the raw SPL transfer fails ("could not find account" / missing
+          // destination). The idempotent create is a no-op when the account
+          // already exists, and the payer funds the rent for any account it
+          // creates.
+          const ataSourceIx = createAssociatedTokenAccountIdempotentInstruction(payerPubkey, sourceAta, payerPubkey, mintPubkey);
+          const ataDestIx = createAssociatedTokenAccountIdempotentInstruction(payerPubkey, destAta, recipientPubkey, mintPubkey);
+          const transferIx = buildSplTransferInstruction(sourceAta, destAta, payerPubkey, amountUnits);
+          const tx = new Transaction().add(ataSourceIx, ataDestIx, transferIx);
           tx.feePayer = payerPubkey;
 
+          let lastValidBlockHeight: number | undefined;
           if (typeof (this.connection as any).getLatestBlockhash === "function") {
-            const { blockhash } = await (this.connection as any).getLatestBlockhash("confirmed");
-            tx.recentBlockhash = blockhash;
+            const bh = await (this.connection as any).getLatestBlockhash("confirmed");
+            tx.recentBlockhash = bh.blockhash;
+            lastValidBlockHeight = bh.lastValidBlockHeight;
           } else {
             tx.recentBlockhash = payerPubkey.toBase58();
           }
 
           tx.sign(kp);
 
+          let sig: string | undefined;
           if (typeof (this.connection as any).sendRawTransaction === "function") {
-            const sig = await (this.connection as any).sendRawTransaction(tx.serialize());
-            return { signature: sig, payer: payerAddress };
+            sig = await (this.connection as any).sendRawTransaction(tx.serialize());
           } else if (typeof (this.connection as any).sendTransaction === "function") {
-            const sig = await (this.connection as any).sendTransaction(tx, [kp]);
+            sig = await (this.connection as any).sendTransaction(tx, [kp]);
+          }
+
+          if (sig !== undefined) {
+            // Audit 2.6: wait for the payment tx to be confirmed BEFORE handing
+            // the signature to the x402 flow. sendRawTransaction/sendTransaction
+            // only broadcast — if the request proceeds while the tx is still
+            // pending, the server's on-chain payment check can't find it and the
+            // call fails with 402 even though the payer sent the funds.
+            if (typeof (this.connection as any).confirmTransaction === "function") {
+              await (this.connection as any).confirmTransaction(
+                { signature: sig, blockhash: tx.recentBlockhash, lastValidBlockHeight },
+                "confirmed",
+              );
+            }
             return { signature: sig, payer: payerAddress };
           }
         } catch (err) {

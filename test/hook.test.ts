@@ -47,7 +47,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     );
     assert.equal(
       DEFAULT_HOOK_PROGRAM_ID.toBase58(),
-      "Hook111111111111111111111111111111111111111",
+      "wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",
     );
 
     // Verify execute discriminator sha256("spl-transfer-hook-interface:execute")[0..8]

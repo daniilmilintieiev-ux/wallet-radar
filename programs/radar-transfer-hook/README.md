@@ -54,7 +54,7 @@ solana program deploy target/deploy/radar_transfer_hook.so
 1. Create a Token-22 mint with the transfer hook extension:
 ```bash
 spl-token --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb \
-  create-token --transfer-hook Hook111111111111111111111111111111111111111
+  create-token --transfer-hook wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV
 ```
 
 2. Initialize the transfer hook configuration and extra account metas:

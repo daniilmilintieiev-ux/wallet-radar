@@ -238,7 +238,10 @@ export function loadConfig(): RadarConfig {
   if (!Number.isFinite(scale) || scale <= 0) return { ...DEFAULT_CONFIG };
   return {
     ...DEFAULT_CONFIG,
-    dormantDays: Math.round(DEFAULT_CONFIG.dormantDays * scale),
+    // /scale like every other threshold: smaller scale = stricter = the
+    // wallet must be dormant LONGER before DORMANT_ACTIVE can fire
+    // (daysSince >= dormantDays).
+    dormantDays: Math.max(1, Math.round(DEFAULT_CONFIG.dormantDays / scale)),
     burstWindowMin: Math.round(DEFAULT_CONFIG.burstWindowMin / scale),
     burstThreshold: Math.max(2, Math.round(DEFAULT_CONFIG.burstThreshold / scale)),
     largeSwapMultiplier: +(DEFAULT_CONFIG.largeSwapMultiplier / scale).toFixed(2),

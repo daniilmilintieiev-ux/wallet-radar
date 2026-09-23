@@ -112,7 +112,7 @@ one-sentence human-readable description, so both agents and humans can verify it
 
 Wallet Radar ships as an MCP server (`src/mcp.ts`), so any agent (Claude Code,
 Cursor, solana-agent-kit) can plug in one-shot risk checks with a single line of
-config. Six tools:
+config. Seven tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -122,6 +122,7 @@ config. Six tools:
 | `radar_analyze` | Run the rules over a transactions fixture you already have (no network) |
 | `radar_simulate` | Pre-trade what-if: "if wallet Y pays out X USDC, what happens to Y?" The wallet under analysis is the **payer** (the outgoing payment reduces its liquidity). Models liquidity impact, large-payment trigger, risk delta → actionable decision (needs `HELIUS_API_KEY`) |
 | `radar_selftest` | Offline smoke test, no keys |
+| `radar_benchmark` | Reproducible quality proof: runs a versioned labeled eval set through the full detection pipeline and reports precision/recall/accuracy per case. Deterministic, no network |
 
 ### Decision Engine
 

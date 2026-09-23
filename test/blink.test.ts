@@ -100,7 +100,8 @@ describe("Solana Actions & Blinks (src/blink)", () => {
 
     assert.equal(tx.feePayer?.toBase58(), payerAccount);
     assert.equal(tx.recentBlockhash, "11111111111111111111111111111111");
-    assert.equal(tx.instructions.length, 2);
+    // [memo, ataSource(idempotent), ataDest(idempotent), transfer] — audit 2.7
+    assert.equal(tx.instructions.length, 4);
 
     // Instruction 0: Audit Memo
     const memoIx = tx.instructions[0];
@@ -108,8 +109,15 @@ describe("Solana Actions & Blinks (src/blink)", () => {
     const memoStr = memoIx.data.toString("utf-8");
     assert.ok(memoStr.startsWith(`RadarScan:${targetWallet}`));
 
-    // Instruction 1: SPL Token transfer
-    const transferIx = tx.instructions[1];
+    // Instructions 1-2: idempotent ATA creation (no-op if the account exists)
+    const ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+    assert.equal(tx.instructions[1].programId.toBase58(), ATA_PROGRAM);
+    assert.equal(tx.instructions[1].data.readUInt8(0), 1); // create_idempotent
+    assert.equal(tx.instructions[2].programId.toBase58(), ATA_PROGRAM);
+    assert.equal(tx.instructions[2].data.readUInt8(0), 1);
+
+    // Instruction 3: SPL Token transfer
+    const transferIx = tx.instructions[3];
     assert.equal(transferIx.programId.toBase58(), "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
     assert.equal(transferIx.data.readUInt8(0), 3); // SPL transfer instruction index
     assert.equal(transferIx.data.readBigUInt64LE(1), 5000n); // 0.005 USDC = 5000 micro-units
@@ -264,9 +272,10 @@ describe("Solana Actions & Blinks (src/blink)", () => {
       assert.ok(data.message.includes(targetWallet.slice(0, 4)));
 
       // Verify transaction deserialization
+      // [memo, ataSource(idempotent), ataDest(idempotent), transfer] — audit 2.7
       const tx = Transaction.from(Buffer.from(data.transaction, "base64"));
       assert.equal(tx.feePayer?.toBase58(), payerAccount);
-      assert.equal(tx.instructions.length, 2);
+      assert.equal(tx.instructions.length, 4);
     } finally {
       await close();
       store.close();
