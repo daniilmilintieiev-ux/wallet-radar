@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import {
   ScanLedgerRecord,
@@ -16,6 +16,9 @@ import {
   loadPayerFromEnv,
   commitScan,
   readScanLedger,
+  signAttestation,
+  verifyAttestation,
+  buildAttestationDigest,
 } from "../src/oracle/index.js";
 
 describe("ZK scan ledger oracle", () => {
@@ -437,4 +440,495 @@ describe("ZK scan ledger oracle", () => {
       }
     }
   });
+
+  test("audit 1.2: signAttestation and verifyAttestation: roundtrip signature verification and tamper detection", () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+    const record = {
+      wallet: targetWallet,
+      riskScore: 85,
+      verdict: "HIGH RISK",
+      timestamp: 1726300000,
+    };
+
+    const signed = signAttestation(record, oracleKp);
+    assert.equal(signed.oraclePublicKey, oracleKp.publicKey.toBase58());
+    assert.ok(typeof signed.signature === "string" && signed.signature.length > 0);
+
+    // 1. Valid signature verifies against expected oracle public key
+    const fullRecord = { ...record, ...signed };
+    assert.equal(verifyAttestation(fullRecord, oracleKp.publicKey.toBase58()), true);
+    assert.equal(verifyAttestation(fullRecord), true);
+
+    // 2. Tampered risk score fails
+    assert.equal(verifyAttestation({ ...fullRecord, riskScore: 84 }, oracleKp.publicKey.toBase58()), false);
+
+    // 3. Tampered wallet address fails
+    const otherWallet = Keypair.generate().publicKey.toBase58();
+    assert.equal(verifyAttestation({ ...fullRecord, wallet: otherWallet }, oracleKp.publicKey.toBase58()), false);
+
+    // 4. Tampered timestamp fails
+    assert.equal(verifyAttestation({ ...fullRecord, timestamp: record.timestamp + 10 }, oracleKp.publicKey.toBase58()), false);
+
+    // 5. Attestation signed by a different keypair fails verification against expected key
+    const attackerKp = Keypair.generate();
+    const forged = signAttestation(record, attackerKp);
+    assert.equal(verifyAttestation({ ...record, ...forged }, oracleKp.publicKey.toBase58()), false);
+  });
+
+  test("audit 1.2: serializeScanRecord and deserializeScanRecord: RS01-trailer roundtrip and legacy compatibility", () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+    const record: ScanLedgerRecord = {
+      wallet: targetWallet,
+      riskScore: 45,
+      verdict: "SUSPICIOUS",
+      timestamp: 1726301234,
+      topRules: ["LARGE_SWAP", "NEW_VENUE"],
+      txSignatures: ["sig1", "sig2"],
+    };
+
+    const signed = signAttestation(record, oracleKp);
+    const signedRecord: ScanLedgerRecord = { ...record, ...signed };
+
+    // 1. Serialized buffer carries the 96-byte trailer (64 bytes sig + 32 bytes pubkey)
+    const buf = serializeScanRecord(signedRecord);
+    const parsed = deserializeScanRecord(buf);
+    assert.equal(parsed.wallet, targetWallet);
+    assert.equal(parsed.riskScore, 45);
+    assert.equal(parsed.verdict, "SUSPICIOUS");
+    assert.equal(parsed.signature, signed.signature);
+    assert.equal(parsed.oraclePublicKey, signed.oraclePublicKey);
+    assert.equal(verifyAttestation(parsed, oracleKp.publicKey.toBase58()), true);
+
+    // 2. Legacy compatibility: buffer without trailer deserializes cleanly without signature
+    const legacyBuf = serializeScanRecord(record);
+    const legacyParsed = deserializeScanRecord(legacyBuf);
+    assert.equal(legacyParsed.wallet, targetWallet);
+    assert.equal(legacyParsed.riskScore, 45);
+    assert.equal(legacyParsed.signature, undefined);
+    assert.equal(legacyParsed.oraclePublicKey, undefined);
+  });
+
+  test("audit 1.2: LightZKOracleClient query: extracts signed memo anchors and marks verified: true", async () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+    const record: ScanLedgerRecord = {
+      wallet: targetWallet,
+      riskScore: 90,
+      verdict: "HIGH RISK",
+      timestamp: 1726305000,
+      topRules: ["DORMANT_ACTIVE"],
+      txSignatures: ["sig100"],
+    };
+    const signed = signAttestation(record, oracleKp);
+    const signedRecord: ScanLedgerRecord = { ...record, ...signed };
+
+    const memoPayload = Buffer.concat([
+      Buffer.from("RADAR_ORACLE:"),
+      serializeScanRecord(signedRecord),
+    ]);
+
+    const memoProgramId = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+    const mockTx = {
+      slot: 250_000_100,
+      meta: { err: null },
+      transaction: {
+        signatures: ["tx_sig_signed_anchor_1"],
+        message: {
+          accountKeys: [oracleKp.publicKey.toBase58(), memoProgramId.toBase58()],
+          instructions: [
+            {
+              programIdIndex: 1,
+              data: bs58.encode(memoPayload),
+            },
+          ],
+        },
+      },
+    };
+
+    const mockConn = {
+      getSignaturesForAddress: async () => [{ signature: "tx_sig_signed_anchor_1" }],
+      getTransactions: async () => [mockTx],
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockConn as any,
+    });
+
+    const results = await client.query(targetWallet, 10);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].wallet, targetWallet);
+    assert.equal(results[0].riskScore, 90);
+    assert.equal(results[0].verdict, "HIGH RISK");
+    assert.equal(results[0].verified, true);
+    assert.equal(results[0].onchainSignature, "tx_sig_signed_anchor_1");
+  });
+
+  test("audit 1.2: LightZKOracleClient query: rejects forged/fake memo attestation signed by non-oracle key", async () => {
+    const genuineOracleKp = Keypair.generate();
+    const attackerKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+
+    // Attacker crafts a fake attestation signed by their own key
+    const forgedRecord: ScanLedgerRecord = {
+      wallet: targetWallet,
+      riskScore: 100,
+      verdict: "HIGH RISK",
+      timestamp: 1726306000,
+      topRules: ["DORMANT_ACTIVE"],
+      txSignatures: ["sigAttacker"],
+    };
+    const forgedSigned = signAttestation(forgedRecord, attackerKp);
+    const signedRecord: ScanLedgerRecord = { ...forgedRecord, ...forgedSigned };
+
+    const memoPayload = Buffer.concat([
+      Buffer.from("RADAR_ORACLE:"),
+      serializeScanRecord(signedRecord),
+    ]);
+
+    const memoProgramId = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+    const mockTx = {
+      slot: 250_000_200,
+      meta: { err: null },
+      transaction: {
+        signatures: ["tx_sig_forged_1"],
+        message: {
+          accountKeys: [attackerKp.publicKey.toBase58(), memoProgramId.toBase58()],
+          instructions: [
+            {
+              programIdIndex: 1,
+              data: bs58.encode(memoPayload),
+            },
+          ],
+        },
+      },
+    };
+
+    const mockConn = {
+      getSignaturesForAddress: async () => [{ signature: "tx_sig_forged_1" }],
+      getTransactions: async () => [mockTx],
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: genuineOracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockConn as any,
+    });
+
+    const results = await client.query(targetWallet, 10);
+    // Forged record MUST be rejected because its signature does not match genuineOracleKp
+    assert.equal(results.length, 0);
+  });
+
+  test("audit 1.2: LightZKOracleClient query: falls back to legacy lamports query on RPC error", async () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+
+    const mockFailingConn = {
+      getSignaturesForAddress: async () => {
+        throw new Error("RPC network failure (e.g. rate limit 429)");
+      },
+    };
+
+    const mockJsonRpc = async (method: string, _params: unknown[]) => {
+      if (method === "getCompressedAccountsByOwner") {
+        return {
+          value: {
+            items: [
+              {
+                address: "compressed_account_legacy_1",
+                lamports: 72004, // risk: 72, verdictCode: 3 (HIGH RISK)
+                slotCreated: 240_000_000,
+              },
+            ],
+          },
+        };
+      }
+      return {};
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockFailingConn as any,
+      jsonRpcFactory: mockJsonRpc as any,
+    });
+
+    const results = await client.query(targetWallet, 10);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].riskScore, 72);
+    assert.equal(results[0].verdict, "HIGH RISK");
+    assert.equal(results[0].verified, false, "legacy items must be marked verified: false");
+  });
+
+  test("audit 2.3: LightZKOracleClient query: falls back to legacy lamports when querySignedAnchors finds 0 records", async () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+
+    // Oracle connection returns recent signatures, but none match this wallet
+    const mockConn = {
+      getSignaturesForAddress: async () => [{ signature: "other_tx_sig" }],
+      getTransactions: async () => [],
+    };
+
+    const mockJsonRpc = async (method: string, _params: unknown[]) => {
+      if (method === "getCompressedAccountsByOwner") {
+        return {
+          value: {
+            items: [
+              {
+                address: "compressed_account_legacy_historical",
+                lamports: 15001, // risk: 15, verdictCode: 0 (SAFE) -> 15001
+                slotCreated: 230_000_000,
+              },
+            ],
+          },
+        };
+      }
+      return {};
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockConn as any,
+      jsonRpcFactory: mockJsonRpc as any,
+    });
+
+    const results = await client.query(targetWallet, 10);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].riskScore, 15);
+    assert.equal(results[0].verdict, "SAFE");
+    assert.equal(results[0].verified, false);
+  });
+
+  test("audit 2.4: sendMemoAnchor overlong record compacts without destroying Ed25519 signature trailer", async () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+
+    // Create a record with large payload (> 512 bytes)
+    const longRules = Array.from({ length: 40 }, (_, i) => `ANOMALOUS_LONG_RULE_NAME_EXCEEDING_LIMIT_${i}`);
+    const longSigs = Array.from({ length: 20 }, (_, i) => `5UfDkvStqGnutGQjH5e26Q3yQy4f5b7Y${i}1111111111111111111111111111`);
+    const record: ScanLedgerRecord = {
+      wallet: targetWallet,
+      riskScore: 65,
+      verdict: "SUSPICIOUS",
+      timestamp: 1726309000,
+      topRules: longRules,
+      txSignatures: longSigs,
+    };
+
+    const signed = signAttestation(record, oracleKp);
+    const signedRecord: ScanLedgerRecord = { ...record, ...signed };
+
+    let capturedMemoData: any = null;
+    const mockConn = {
+      getLatestBlockhash: async () => ({ blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 12345 }),
+      sendRawTransaction: async (rawTxBuf: Buffer) => {
+        const tx = Transaction.from(rawTxBuf);
+        capturedMemoData = tx.instructions[0].data;
+        return "mock_memo_sig_123";
+      },
+      confirmTransaction: async () => ({ value: null }),
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockConn as any,
+    });
+
+    // Call private sendMemoAnchor
+    const sig = await (client as any).sendMemoAnchor(oracleKp, signedRecord);
+    assert.equal(sig, "mock_memo_sig_123");
+    assert.ok(capturedMemoData !== null);
+
+    // Verify memo length is <= 512 bytes
+    assert.ok(capturedMemoData!.length <= 512, `Memo length ${capturedMemoData!.length} must be <= 512`);
+
+    // Verify memo payload deserializes and retains valid Ed25519 signature
+    const prefix = Buffer.from("RADAR_ORACLE:");
+    assert.ok(capturedMemoData!.subarray(0, prefix.length).equals(prefix));
+    const payload = capturedMemoData!.subarray(prefix.length);
+    const deserialized = deserializeScanRecord(payload);
+
+    assert.equal(deserialized.wallet, targetWallet);
+    assert.equal(deserialized.riskScore, 65);
+    assert.equal(deserialized.verdict, "SUSPICIOUS");
+    assert.ok(deserialized.signature, "Signature trailer must be preserved");
+    assert.equal(deserialized.oraclePublicKey, oracleKp.publicKey.toBase58());
+    assert.equal(verifyAttestation(deserialized, oracleKp.publicKey.toBase58()), true, "Compacted attestation signature must verify");
+  });
+
+  test("audit 2.3: publishOnchainRecord includes targetWallet in memo instruction keys for RPC indexing", async () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+
+    let capturedKeys: any[] = [];
+    const mockConn = {
+      getLatestBlockhash: async () => ({ blockhash: "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM", lastValidBlockHeight: 100 }),
+      sendRawTransaction: async (rawTxBuf: Buffer) => {
+        const tx = Transaction.from(rawTxBuf);
+        capturedKeys = tx.instructions[0].keys;
+        return "mock_memo_sig_456";
+      },
+      confirmTransaction: async () => ({ value: null }),
+    };
+
+    const record: ScanLedgerRecord = {
+      wallet: targetWallet,
+      riskScore: 25,
+      verdict: "SAFE",
+      timestamp: Math.floor(Date.now() / 1000),
+      topRules: [],
+      txSignatures: [],
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockConn as any,
+    });
+
+    const sig = await (client as any).sendMemoAnchor(oracleKp, record);
+    assert.equal(sig, "mock_memo_sig_456");
+    assert.equal(capturedKeys.length, 2);
+    assert.equal(capturedKeys[0].pubkey.toBase58(), oracleKp.publicKey.toBase58());
+    assert.equal(capturedKeys[1].pubkey.toBase58(), targetWallet);
+    assert.equal(capturedKeys[1].isSigner, false);
+  });
+
+  test("audit 1.4: LightZKOracleClient querySignedAnchors: negative caching prevents RPC quota exhaustion", async () => {
+    const oracleKp = Keypair.generate();
+    const unknownWallet = Keypair.generate().publicKey.toBase58();
+
+    let sigsCallCount = 0;
+    const mockConn = {
+      getSignaturesForAddress: async () => {
+        sigsCallCount++;
+        return [];
+      },
+      getTransactions: async () => [],
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () => mockConn as any,
+    });
+
+    // First query: queries RPC (target wallet + oracle key fallback), finds 0 records, caches empty array
+    const first = await (client as any).querySignedAnchors(unknownWallet, oracleKp.publicKey.toBase58(), 10);
+    assert.deepEqual(first, []);
+    assert.equal(sigsCallCount, 2);
+
+    // Second query: served from negative cache, sigsCallCount remains 2 (no RPC calls)
+    const second = await (client as any).querySignedAnchors(unknownWallet, oracleKp.publicKey.toBase58(), 10);
+    assert.deepEqual(second, []);
+    assert.equal(sigsCallCount, 2, "second query must be served from cache without querying RPC");
+  });
+
+  test("audit 2.2: extractMemoAnchors extracts records from Solana v0 versioned transactions (staticAccountKeys)", () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+    const memoProgramId = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
+    const record: ScanLedgerRecord = {
+      wallet: targetWallet,
+      riskScore: 42,
+      verdict: "SUSPICIOUS",
+      timestamp: 1726307000,
+      topRules: ["LARGE_SWAP"],
+      txSignatures: ["sigV0Tx1"],
+    };
+    const signed = signAttestation(record, oracleKp);
+    const fullRecord: ScanLedgerRecord = { ...record, ...signed };
+
+    const memoBytes = Buffer.concat([
+      Buffer.from("RADAR_ORACLE:"),
+      serializeScanRecord(fullRecord),
+    ]);
+
+    // Construct a Solana v0 VersionedTransactionResponse object
+    // Notice: message does NOT have accountKeys, it has staticAccountKeys and compiledInstructions!
+    const v0Tx = {
+      slot: 300_000_123,
+      meta: {
+        err: null,
+        loadedAddresses: {
+          writable: [],
+          readonly: [],
+        },
+      },
+      transaction: {
+        signatures: ["sig_v0_anchor_test"],
+        message: {
+          staticAccountKeys: [oracleKp.publicKey, memoProgramId],
+          compiledInstructions: [
+            {
+              programIdIndex: 1, // Points to memoProgramId
+              data: new Uint8Array(memoBytes), // Uint8Array format
+            },
+          ],
+        },
+      },
+    };
+
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+    });
+
+    const records = (client as any).extractMemoAnchors(v0Tx);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].wallet, targetWallet);
+    assert.equal(records[0].riskScore, 42);
+    assert.equal(records[0].verdict, "SUSPICIOUS");
+    assert.equal(records[0].oraclePublicKey, oracleKp.publicKey.toBase58());
+    assert.equal(verifyAttestation(records[0], oracleKp.publicKey.toBase58()), true);
+  });
+
+  test("audit revision 9: LightZKOracleClient commit fast-fails polling without 15s hang on standard RPC", async () => {
+    const payer = Keypair.generate();
+    let jsonRpcCalls = 0;
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: payer.publicKey.toBase58(),
+      jsonRpcFactory: (async <T>(method: string, _params: unknown[]): Promise<T> => {
+        if (method === "getCompressedAccountsByOwner") {
+          jsonRpcCalls++;
+          throw new Error("Method not found (-32601)");
+        }
+        return {} as T;
+      }) as any,
+    });
+
+    (client as any).sendMemoAnchor = async () => "sig_memo_fast_fallback";
+    (client as any).conn = {
+      getSignaturesForAddress: async () => [],
+    };
+
+    const startTime = Date.now();
+    const res = await client.commit(
+      {
+        wallet: Keypair.generate().publicKey.toBase58(),
+        riskScore: 20,
+        verdict: "SAFE",
+        timestamp: 1726000000,
+        topRules: [],
+        txSignatures: [],
+      },
+      payer,
+    );
+
+    const elapsed = Date.now() - startTime;
+    assert.equal(res.signature, "sig_memo_fast_fallback");
+    assert.equal(jsonRpcCalls, 1, "Should have broken after first unsupported method response");
+    assert.ok(elapsed < 2000, `Expected elapsed time < 2000ms, took ${elapsed}ms`);
+  });
 });
+
+
