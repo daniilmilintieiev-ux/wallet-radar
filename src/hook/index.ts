@@ -20,7 +20,7 @@ export const TOKEN_2022_PROGRAM_ID = new PublicKey(
  * Default Radar Transfer Hook Program ID.
  */
 export const DEFAULT_HOOK_PROGRAM_ID = new PublicKey(
-  "7DeRG1BDToqYnfACzSdS4MfEwTGBCmkFo7Y61dmE2t2C",
+  "Hook111111111111111111111111111111111111111",
 );
 
 /** PDA seed for ExtraAccountMetaList */

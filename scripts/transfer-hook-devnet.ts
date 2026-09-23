@@ -346,7 +346,7 @@ export async function runTransferHookDevnet(options: {
   const payer = loadDeployerKeypair(options.keypairPath);
   const hookProgramId = process.env.HOOK_PROGRAM_ID
     ? new PublicKey(process.env.HOOK_PROGRAM_ID)
-    : new PublicKey("EutZGu9egs4uWbxphp4MDLuLmC39i4617pyRC9ALHcv9");
+    : DEFAULT_HOOK_PROGRAM_ID;
 
   console.log(`[transfer-hook] RPC: ${rpcUrl}`);
   console.log(`[transfer-hook] Deployer: ${payer.publicKey.toBase58()}`);
