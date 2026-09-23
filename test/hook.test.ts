@@ -1,6 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import {
   TOKEN_2022_PROGRAM_ID,
@@ -16,9 +19,16 @@ import {
   deriveRadarRecordPda,
   buildInitializeExtraAccountMetaListInstruction,
   buildUpdateConfigInstruction,
+  buildSetAuthorityInstruction,
+  RADAR_SET_AUTHORITY_DISCRIMINATOR,
+  buildCloseScanRecordInstruction,
+  RADAR_CLOSE_RECORD_DISCRIMINATOR,
   buildWriteScanRecordInstruction,
   buildTransferHookExecuteInstruction,
   buildRecordPdaMetaSeeds,
+  buildSourceRecordPdaMetaSeeds,
+  publishScanRecordToHook,
+  buildEnvHookBridge,
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
   type HookMetaSpec,
@@ -77,7 +87,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     assert.ok(bump2 >= 0 && bump2 <= 255);
     assert.notEqual(extraMetas.toBase58(), configPda.toBase58());
 
-    const [recordPda, bump3] = deriveRadarRecordPda(destWallet);
+    const [recordPda, bump3] = deriveRadarRecordPda(destWallet, mint);
     assert.ok(recordPda instanceof PublicKey);
     assert.ok(bump3 >= 0 && bump3 <= 255);
   });
@@ -122,6 +132,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     // Second meta entry at offset 12 + 35 = 47: seed-based scan-record PDA
     assert.equal(ix.data.readUInt8(47), 1); // discriminator: 1 = seed-based PDA
     // Packed seeds: Literal("radar_record") [1, 12, 12B] +
+    // AccountKey [3, accountIndex=1 (mint)] +
     // AccountData [4, accountIndex=2 (destination), dataIndex=32, length=32]
     assert.equal(ix.data.readUInt8(48), 1); // seed discriminator: literal
     assert.equal(ix.data.readUInt8(49), 12); // literal length
@@ -129,14 +140,16 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       ix.data.subarray(50, 62).toString("utf-8"),
       "radar_record",
     );
-    assert.equal(ix.data.readUInt8(62), 4); // seed discriminator: accountData
-    assert.equal(ix.data.readUInt8(63), 2); // accountIndex: destination token account
-    assert.equal(ix.data.readUInt8(64), 32); // dataIndex: owner field offset
-    assert.equal(ix.data.readUInt8(65), 32); // length
+    assert.equal(ix.data.readUInt8(62), 3); // seed discriminator: accountKey (mint)
+    assert.equal(ix.data.readUInt8(63), 1); // accountIndex: mint (account 1)
+    assert.equal(ix.data.readUInt8(64), 4); // seed discriminator: accountData
+    assert.equal(ix.data.readUInt8(65), 2); // accountIndex: destination token account
+    assert.equal(ix.data.readUInt8(66), 32); // dataIndex: owner field offset
+    assert.equal(ix.data.readUInt8(67), 32); // length
   });
 
   test("buildWriteScanRecordInstruction: includes config PDA and mint keys", () => {
-    const [recordPda] = deriveRadarRecordPda(destWallet);
+    const [recordPda] = deriveRadarRecordPda(destWallet, mint);
     const [configPda] = deriveRadarConfigPda(mint);
 
     const ix = buildWriteScanRecordInstruction({
@@ -193,7 +206,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
   });
 
   test("buildTransferHookExecuteInstruction: constructs valid transfer hook execute layout", () => {
-    const [recordPda] = deriveRadarRecordPda(destWallet);
+    const [recordPda] = deriveRadarRecordPda(destWallet, mint);
     const amount = 50_000_000n;
 
     const ix = buildTransferHookExecuteInstruction({
@@ -384,6 +397,229 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       const res = evaluateTransferRisk(truncatedBuf);
       assert.equal(res.allowed, false);
       assert.equal(res.errorCode, RadarHookErrorCode.InvalidScanRecordMagic);
+    });
+  });
+
+  describe("Audit 2.3: Oracle to Transfer Hook Bridge (publishScanRecordToHook & buildEnvHookBridge)", () => {
+    test("audit 2.3 & 1.1-NEW: PDA-derivation with mint isolation prevents cross-mint PDA spoofing", () => {
+      const [recordPda, bump] = deriveRadarRecordPda(destWallet, mint);
+      assert.ok(recordPda instanceof PublicKey);
+      assert.ok(typeof bump === "number");
+
+      // Verify PDA reproduces using findProgramAddressSync under DEFAULT_HOOK_PROGRAM_ID
+      const [expectedPda, expectedBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("radar_record"), mint.toBuffer(), destWallet.toBuffer()],
+        DEFAULT_HOOK_PROGRAM_ID,
+      );
+      assert.equal(recordPda.toBase58(), expectedPda.toBase58());
+      assert.equal(bump, expectedBump);
+
+      // Verify cross-mint isolation: another mint derives a distinct PDA for the same wallet
+      const otherMint = Keypair.generate().publicKey;
+      const [otherRecordPda] = deriveRadarRecordPda(destWallet, otherMint);
+      assert.notEqual(recordPda.toBase58(), otherRecordPda.toBase58(), "Mints must have isolated PDAs for the same wallet");
+
+      const [configPda] = deriveRadarConfigPda(mint);
+      const [expectedConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("radar_config"), mint.toBuffer()],
+        DEFAULT_HOOK_PROGRAM_ID,
+      );
+      assert.equal(configPda.toBase58(), expectedConfigPda.toBase58());
+    });
+
+    test("audit 2.3: publishScanRecordToHook: writes to record PDA and confirms transaction with stub connection", async () => {
+      let sentRawTx: Buffer | null = null;
+      let confirmedSig: string | null = null;
+
+      const stubConn = {
+        getLatestBlockhash: async () => ({
+          blockhash: Keypair.generate().publicKey.toBase58(),
+          lastValidBlockHeight: 150_000,
+        }),
+        sendRawTransaction: async (raw: Buffer) => {
+          sentRawTx = raw;
+          return "tx_hook_record_published_sig_123";
+        },
+        confirmTransaction: async (conf: any) => {
+          confirmedSig = conf.signature;
+          return { value: { err: null } };
+        },
+      };
+
+      const res = await publishScanRecordToHook({
+        wallet: destWallet,
+        mint,
+        riskScore: 35,
+        verdict: "LOW RISK",
+        timestamp: 1726300000,
+        authority: authorityKp,
+        connection: stubConn as any,
+      });
+
+      assert.equal(res.signature, "tx_hook_record_published_sig_123");
+      const [expectedRecordPda] = deriveRadarRecordPda(destWallet, mint);
+      assert.equal(res.recordPda.toBase58(), expectedRecordPda.toBase58());
+      assert.equal(confirmedSig, "tx_hook_record_published_sig_123");
+      assert.ok(sentRawTx !== null, "sendRawTransaction must be called with serialized tx");
+    });
+
+    test("audit 2.3: buildEnvHookBridge: returns null when env is missing and callable bridge when env is configured", async () => {
+      const savedMint = process.env.RADAR_HOOK_MINT;
+      const savedKeypair = process.env.RADAR_HOOK_KEYPAIR;
+      const dir = mkdtempSync(join(tmpdir(), "radar-hook-bridge-test-"));
+      const keypairFile = join(dir, "hook-authority.json");
+      const hookAuthKp = Keypair.generate();
+      writeFileSync(keypairFile, JSON.stringify(Array.from(hookAuthKp.secretKey)));
+
+      try {
+        // 1. Unconfigured env returns null
+        delete process.env.RADAR_HOOK_MINT;
+        delete process.env.RADAR_HOOK_KEYPAIR;
+        assert.equal(buildEnvHookBridge(), null);
+
+        // 2. Valid configured env returns working bridge function
+        process.env.RADAR_HOOK_MINT = mint.toBase58();
+        process.env.RADAR_HOOK_KEYPAIR = keypairFile;
+
+        const bridge = buildEnvHookBridge();
+        assert.ok(typeof bridge === "function");
+      } finally {
+        if (savedMint !== undefined) process.env.RADAR_HOOK_MINT = savedMint;
+        else delete process.env.RADAR_HOOK_MINT;
+        if (savedKeypair !== undefined) process.env.RADAR_HOOK_KEYPAIR = savedKeypair;
+        else delete process.env.RADAR_HOOK_KEYPAIR;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("audit 1.4: buildSetAuthorityInstruction produces instruction with correct discriminator and accounts", () => {
+      const currentAuth = Keypair.generate().publicKey;
+      const newAuth = Keypair.generate().publicKey;
+      const [configPda] = deriveRadarConfigPda(mint);
+
+      const ix = buildSetAuthorityInstruction({
+        mint,
+        currentAuthority: currentAuth,
+        newAuthority: newAuth,
+      });
+
+      assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());
+      assert.equal(ix.keys.length, 2);
+      assert.equal(ix.keys[0].pubkey.toBase58(), configPda.toBase58());
+      assert.equal(ix.keys[0].isWritable, true);
+      assert.equal(ix.keys[1].pubkey.toBase58(), currentAuth.toBase58());
+      assert.equal(ix.keys[1].isSigner, true);
+
+      // Discriminator sha256("global:set_authority")[0..8] = [0x85, 0xfa, 0x25, 0x15, 0x6e, 0xa3, 0x1a, 0x79]
+      assert.deepEqual(ix.data.subarray(0, 8), RADAR_SET_AUTHORITY_DISCRIMINATOR);
+      // Data contains new_authority pubkey bytes (32 bytes)
+      assert.deepEqual(Array.from(ix.data.subarray(8, 40)), Array.from(newAuth.toBytes()));
+    });
+
+    test("audit 1.5: evaluateTransferRisk performs two-sided counterparty check on source and destination", () => {
+      const safeRecord: ScanLedgerRecord = {
+        wallet: "SafeWallet11111111111111111111111111111111",
+        riskScore: 20,
+        verdict: "SAFE",
+        timestamp: Math.floor(Date.now() / 1000),
+        topRules: [],
+        txSignatures: [],
+      };
+
+      const highRiskRecord: ScanLedgerRecord = {
+        wallet: "CompromisedSender1111111111111111111111111",
+        riskScore: 92,
+        verdict: "HIGH RISK",
+        timestamp: Math.floor(Date.now() / 1000),
+        topRules: ["REGIME_SHIFT"],
+        txSignatures: [],
+      };
+
+      // 1. Both safe -> allowed
+      const resOk = evaluateTransferRisk(safeRecord, { maxRiskScore: 80 }, undefined, safeRecord);
+      assert.equal(resOk.allowed, true);
+
+      // 2. High risk sender, safe recipient -> blocked
+      const resBlockedSender = evaluateTransferRisk(safeRecord, { maxRiskScore: 80 }, undefined, highRiskRecord);
+      assert.equal(resBlockedSender.allowed, false);
+      assert.ok(resBlockedSender.reason?.includes("Source wallet risk"));
+
+      // 3. Safe sender, high risk recipient -> blocked
+      const resBlockedDest = evaluateTransferRisk(highRiskRecord, { maxRiskScore: 80 }, undefined, safeRecord);
+      assert.equal(resBlockedDest.allowed, false);
+      assert.ok(resBlockedDest.reason?.includes("Destination wallet"));
+    });
+
+    test("audit 3.5: buildCloseScanRecordInstruction creates instruction with correct discriminator and accounts", () => {
+      const mintPk = Keypair.generate().publicKey;
+      const walletPk = Keypair.generate().publicKey;
+      const authorityPk = Keypair.generate().publicKey;
+
+      const ix = buildCloseScanRecordInstruction({
+        mint: mintPk,
+        wallet: walletPk,
+        authority: authorityPk,
+      });
+
+      assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());
+      assert.equal(ix.keys.length, 5);
+      // Keys: [0] wallet, [1] record, [2] config, [3] mint, [4] authority
+      assert.equal(ix.keys[0].pubkey.toBase58(), walletPk.toBase58());
+      assert.equal(ix.keys[3].pubkey.toBase58(), mintPk.toBase58());
+      assert.equal(ix.keys[4].pubkey.toBase58(), authorityPk.toBase58());
+      assert.equal(ix.keys[4].isSigner, true);
+      assert.equal(ix.keys[4].isWritable, true);
+
+      // Discriminator sha256("global:close_scan_record")[0..8] = [0xfd, 0xee, 0x66, 0x33, 0x5f, 0x42, 0x5b, 0xcc]
+      assert.deepEqual(ix.data.subarray(0, 8), RADAR_CLOSE_RECORD_DISCRIMINATOR);
+    });
+
+    test("audit 2.2: createRiskGatedTransferCheckedInstruction includes sourceRecord PDA when sourceWallet provided", () => {
+      const mintPk = Keypair.generate().publicKey;
+      const srcAta = Keypair.generate().publicKey;
+      const dstAta = Keypair.generate().publicKey;
+      const ownerPk = Keypair.generate().publicKey;
+      const dstWalletPk = Keypair.generate().publicKey;
+      const srcWalletPk = Keypair.generate().publicKey;
+
+      // Without sourceWallet
+      const ixStandard = createRiskGatedTransferCheckedInstruction({
+        source: srcAta,
+        mint: mintPk,
+        destination: dstAta,
+        owner: ownerPk,
+        amount: 1000000n,
+        decimals: 6,
+        destinationWallet: dstWalletPk,
+      });
+      assert.equal(ixStandard.keys.length, 8);
+
+      // With sourceWallet (Audit 2.2)
+      const ixTwoSided = createRiskGatedTransferCheckedInstruction({
+        source: srcAta,
+        mint: mintPk,
+        destination: dstAta,
+        owner: ownerPk,
+        amount: 1000000n,
+        decimals: 6,
+        destinationWallet: dstWalletPk,
+        sourceWallet: srcWalletPk,
+      });
+      assert.equal(ixTwoSided.keys.length, 9);
+      const [expectedSrcRecord] = deriveRadarRecordPda(srcWalletPk, mintPk);
+      assert.equal(ixTwoSided.keys[8].pubkey.toBase58(), expectedSrcRecord.toBase58());
+    });
+
+    test("audit 1.1: buildSourceRecordPdaMetaSeeds resolves source owner from account 0 bytes 32..64", () => {
+      const seeds = buildSourceRecordPdaMetaSeeds();
+      assert.equal(seeds.length, 3);
+      assert.deepEqual(seeds[0], { type: "literal", value: "radar_record" });
+      assert.deepEqual(seeds[1], { type: "accountKey", index: 1 });
+      assert.deepEqual(seeds[2], { type: "accountData", accountIndex: 0, dataIndex: 32, length: 32 });
+    });
+
+    test("audit revision 9: RadarHookErrorCode.InvalidAccountOwner is 6011", () => {
+      assert.equal(RadarHookErrorCode.InvalidAccountOwner, 6011);
     });
   });
 });

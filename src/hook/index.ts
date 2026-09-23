@@ -1,12 +1,17 @@
+import { readFileSync } from "node:fs";
 import {
   PublicKey,
   TransactionInstruction,
   AccountMeta,
+  Transaction,
+  Keypair,
+  Connection,
 } from "@solana/web3.js";
 import {
   SCAN_RECORD_MAGIC,
   ScanLedgerRecord,
   deserializeScanRecord,
+  VERDICT_CODE_MAP,
 } from "../oracle/index.js";
 
 /**
@@ -84,6 +89,22 @@ export const RADAR_UPDATE_CONFIG_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
+ * Anchor program `set_authority` instruction discriminator (8 bytes):
+ * sha256("global:set_authority")[0..8]
+ */
+export const RADAR_SET_AUTHORITY_DISCRIMINATOR = Buffer.from([
+  0x85, 0xfa, 0x25, 0x15, 0x6e, 0xa3, 0x1a, 0x79,
+]);
+
+/**
+ * Anchor program `close_scan_record` instruction discriminator (8 bytes):
+ * sha256("global:close_scan_record")[0..8]
+ */
+export const RADAR_CLOSE_RECORD_DISCRIMINATOR = Buffer.from([
+  0xfd, 0xee, 0x66, 0x33, 0x5f, 0x42, 0x5b, 0xcc,
+]);
+
+/**
  * Radar Transfer Hook custom error codes matching the on-chain Rust program.
  */
 export enum RadarHookErrorCode {
@@ -98,6 +119,7 @@ export enum RadarHookErrorCode {
   InvalidExtraMeta = 6008,
   RecordPdaMismatch = 6009,
   InvalidDestination = 6010,
+  InvalidAccountOwner = 6011,
 }
 
 export interface TransferHookConfig {
@@ -147,14 +169,16 @@ export function deriveRadarConfigPda(
 }
 
 /**
- * Derives the Radar Oracle Record PDA for a given wallet address.
+ * Derives the Radar Oracle Record PDA for a given wallet address and mint.
+ * Scoped to both mint and wallet to prevent cross-mint PDA spoofing (Audit 1.1-NEW).
  */
 export function deriveRadarRecordPda(
   wallet: PublicKey,
+  mint: PublicKey,
   oracleProgramId: PublicKey = DEFAULT_HOOK_PROGRAM_ID,
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [RADAR_RECORD_SEED, wallet.toBuffer()],
+    [RADAR_RECORD_SEED, mint.toBuffer(), wallet.toBuffer()],
     oracleProgramId,
   );
 }
@@ -262,7 +286,21 @@ export function serializeExtraAccountMeta(meta: HookMetaSpec): Buffer {
 export function buildRecordPdaMetaSeeds(): HookSeedSpec[] {
   return [
     { type: "literal", value: "radar_record" },
-    { type: "accountData", accountIndex: 2, dataIndex: 32, length: 32 },
+    { type: "accountKey", index: 1 }, // mint is account 1 in execute CPI
+    { type: "accountData", accountIndex: 2, dataIndex: 32, length: 32 }, // destination owner
+  ];
+}
+
+/**
+ * Seed configuration for the source scan-record entry in ExtraAccountMetaList (Audit 1.1).
+ * Account 0 in execute CPI is the source token account; bytes 32..64 is its owner.
+ * Resolves PDA(["radar_record", mint, source_owner]) on every transfer.
+ */
+export function buildSourceRecordPdaMetaSeeds(): HookSeedSpec[] {
+  return [
+    { type: "literal", value: "radar_record" },
+    { type: "accountKey", index: 1 }, // mint is account 1 in execute CPI
+    { type: "accountData", accountIndex: 0, dataIndex: 32, length: 32 }, // source owner
   ];
 }
 
@@ -361,7 +399,7 @@ export function buildWriteScanRecordInstruction(params: {
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
-  const [recordPda] = deriveRadarRecordPda(params.wallet, programId);
+  const [recordPda] = deriveRadarRecordPda(params.wallet, params.mint, programId);
   const [configPda] = deriveRadarConfigPda(params.mint, programId);
 
   const data = Buffer.alloc(8 + 1 + 1 + 8 + 2);
@@ -381,6 +419,136 @@ export function buildWriteScanRecordInstruction(params: {
   ];
 
   return new TransactionInstruction({ programId, keys, data });
+}
+
+/**
+ * Audit 2.3: builds an oracle→hook bridge from the environment. Reads
+ * RADAR_HOOK_MINT (Token-22 mint with the radar hook configured) and
+ * RADAR_HOOK_KEYPAIR (path to the mint's hook-authority keypair, 64-byte JSON
+ * array). Returns `null` when either is missing/unreadable, so callers can
+ * enable the bridge purely via env without code changes.
+ */
+export function buildEnvHookBridge():
+  | ((record: { wallet: string; riskScore: number; verdict: string; timestamp: number }) => Promise<Record<string, unknown>>)
+  | null {
+  const hookMint = process.env.RADAR_HOOK_MINT?.trim();
+  const hookKeypairPath = process.env.RADAR_HOOK_KEYPAIR?.trim();
+  if (!hookMint || !hookKeypairPath) return null;
+  const raw: unknown = JSON.parse(readFileSync(hookKeypairPath, "utf8"));
+  if (!Array.isArray(raw) || raw.length !== 64) return null;
+  const authority = Keypair.fromSecretKey(Uint8Array.from(raw as number[]));
+  return async (record) => {
+    const res = await publishScanRecordToHook({
+      wallet: record.wallet,
+      mint: hookMint,
+      riskScore: record.riskScore,
+      verdict: record.verdict,
+      timestamp: record.timestamp,
+      authority,
+      rpcUrl: process.env.SOLANA_RPC_URL || process.env.HELIUS_RPC_URL,
+    });
+    return { success: true, signature: res.signature, recordPda: res.recordPda.toBase58() };
+  };
+}
+
+/**
+ * Audit 2.3: end-to-end oracle→hook bridge. Publishes a scan result to the
+ * destination wallet's on-chain scan-record PDA via the hook program's
+ * `write_scan_record` instruction, so the transfer hook gates the wallet on
+ * the LATEST scan verdict (closing the oracle↔hook architecture split).
+ *
+ * The transaction is signed by the mint's configured hook authority and
+ * confirmed before the signature is returned (audit 2.6 semantics).
+ */
+export async function publishScanRecordToHook(params: {
+  /** Counterparty wallet the scan result applies to */
+  wallet: string | PublicKey;
+  /** Token-22 mint with the radar hook configured */
+  mint: string | PublicKey;
+  /** Scan risk score 0-100 */
+  riskScore: number;
+  /** Scan verdict ("SAFE" | "LOW RISK" | "SUSPICIOUS" | "HIGH RISK" | custom) */
+  verdict: string;
+  /** Evaluation timestamp (unix seconds) */
+  timestamp: number;
+  /** Byte length of the evaluated payload (informational; the record account stores the 48-byte header) */
+  payloadLen?: number;
+  /** The mint's configured hook authority (signer + fee payer) */
+  authority: Keypair;
+  programId?: PublicKey;
+  /** Injectable connection (defaults to `new Connection(rpcUrl, "confirmed")`) */
+  connection?: Connection;
+  rpcUrl?: string;
+}): Promise<{ signature: string; recordPda: PublicKey }> {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const wallet =
+    typeof params.wallet === "string" ? new PublicKey(params.wallet) : params.wallet;
+  const mint = typeof params.mint === "string" ? new PublicKey(params.mint) : params.mint;
+  const [recordPda] = deriveRadarRecordPda(wallet, mint, programId);
+
+  const ix = buildWriteScanRecordInstruction({
+    wallet,
+    mint,
+    riskScore: params.riskScore,
+    verdictCode: VERDICT_CODE_MAP[params.verdict] ?? 2,
+    timestamp: params.timestamp,
+    payloadLen: params.payloadLen,
+    authority: params.authority.publicKey,
+    programId,
+  });
+
+  const conn =
+    params.connection ??
+    new Connection(
+      params.rpcUrl ||
+        process.env.SOLANA_RPC_URL ||
+        process.env.HELIUS_RPC_URL ||
+        "https://api.mainnet-beta.solana.com",
+      "confirmed",
+    );
+
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const tx = new Transaction().add(ix);
+  tx.feePayer = params.authority.publicKey;
+  tx.recentBlockhash = blockhash;
+  tx.sign(params.authority);
+  const sig = await conn.sendRawTransaction(tx.serialize());
+  // Audit 2.6: wait for confirmation before reporting the record as published.
+  if (typeof conn.confirmTransaction === "function") {
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  }
+  return { signature: sig, recordPda };
+}
+
+/**
+ * Builds the anchor `close_scan_record` instruction: closes a wallet's scan-record PDA
+ * and refunds rent lamports back to the mint's authority (Audit 3.5).
+ *
+ * Keys: [0] wallet (r), [1] record PDA (w), [2] config PDA (r), [3] mint (r), [4] authority (s, w).
+ */
+export function buildCloseScanRecordInstruction(params: {
+  mint: PublicKey;
+  wallet: PublicKey;
+  authority: PublicKey;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const [recordPda] = deriveRadarRecordPda(params.wallet, params.mint, programId);
+  const [configPda] = deriveRadarConfigPda(params.mint, programId);
+
+  const keys: AccountMeta[] = [
+    { pubkey: params.wallet, isSigner: false, isWritable: false },
+    { pubkey: recordPda, isSigner: false, isWritable: true },
+    { pubkey: configPda, isSigner: false, isWritable: false },
+    { pubkey: params.mint, isSigner: false, isWritable: false },
+    { pubkey: params.authority, isSigner: true, isWritable: true },
+  ];
+
+  return new TransactionInstruction({
+    programId,
+    keys,
+    data: Buffer.from(RADAR_CLOSE_RECORD_DISCRIMINATOR),
+  });
 }
 
 /**
@@ -410,6 +578,34 @@ export function buildUpdateConfigInstruction(params: {
   const keys: AccountMeta[] = [
     { pubkey: configPda, isSigner: false, isWritable: true },
     { pubkey: params.authority, isSigner: true, isWritable: true },
+  ];
+
+  return new TransactionInstruction({ programId, keys, data });
+}
+
+/**
+ * Builds the anchor `set_authority` instruction: updates the authority
+ * governing the RadarHookConfig PDA for a mint (Audit 1.4).
+ *
+ * Keys: [0] config PDA (w), [1] current authority (s)
+ * Data: 8 disc + 32-byte newAuthority pubkey
+ */
+export function buildSetAuthorityInstruction(params: {
+  mint: PublicKey;
+  currentAuthority: PublicKey;
+  newAuthority: PublicKey;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const [configPda] = deriveRadarConfigPda(params.mint, programId);
+
+  const data = Buffer.alloc(8 + 32);
+  RADAR_SET_AUTHORITY_DISCRIMINATOR.copy(data, 0);
+  params.newAuthority.toBuffer().copy(data, 8);
+
+  const keys: AccountMeta[] = [
+    { pubkey: configPda, isSigner: false, isWritable: true },
+    { pubkey: params.currentAuthority, isSigner: true, isWritable: false },
   ];
 
   return new TransactionInstruction({ programId, keys, data });
@@ -468,12 +664,15 @@ export function createRiskGatedTransferCheckedInstruction(params: {
   /** Destination wallet (owner of `destination`) — its scan-record PDA is
    *  registered in the meta list and must be provided here. */
   destinationWallet: PublicKey;
+  /** Optional source wallet (owner of `source`) — if provided, its scan-record
+   *  PDA is included in remaining accounts for two-sided risk evaluation (Audit 2.2). */
+  sourceWallet?: PublicKey;
   hookProgramId?: PublicKey;
 }): TransactionInstruction {
   const hookProgramId = params.hookProgramId || DEFAULT_HOOK_PROGRAM_ID;
   const [extraAccountMetas] = deriveExtraAccountMetaListPda(params.mint, hookProgramId);
   const [configPda] = deriveRadarConfigPda(params.mint, hookProgramId);
-  const [oracleRecord] = deriveRadarRecordPda(params.destinationWallet, hookProgramId);
+  const [oracleRecord] = deriveRadarRecordPda(params.destinationWallet, params.mint, hookProgramId);
 
   // Token-22 TransferChecked layout:
   // [0]: Instruction index (12 = TransferChecked)
@@ -498,6 +697,11 @@ export function createRiskGatedTransferCheckedInstruction(params: {
     { pubkey: oracleRecord, isSigner: false, isWritable: false },
   ];
 
+  if (params.sourceWallet) {
+    const [sourceRecord] = deriveRadarRecordPda(params.sourceWallet, params.mint, hookProgramId);
+    keys.push({ pubkey: sourceRecord, isSigner: false, isWritable: false });
+  }
+
   return new TransactionInstruction({
     programId: TOKEN_2022_PROGRAM_ID,
     keys,
@@ -506,13 +710,25 @@ export function createRiskGatedTransferCheckedInstruction(params: {
 }
 
 /**
- * Evaluates transfer risk matching the on-chain Rust hook logic.
+ * Evaluates transfer risk matching the on-chain Rust hook logic (Audit 1.5: two-sided counterparty check).
  */
 export function evaluateTransferRisk(
   recordInput: ScanLedgerRecord | Buffer | Uint8Array | null | undefined,
   config?: Partial<TransferHookConfig>,
   nowSec: number = Math.floor(Date.now() / 1000),
+  sourceRecordInput?: ScanLedgerRecord | Buffer | Uint8Array | null,
 ): TransferRiskEvaluation {
+  // Audit 1.5: If sourceRecordInput is provided, check source counterparty risk first
+  if (sourceRecordInput) {
+    const srcEval = evaluateTransferRisk(sourceRecordInput, config, nowSec);
+    if (!srcEval.allowed) {
+      return {
+        ...srcEval,
+        reason: srcEval.reason?.replace("Destination wallet", "Source wallet") || "Source wallet risk check failed",
+      };
+    }
+  }
+
   const maxRisk = config?.maxRiskScore ?? 80;
   const allowUnverified = config?.allowUnverified ?? false;
   const maxAge = config?.maxAttestationAgeSec ?? 0;
