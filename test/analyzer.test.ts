@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectAnomalies, extractSwap, computeRiskScore, txCounterparties, SOL_MINT, USDC_MINT, MAJOR_MINTS, OFF_HOURS_MIN_BASELINE_TXS } from "../src/analyzer.js";
-import { updateBaseline, RECENT_SWAP_WINDOW } from "../src/baseline.js";
+import { updateBaseline, resolveScoringBaseline, RECENT_SWAP_WINDOW } from "../src/baseline.js";
 import { EnhancedTx, Baseline, Anomaly, DEFAULT_CONFIG } from "../src/types.js";
 
 const WALLET = "DemoWallet11111111111111111111111111111111";
@@ -853,4 +853,82 @@ test("OFF_HOURS stays silent with a thin baseline (insufficient history) or lega
   };
   assert.equal(detectAnomalies(WALLET, batch, legacy).some((a) => a.type === "OFF_HOURS"), false);
 });
+
+test("resolveScoringBaseline partitions unseeded history to trigger NEW_VENUE on first scan (audit 2.1)", () => {
+  // 6 historical swaps on RAYDIUM
+  const history: EnhancedTx[] = [
+    swapTx("r1", 1_700_000_100, "RAYDIUM", 1),
+    swapTx("r2", 1_700_000_200, "RAYDIUM", 1),
+    swapTx("r3", 1_700_000_300, "RAYDIUM", 1),
+    swapTx("r4", 1_700_000_400, "RAYDIUM", 1),
+    swapTx("r5", 1_700_000_500, "RAYDIUM", 1),
+    // 2 newest swaps on JUPITER (new venue)
+    swapTx("j1", 1_700_000_600, "JUPITER", 1),
+    swapTx("j2", 1_700_000_700, "JUPITER", 1),
+  ];
+
+  // 1. Without resolveScoringBaseline, learning over the entire batch blinds the detector
+  const wholeBaseline = updateBaseline(WALLET, null, history);
+  const blindedAnomalies = detectAnomalies(WALLET, history, wholeBaseline);
+  assert.equal(blindedAnomalies.some((a) => a.type === "NEW_VENUE"), false);
+
+  // 2. With resolveScoringBaseline, unseeded history is partitioned: NEW_VENUE triggers!
+  const scoringBaseline = resolveScoringBaseline(WALLET, null, history);
+  assert.ok(scoringBaseline !== null);
+  assert.deepEqual(scoringBaseline.knownVenues, ["RAYDIUM"]);
+
+  const properAnomalies = detectAnomalies(WALLET, history, scoringBaseline);
+  const newVenueAnomaly = properAnomalies.find((a) => a.type === "NEW_VENUE");
+  assert.ok(newVenueAnomaly !== undefined);
+  assert.equal(newVenueAnomaly.evidence?.venue, "JUPITER");
+
+  // Audit 2.1: Deduplication ensures 2 swaps on JUPITER produce exactly 1 NEW_VENUE anomaly, not 2
+  const newVenueCount = properAnomalies.filter((a) => a.type === "NEW_VENUE").length;
+  assert.equal(newVenueCount, 1, "multiple swaps on same new venue must be deduplicated to 1 anomaly");
+});
+
+test("audit 5.1: single swap triggering NEW_VENUE and NEW_PROTOCOL with LARGE_SWAP does not cascade to REGIME_SHIFT", () => {
+  // Baseline with 4 transactions on Raydium with small swaps (median = 1 SOL)
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["RAYDIUM"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "RaydiumProgram1111111111111111111111111111"],
+    medianSwapAmount: 1,
+    medianSwapAmountUsd: 150,
+    medianTps: 0,
+    activeHours: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    lastSeenAt: 1_700_000_000,
+    txCount: 4,
+  };
+
+  // A single large swap (50 SOL) on a new venue (ORCA) with a new program (OrcaProgram...)
+  const newSwapTx: EnhancedTx = {
+    signature: "single_swap_orca",
+    timestamp: 1_700_000_100,
+    source: "ORCA",
+    programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "OrcaProgram11111111111111111111111111111111"],
+    swap: {
+      tokenInputs: [{ mint: SOL_MINT, rawTokenAmount: { tokenAmount: "50000000000", decimals: 9 } }],
+      tokenOutputs: [{ mint: USDC_MINT, rawTokenAmount: { tokenAmount: "7500000000", decimals: 6 } }],
+    },
+  };
+
+  const anomalies = detectAnomalies(WALLET, [newSwapTx], baseline);
+  const types = anomalies.map((a) => a.type);
+
+  // NEW_VENUE, NEW_PROTOCOL and LARGE_SWAP are present
+  assert.ok(types.includes("NEW_VENUE"), "should detect NEW_VENUE");
+  assert.ok(types.includes("NEW_PROTOCOL"), "should detect NEW_PROTOCOL");
+  assert.ok(types.includes("LARGE_SWAP"), "should detect LARGE_SWAP");
+
+  // Audit 5.1: NEW_VENUE and NEW_PROTOCOL are grouped together so distinctCategories < 3 -> REGIME_SHIFT does NOT fire!
+  assert.equal(types.includes("REGIME_SHIFT"), false, "REGIME_SHIFT must NOT fire on single swap due to category grouping");
+
+  const score = computeRiskScore(anomalies);
+  // Without grouping, score was 95 (15 NEW_VENUE + 5 NEW_PROTOCOL + 30 LARGE_SWAP + 30 REGIME_SHIFT + 15 WARMING).
+  // With grouping, REGIME_SHIFT (+30) is eliminated, bringing score down to 65.
+  assert.equal(score, 65);
+});
+
 

@@ -63,6 +63,8 @@ export interface PnlSummary {
    * historical, so a bounded window keeps the approximation honest (audit 3.1).
    */
   windowDays?: number;
+  /** True when non-stable pairs participated in FIFO matching without a historical price resolver (Audit 2.5) */
+  nonStableEstimated?: boolean;
 }
 
 /** Learned behavioral profile for a watched wallet. */

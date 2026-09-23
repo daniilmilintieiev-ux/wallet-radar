@@ -152,3 +152,30 @@ export function updateBaseline(
     counterparties: foldCounterparties(prevB.counterparties, txs, nowSec, prices, wallet),
   };
 }
+
+/**
+ * Resolves the baseline to use for anomaly detection (audit 2.1).
+ * If a stored baseline exists from past scans, it is returned.
+ * If no stored baseline exists (first scan), history is chronologically
+ * partitioned into prior transactions (used to learn normal behavior)
+ * and recent transactions (evaluated for changes like NEW_VENUE / LARGE_SWAP).
+ * This eliminates the circular self-reference where a baseline learned
+ * over the whole batch prevented change-detection rules from firing.
+ */
+export function resolveScoringBaseline(
+  wallet: string,
+  storedBaseline: Baseline | null,
+  txs: EnhancedTx[],
+  prices: UsdPriceMap | null = null,
+): Baseline | null {
+  if (storedBaseline) return storedBaseline;
+  if (!txs || txs.length < 4) return null;
+
+  const sorted = [...txs].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+  const splitIdx = Math.max(3, Math.floor(sorted.length * 0.75));
+  if (splitIdx >= sorted.length) return null;
+
+  const priorTxs = sorted.slice(0, splitIdx);
+  const lastPriorTs = priorTxs[priorTxs.length - 1]?.timestamp ?? Math.floor(Date.now() / 1000);
+  return updateBaseline(wallet, null, priorTxs, lastPriorTs, prices);
+}

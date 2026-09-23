@@ -1,5 +1,5 @@
 import { extractSwap } from "./analyzer.js";
-import { swapUsdValue, UsdPriceMap } from "./pricing.js";
+import { swapUsdValue, UsdPriceMap, HistoricalPriceResolver } from "./pricing.js";
 import {
   EnhancedTx,
   OpenLot,
@@ -10,7 +10,7 @@ import {
   USDT_MINT,
 } from "./types.js";
 
-export { OpenLot };
+export { OpenLot, HistoricalPriceResolver };
 
 const QUOTE_PRIORITY = [USDC_MINT, USDT_MINT, SOL_MINT];
 
@@ -36,9 +36,13 @@ export interface TradeLeg {
   timestamp: number;
 }
 
-export function classifyTradeLeg(swap: SwapEvent, prices: UsdPriceMap): TradeLeg | null {
+export function classifyTradeLeg(
+  swap: SwapEvent,
+  prices: UsdPriceMap,
+  historicalResolver?: HistoricalPriceResolver | null,
+): TradeLeg | null {
   if (!swap) return null;
-  const usd = swapUsdValue(swap, prices);
+  const usd = swapUsdValue(swap, prices, historicalResolver);
   if (usd === null || usd <= 0) return null;
 
   const mIn = swap.tokenIn?.mint;
@@ -110,6 +114,7 @@ export function computePnlLite(
   prices: UsdPriceMap | null,
   initialLots?: Record<string, OpenLot[]>,
   wallet?: string,
+  historicalResolver?: HistoricalPriceResolver | null,
 ): PnlBatchResult {
   const defaultEmpty: PnlBatchResult = {
     realizedUsd: null,
@@ -131,7 +136,7 @@ export function computePnlLite(
   for (const tx of orderedTxs) {
     const swap = extractSwap(tx, wallet);
     if (!swap) continue;
-    const leg = classifyTradeLeg(swap, prices);
+    const leg = classifyTradeLeg(swap, prices, historicalResolver);
     if (leg) legs.push(leg);
   }
 
@@ -218,6 +223,11 @@ export function computePnlLite(
     }
   }
 
+  const hasNonStableLeg = windowedLegs.some(
+    (l) => l.quoteMint !== USDC_MINT && l.quoteMint !== USDT_MINT,
+  );
+  const nonStableEstimated = hasNonStableLeg && !historicalResolver;
+
   if (totalRoundTrips === 0) {
     return {
       realizedUsd: null,
@@ -225,6 +235,7 @@ export function computePnlLite(
       roundTrips: 0,
       openLots: remainingOpenLots,
       windowDays: PNL_WINDOW_DAYS,
+      ...(nonStableEstimated ? { nonStableEstimated: true } : {}),
     };
   }
 
@@ -238,6 +249,7 @@ export function computePnlLite(
     roundTrips: totalRoundTrips,
     openLots: remainingOpenLots,
     windowDays: PNL_WINDOW_DAYS,
+    ...(nonStableEstimated ? { nonStableEstimated: true } : {}),
   };
 }
 
@@ -264,5 +276,6 @@ export function mergePnl(prev: PnlSummary | undefined, next: PnlSummary): PnlSum
     winRate,
     roundTrips: totalRoundTrips,
     windowDays,
+    ...(prev.nonStableEstimated || next.nonStableEstimated ? { nonStableEstimated: true } : {}),
   };
 }

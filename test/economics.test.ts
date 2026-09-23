@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.js";
-import { computeEconomics, recordHeliusCost, loadCostRates, DEFAULT_COST_RATES } from "../src/economics.js";
+import { computeEconomics, recordHeliusCost, recordOracleCommitCost, loadCostRates, DEFAULT_COST_RATES } from "../src/economics.js";
 
 function tmpStore(): { store: Store; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "radar-econ-"));
@@ -121,5 +121,27 @@ test("economics: loadCostRates falls back to defaults and honors env", () => {
   assert.deepEqual(loadCostRates({}), DEFAULT_COST_RATES);
   assert.equal(loadCostRates({ RADAR_HELIUS_COST_PER_CALL_USD: "0.002" }).heliusPerCallUsd, 0.002);
   assert.equal(loadCostRates({ RADAR_LLM_COST_PER_CALL_USD: "0.5" }).llmPerCallUsd, 0.5);
+  assert.equal(loadCostRates({ RADAR_ONCHAIN_COMMIT_USD: "0.02" }).onchainCommitUsd, 0.02);
   assert.equal(loadCostRates({ RADAR_HELIUS_COST_PER_CALL_USD: "bad" }).heliusPerCallUsd, DEFAULT_COST_RATES.heliusPerCallUsd);
+});
+
+test("economics: recordOracleCommitCost increments cost ledger with onchain_commit", () => {
+  const { store, dir } = tmpStore();
+  assert.equal(store.getCostSummary().events, 0);
+  recordOracleCommitCost(store, "/scan", DEFAULT_COST_RATES);
+  const cost = store.getCostSummary();
+  assert.equal(cost.events, 1);
+  assert.equal(cost.totalUsd, DEFAULT_COST_RATES.onchainCommitUsd);
+  assert.equal(cost.byCategory.onchain_commit, DEFAULT_COST_RATES.onchainCommitUsd);
+
+  // computeEconomics incorporates onchain_commit
+  store.recordSettledPayment({ signature: "s1", payer: "P", recipient: "R", amount: 0.05, endpoint: "/scan" }, NOW);
+  const econ = computeEconomics(store, { rates: DEFAULT_COST_RATES });
+  assert.equal(econ.cost.byCategory.onchain_commit, DEFAULT_COST_RATES.onchainCommitUsd);
+  assert.equal(econ.cost.totalUsd, DEFAULT_COST_RATES.onchainCommitUsd);
+  assert.equal(econ.revenue.totalUsd, 0.05);
+  assert.equal(econ.net.selfSustaining, true);
+
+  store.close();
+  cleanup(dir);
 });

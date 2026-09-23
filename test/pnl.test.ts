@@ -359,3 +359,28 @@ test("updateBaseline: populates pnl and maintains cross-batch state", () => {
   const b2 = updateBaseline(WALLET, b1, batch2, 250, prices);
   assert.deepEqual(b2.pnl, { realizedUsd: 80, winRate: 1.0, roundTrips: 1, windowDays: PNL_WINDOW_DAYS });
 });
+
+test("audit 3.4: computePnlLite uses historicalPriceResolver when provided", () => {
+  const DAY = 86_400;
+  const T = 1_700_000_000;
+  // Spot price: SOL is $200 today
+  const spotPrices = { [SOL_MINT]: 200, [TOKEN_A]: 2 };
+
+  // Buy 100 TOKEN_A with 1 SOL 10 days ago (when SOL was $100)
+  const buyTx = makeSwapTx("b_sol", T - 10 * DAY, SOL_MINT, 1, 9, TOKEN_A, 100, 6);
+  // Sell 100 TOKEN_A for 1 SOL today (when SOL is $200)
+  const sellTx = makeSwapTx("s_sol", T, TOKEN_A, 100, 6, SOL_MINT, 1, 9);
+
+  // 1. Without historical resolver: buy cost is valued at spot $200 -> realized PnL = $200 - $200 = $0
+  const resSpot = computePnlLite([buyTx, sellTx], spotPrices);
+  assert.equal(resSpot.realizedUsd, 0);
+
+  // 2. With historical resolver: buy cost is valued at historical $100 -> realized PnL = $200 - $100 = +$100
+  const historicalResolver = (mint: string, ts: number) => {
+    if (mint === SOL_MINT && ts === T - 10 * DAY) return 100;
+    return null;
+  };
+  const resHist = computePnlLite([buyTx, sellTx], spotPrices, undefined, undefined, historicalResolver);
+  assert.equal(resHist.realizedUsd, 100);
+  assert.equal(resHist.winRate, 1.0);
+});

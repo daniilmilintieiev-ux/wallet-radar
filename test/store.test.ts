@@ -7,6 +7,7 @@ import { Store, calculateBackoffDelay } from "../src/store.js";
 import { watchOnce } from "../src/watch.js";
 import { formatAlert } from "../src/alerts.js";
 import { Baseline, EnhancedTx, SOL_MINT, USDC_MINT } from "../src/types.js";
+import { applyDefense } from "../src/http-server.js";
 
 function tmpStore(): { store: Store; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "radar-test-"));
@@ -475,6 +476,77 @@ test("store: removeWallet cleans up all associated tables completely", () => {
   assert.equal(store.getDefenseState(wallet), null);
   assert.equal(store.recentDefenseEvents(wallet).length, 0);
 
+  store.close();
+  cleanup(dir);
+});
+
+test("audit 2.4: getLatestSettledPaymentForWallet matches only target wallet, not unrelated payer", () => {
+  const { store, dir } = tmpStore();
+  const alice = "AliceWallet1111111111111111111111111111";
+  const bob = "BobWallet1111111111111111111111111111111";
+  const carl = "CarlWallet11111111111111111111111111111";
+
+  // Bob pays for Carl's scan
+  store.recordSettledPayment({
+    signature: "sig_bob_pays_carl",
+    payer: bob,
+    recipient: "Recipient111",
+    amount: 0.005,
+    endpoint: "/scan",
+    wallet: carl,
+  });
+
+  // Querying Carl finds the payment
+  const carlPayment = store.getLatestSettledPaymentForWallet(carl);
+  assert.ok(carlPayment !== null);
+  assert.equal(carlPayment.signature, "sig_bob_pays_carl");
+  assert.equal(carlPayment.wallet, carl);
+
+  // Querying Bob must return null: Bob's payment for Carl was NOT a scan of Bob!
+  const bobPayment = store.getLatestSettledPaymentForWallet(bob);
+  assert.equal(bobPayment, null, "Bob should not receive Carl's scan receipt as his own");
+
+  store.close();
+  cleanup(dir);
+});
+
+test("audit 2.3: applyDefense directly hardens /scan response verdict and riskScore", () => {
+  const { store, dir } = tmpStore();
+  const wallet = "W_DEFENSE_SCAN";
+  const now = 1700000000;
+
+  // 1. Stance: blocked -> /scan verdict must become HIGH RISK and riskScore >= 85
+  store.setDefenseState(wallet, { state: "blocked", riskAt: 90, setAt: now, quietStreak: 0, actions: 1 });
+  const scanBlocked: Record<string, unknown> = {
+    wallet,
+    riskScore: 10,
+    verdict: "SAFE",
+  };
+  applyDefense(store, { wallet }, scanBlocked);
+  assert.equal(scanBlocked.verdict, "HIGH RISK");
+  assert.equal(scanBlocked.riskScore, 85);
+  assert.equal(scanBlocked.enforcedByDefense, true);
+
+  // 2. Stance: gated -> /scan verdict SAFE must become SUSPICIOUS and riskScore >= 60
+  store.setDefenseState(wallet, { state: "gated", riskAt: 65, setAt: now, quietStreak: 0, actions: 2 });
+  const scanGated: Record<string, unknown> = {
+    wallet,
+    riskScore: 20,
+    verdict: "SAFE",
+  };
+  applyDefense(store, { wallet }, scanGated);
+  assert.equal(scanGated.verdict, "SUSPICIOUS");
+  assert.equal(scanGated.riskScore, 60);
+  assert.equal(scanGated.enforcedByDefense, true);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("audit revision 9: seen_txs has idx_seen_txs_wallet_ts index", () => {
+  const { store, dir } = tmpStore();
+  const indexes = (store as any).db.prepare("PRAGMA index_list(seen_txs)").all() as Array<{ name: string }>;
+  assert.ok(indexes.some((idx) => idx.name === "idx_seen_txs_wallet_ts"), "idx_seen_txs_wallet_ts must exist");
   store.close();
   cleanup(dir);
 });

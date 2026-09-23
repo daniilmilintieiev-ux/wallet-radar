@@ -59,7 +59,18 @@ export interface TrustOptions {
   minLiquidityUsd?: number;
   /** Behavioral risk window in days. Default 7. */
   windowDays?: number;
+  /** If true, allows verified smart contract accounts / PDAs without forcing a "hold" verdict (Audit 5.2). */
+  allowSmartAccounts?: boolean;
+  /** Custom list of allowed program owner addresses. */
+  allowedOwners?: string[];
 }
+
+/** Known, verified multisig and smart wallet programs in Solana (Audit 5.2). */
+export const KNOWN_SMART_ACCOUNT_PROGRAMS: ReadonlySet<string> = new Set([
+  // Squads v3 & v4 Multisig programs
+  "SMPLecH534NA9acpossqG9kc6gQXXuA3NoPZZj2e7V",
+  "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+]);
 
 /** Inputs to the pure verdict function. */
 export interface TrustInputs {
@@ -128,7 +139,15 @@ export function computeTrustVerdict(inputs: TrustInputs, opts: TrustOptions = {}
   // does not block; only a confirmed non-system owner does.
   const authority = inputs.accountAuthority;
   if (authority && authority.owner !== null && authority.isSystemAccount === false) {
-    reasons.push(`account owner ${authority.owner} is not the system program (not a normal account)`);
+    const isAllowed =
+      Boolean(opts.allowSmartAccounts) ||
+      (opts.allowedOwners && opts.allowedOwners.includes(authority.owner)) ||
+      (process.env.RADAR_ALLOW_SMART_ACCOUNTS === "1") ||
+      (opts.allowSmartAccounts !== false && KNOWN_SMART_ACCOUNT_PROGRAMS.has(authority.owner));
+
+    if (!isAllowed) {
+      reasons.push(`account owner ${authority.owner} is not the system program (not a normal account)`);
+    }
   }
 
   return { verdict: reasons.length > 0 ? "hold" : "safe", reasons, liquidityUsd };

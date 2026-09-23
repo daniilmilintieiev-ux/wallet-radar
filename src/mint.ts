@@ -1,3 +1,4 @@
+import { PublicKey } from "@solana/web3.js";
 import { extractSwap, MAJOR_MINTS } from "./analyzer.js";
 import { Store } from "./store.js";
 import { isValidBase58 } from "./config.js";
@@ -103,13 +104,30 @@ function numOrNull(v: unknown): number | null {
  */
 export const KNOWN_AMM_OWNERS: ReadonlySet<string> = new Set([
   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", // Raydium AMM v4 pool vaults
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", // Raydium AMM v4 authority PDA (Audit 2.1)
   "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C", // Raydium CPMM pool vaults
   "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", // Orca Whirlpool vaults
   "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // Meteora DLMM pool vaults
   "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // pump.fun AMM vaults
-  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", // pump.fun bonding curves
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", // pump.fun bonding curves program
   "1nc1nerator11111111111111111111111111111111", // incinerator (burned tokens)
 ]);
+
+/**
+ * Derives the pump.fun bonding curve PDA for a token mint (Audit 2.1).
+ * Seeds: [b"bonding-curve", mint_pubkey] under program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P.
+ */
+export function getPumpFunBondingCurvePda(mint: string): string | null {
+  try {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve", "utf-8"), new PublicKey(mint).toBuffer()],
+      new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"),
+    );
+    return pda.toBase58();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Pure: top-10 holder concentration as a % of total supply (0-100), computed from a
@@ -148,10 +166,11 @@ export function computeTop10Pct(
  * known system account (AMM pool / incinerator), or `null` if the RPC call failed
  * (caller then falls back to the unfiltered concentration).
  */
-async function resolveSystemHolderAddresses(
+export async function resolveSystemHolderAddresses(
   fetchFn: typeof fetch,
   rpcUrl: string,
   tokenAccountAddresses: string[],
+  mint?: string,
 ): Promise<Set<string> | null> {
   if (tokenAccountAddresses.length === 0) return new Set();
   try {
@@ -170,6 +189,7 @@ async function resolveSystemHolderAddresses(
     const data = (await res.json()) as any;
     const value = data?.result?.value;
     if (!Array.isArray(value)) return null;
+    const bondingCurve = mint ? getPumpFunBondingCurvePda(mint) : null;
     const system = new Set<string>();
     for (let i = 0; i < tokenAccountAddresses.length; i++) {
       const acct = value[i];
@@ -181,7 +201,15 @@ async function resolveSystemHolderAddresses(
           : typeof acct.owner === "string"
             ? acct.owner
             : null;
-      if (holder && KNOWN_AMM_OWNERS.has(holder)) system.add(tokenAccountAddresses[i]);
+      if (
+        (holder && (KNOWN_AMM_OWNERS.has(holder) || holder === bondingCurve)) ||
+        (bondingCurve && tokenAccountAddresses[i] === bondingCurve)
+      ) {
+        system.add(tokenAccountAddresses[i]);
+      }
+    }
+    if (bondingCurve) {
+      system.add(bondingCurve);
     }
     return system;
   } catch {
@@ -221,7 +249,7 @@ async function fetchTop10Pct(
     const addresses = value
       .map((a: any) => (a && typeof a.address === "string" ? a.address : null))
       .filter((a: string | null): a is string => a != null);
-    const systemHolders = await resolveSystemHolderAddresses(fetchFn, rpcUrl, addresses);
+    const systemHolders = await resolveSystemHolderAddresses(fetchFn, rpcUrl, addresses, mint);
     return computeTop10Pct(supplyBaseUnits, decimals, value, systemHolders ?? undefined);
   } catch {
     return null;
@@ -356,6 +384,8 @@ export interface FetchSwapMintRiskOptions extends FetchMintOptions {
   fetchMintFn?: (mint: string) => Promise<MintRiskInfo | null>;
   /** Wallet under analysis (for relayer txs whose feePayer is not the user). */
   wallet?: string;
+  /** Maximum concurrent RPC requests when fetching mint metadata (default: 5). */
+  concurrency?: number;
 }
 
 export async function fetchSwapMintRisk(
@@ -367,19 +397,23 @@ export async function fetchSwapMintRisk(
 
   const fetchMint = opts.fetchMintFn ?? ((m: string) => fetchMintMetadata(m, opts));
   const out: MintRiskMap = {};
+  const concurrency = Math.max(1, opts.concurrency ?? 5);
 
-  await Promise.all(
-    mints.map(async (mint) => {
-      try {
-        const info = await fetchMint(mint);
-        if (info) {
-          out[mint] = info;
+  for (let i = 0; i < mints.length; i += concurrency) {
+    const chunk = mints.slice(i, i + concurrency);
+    await Promise.all(
+      chunk.map(async (mint) => {
+        try {
+          const info = await fetchMint(mint);
+          if (info) {
+            out[mint] = info;
+          }
+        } catch {
+          // Skip on error without crashing
         }
-      } catch {
-        // Skip on error without crashing
-      }
-    }),
-  );
+      }),
+    );
+  }
 
   return out;
 }

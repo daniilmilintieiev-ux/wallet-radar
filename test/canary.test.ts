@@ -121,6 +121,9 @@ describe("Canary Agent Integration Tests", () => {
       // clean SIGINT delivery on Windows). The CLI itself is fine when run standalone.
       let exitCode = 0;
       for (let attempt = 1; attempt <= 3; attempt++) {
+        if (fs.existsSync(logFile)) {
+          try { fs.unlinkSync(logFile); } catch {}
+        }
         exitCode = await new Promise<number>((resolve, reject) => {
           const proc = spawn("node", [scriptPath, "--once"], {
             cwd: rootDir,

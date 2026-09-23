@@ -15,6 +15,7 @@ export class Store {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
+      PRAGMA synchronous = NORMAL;
       CREATE TABLE IF NOT EXISTS wallets (
         address TEXT PRIMARY KEY,
         added_at INTEGER NOT NULL,
@@ -26,6 +27,7 @@ export class Store {
         ts INTEGER NOT NULL,
         PRIMARY KEY (wallet, sig)
       );
+      CREATE INDEX IF NOT EXISTS idx_seen_txs_wallet_ts ON seen_txs(wallet, ts DESC);
       CREATE TABLE IF NOT EXISTS anomalies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         wallet TEXT NOT NULL,
@@ -161,8 +163,12 @@ export class Store {
 
   saveBaseline(baseline: Baseline): void {
     this.db
-      .prepare("UPDATE wallets SET baseline_json = ? WHERE address = ?")
-      .run(JSON.stringify(baseline), baseline.walletAddress);
+      .prepare(
+        `INSERT INTO wallets (address, added_at, baseline_json)
+         VALUES (?, unixepoch(), ?)
+         ON CONFLICT(address) DO UPDATE SET baseline_json = excluded.baseline_json`,
+      )
+      .run(baseline.walletAddress, JSON.stringify(baseline));
   }
 
   /** True when every sig was already processed for this wallet. */
@@ -301,10 +307,14 @@ export class Store {
         .run(payment.signature, payment.payer, payment.recipient, payment.amount, payment.endpoint, settledAt, payment.wallet ?? null);
       return true;
     } catch (err: unknown) {
-      const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
-      if (code === "ERR_SQLITE_ERROR" || String(err).includes("UNIQUE")) {
+      const errStr = String(err);
+      // Audit 1.2: only UNIQUE constraint violation signifies an already-settled duplicate.
+      // Generic SQL errors or SQLITE_BUSY must NOT be treated as duplicates (which would grant free scans).
+      if (errStr.includes("UNIQUE constraint failed") || errStr.includes("PRIMARY KEY")) {
         return false;
       }
+      // Audit 2.2: PRAGMA busy_timeout = 5000 handles lock contention natively in SQLite C-engine.
+      // Removed redundant synchronous retry loop that froze Node.js event loop for up to 15 seconds.
       throw err;
     }
   }
@@ -326,11 +336,13 @@ export class Store {
   }
 
   getLatestSettledPaymentForWallet(wallet: string): SettledPayment | null {
+    // Audit 2.4: Query strictly by target scanned wallet. Do not match on payer address,
+    // which would erroneously attribute unrelated scans paid by the same payer.
     const row = this.db
       .prepare(
-        "SELECT signature, payer, recipient, amount, endpoint, settled_at, wallet FROM settled_payments WHERE wallet = ? OR payer = ? ORDER BY settled_at DESC LIMIT 1",
+        "SELECT signature, payer, recipient, amount, endpoint, settled_at, wallet FROM settled_payments WHERE wallet = ? ORDER BY settled_at DESC LIMIT 1",
       )
-      .get(wallet, wallet) as Record<string, unknown> | undefined;
+      .get(wallet) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       signature: row.signature as string,
@@ -397,7 +409,7 @@ export class Store {
    */
   recordCostEvent(evt: {
     ts?: number;
-    category: "helius" | "llm" | "compute";
+    category: "helius" | "llm" | "compute" | "onchain_commit";
     quantity: number;
     unitPriceUsd: number;
     totalUsd?: number;

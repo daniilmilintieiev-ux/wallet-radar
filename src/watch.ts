@@ -79,7 +79,10 @@ export interface WatchOptions {
 export interface WalletReport {
   wallet: string;
   freshTxCount: number;
+  /** Whether this poll performed initial baseline seeding (true on first poll, false on subsequent polls). */
   seeded: boolean;
+  /** Explicit alias for initial baseline seed cycle (audit 2.8-NEW) */
+  initialSeed?: boolean;
   anomalyCount: number;
   riskScore: number;
   pnl?: PnlSummary;
@@ -185,7 +188,8 @@ export async function watchOnce(
 
   for (const wallet of store.listWallets()) {
     const prev = store.getBaseline(wallet);
-    const seeded = prev === null;
+    const isInitialSeed = prev === null;
+    const seeded = isInitialSeed;
 
     // Concurrency guard: if another watchOnce is already handling this wallet
     // (overlapping daemon + manual run), skip it this tick. Signature dedupe +
@@ -195,6 +199,7 @@ export async function watchOnce(
         wallet,
         freshTxCount: 0,
         seeded,
+        initialSeed: isInitialSeed,
         anomalyCount: 0,
         riskScore: 0,
         skipped: true,
@@ -209,6 +214,7 @@ export async function watchOnce(
           wallet,
           freshTxCount: 0,
           seeded,
+          initialSeed: isInitialSeed,
           anomalyCount: 0,
           riskScore: 0,
           skipped: true,
@@ -223,6 +229,7 @@ export async function watchOnce(
           wallet,
           freshTxCount: 0,
           seeded,
+          initialSeed: isInitialSeed,
           anomalyCount: 0,
           riskScore: 0,
           skipped: true,
@@ -254,6 +261,7 @@ export async function watchOnce(
           wallet,
           freshTxCount: 0,
           seeded,
+          initialSeed: isInitialSeed,
           anomalyCount: 0,
           riskScore: 0,
           error: errMsg,
@@ -278,6 +286,7 @@ export async function watchOnce(
             wallet,
             freshTxCount: 0,
             seeded,
+            initialSeed: isInitialSeed,
             anomalyCount: 0,
             riskScore: 0,
             quiet: true,
@@ -333,6 +342,7 @@ export async function watchOnce(
         wallet,
         freshTxCount: fresh.length,
         seeded,
+        initialSeed: isInitialSeed,
         anomalyCount,
         riskScore,
         pnl: baseline.pnl,

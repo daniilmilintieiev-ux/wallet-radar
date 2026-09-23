@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
-import { updateBaseline } from "./baseline.js";
+import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
@@ -230,7 +230,8 @@ async function main(): Promise<void> {
           const storedBaseline = inStore ? store.getBaseline(wallet) : null;
           baseline = updateBaseline(wallet, storedBaseline, txs, Math.floor(Date.now() / 1000), prices);
           store.saveBaseline(baseline);
-          anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
+          const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, txs, prices);
+          anomalies = detectAnomalies(wallet, txs, scoringBaseline, undefined, prices, mintRisk);
           if (txs.length > 0) {
             windowSince = txs[txs.length - 1].timestamp;
             windowUntil = txs[0].timestamp;
@@ -351,7 +352,8 @@ async function main(): Promise<void> {
       const storedBaseline = store.getBaseline(wallet);
       const baseline: Baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
       store.saveBaseline(baseline);
-      const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
+      const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, txs, prices);
+      const anomalies = detectAnomalies(wallet, txs, scoringBaseline, undefined, prices, mintRisk);
       console.log(
         JSON.stringify(
           {
@@ -386,7 +388,8 @@ async function main(): Promise<void> {
       if (!wallet || !file) return usage();
       const raw: string = await import("node:fs/promises").then((m) => m.readFile(file, "utf8"));
       const txs = JSON.parse(raw) as EnhancedTx[];
-      const anomalies = detectAnomalies(wallet, txs, null);
+      const baseline = resolveScoringBaseline(wallet, null, txs);
+      const anomalies = detectAnomalies(wallet, txs, baseline);
       console.log(JSON.stringify({ riskScore: computeRiskScore(anomalies), anomalies, digest: digestAnomalies(anomalies) }, null, 2));
       return;
     }

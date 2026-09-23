@@ -15,6 +15,7 @@ import {
   fetchAccountOwner,
   fetchLiquidity,
   SYSTEM_PROGRAM,
+  KNOWN_SMART_ACCOUNT_PROGRAMS,
 } from "../src/trust.js";
 import type { EnhancedTx } from "../src/types.js";
 import { aggregateConsensus, behaviorAgent, solvencyAgent, identityAgent } from "../src/consensus.js";
@@ -604,6 +605,53 @@ test("fetchLiquidity: RPC returning {value: 0} for getTokenAccountsByOwner does 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("audit 5.2: computeTrustVerdict permits verified smart accounts (Squads v3/v4) without forcing hold", () => {
+  // 1. Squads v4 multisig owner passes by default as a known smart account program
+  const squadsV4Input: TrustInputs = {
+    ...BASE,
+    accountAuthority: {
+      owner: "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+      isSystemAccount: false,
+    },
+  };
+  const rV4 = computeTrustVerdict(squadsV4Input);
+  assert.equal(rV4.verdict, "safe");
+  assert.deepEqual(rV4.reasons, []);
+
+  // 2. Squads v3 multisig owner passes as well
+  const squadsV3Input: TrustInputs = {
+    ...BASE,
+    accountAuthority: {
+      owner: "SMPLecH534NA9acpossqG9kc6gQXXuA3NoPZZj2e7V",
+      isSystemAccount: false,
+    },
+  };
+  const rV3 = computeTrustVerdict(squadsV3Input);
+  assert.equal(rV3.verdict, "safe");
+
+  // 3. Unknown non-system PDA forces hold by default
+  const unknownPdaInput: TrustInputs = {
+    ...BASE,
+    accountAuthority: {
+      owner: "CustomUnknownProgram11111111111111111111111",
+      isSystemAccount: false,
+    },
+  };
+  const rUnknown = computeTrustVerdict(unknownPdaInput);
+  assert.equal(rUnknown.verdict, "hold");
+  assert.ok(rUnknown.reasons[0].includes("not the system program"));
+
+  // 4. Custom allowedOwners list allows custom program
+  const rAllowed = computeTrustVerdict(unknownPdaInput, {
+    allowedOwners: ["CustomUnknownProgram11111111111111111111111"],
+  });
+  assert.equal(rAllowed.verdict, "safe");
+
+  // 5. allowSmartAccounts: false explicitly disables bypass even for Squads
+  const rDisabled = computeTrustVerdict(squadsV4Input, { allowSmartAccounts: false });
+  assert.equal(rDisabled.verdict, "hold");
 });
 
 

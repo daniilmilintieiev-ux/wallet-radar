@@ -36,6 +36,8 @@ export interface SimulateInput {
   wallet: string;
   /** Proposed payment amount in USD. */
   amountUsd: number;
+  /** Optional raw token amount (e.g. 2 SOL). If set with token 'sol', converted via solPrice. */
+  amount?: number;
   /** Token of the proposed payment. Default "usdc". */
   token?: "usdc" | "sol";
   /** Current known liquidity of the target wallet. */
@@ -76,6 +78,12 @@ export interface SimulateResult {
 }
 
 /**
+ * Conservative fallback price for SOL (USD) used when Jupiter Price API
+ * is unavailable, offline, or returns null (Audit 2.4).
+ */
+export const DEFAULT_FALLBACK_SOL_PRICE = 150;
+
+/**
  * Pure, deterministic simulation. No network calls.
  * The agent can run this before signing a transaction to get an
  * instant risk assessment of the proposed payment.
@@ -86,21 +94,42 @@ export function simulatePayment(input: SimulateInput): SimulateResult {
   const maxRisk = input.maxRisk ?? 30;
   const minLiquidityUsd = input.minLiquidityUsd ?? 50;
 
-  // Convert payment to USD
-  const paymentUsd = amountUsd;
+  const effectiveSolPrice =
+    solPrice !== null
+      ? solPrice
+      : Number(process.env.RADAR_FALLBACK_SOL_PRICE) || DEFAULT_FALLBACK_SOL_PRICE;
+
+  // Convert payment to USD (audit 2.2 / audit 2.4)
+  let paymentUsd = amountUsd;
+  if (input.amount !== undefined) {
+    if (token === "sol") {
+      paymentUsd = input.amount * effectiveSolPrice;
+    } else {
+      paymentUsd = input.amount;
+    }
+  }
 
   // Current liquidity
-  const solPriced = solPrice !== null;
   const trustInputs: TrustInputs = {
     riskScore,
     balances,
-    solPriced,
-    solPrice,
+    solPriced: true,
+    solPrice: effectiveSolPrice,
   };
   const currentLiquidity = liquidityOf(trustInputs);
 
+  // Asset-specific liquidity check (audit 2.2 / audit 2.4):
+  // Even if total USD liquidity is sufficient, paying with a specific token fails
+  // if the wallet has insufficient balance in that specific asset.
+  let tokenLiquidityUsd = currentLiquidity;
+  if (token === "usdc") {
+    tokenLiquidityUsd = balances.usdc ?? 0;
+  } else if (token === "sol") {
+    tokenLiquidityUsd = (balances.sol ?? 0) * effectiveSolPrice;
+  }
+
   // Check liquidity
-  const exceedsLiquidity = paymentUsd > currentLiquidity;
+  const exceedsLiquidity = paymentUsd > currentLiquidity || paymentUsd > tokenLiquidityUsd;
   const liquidityAfterUsd = Math.max(0, Math.round((currentLiquidity - paymentUsd) * 100) / 100);
 
   // Would this payment be "large" relative to the wallet's swap-size profile?
@@ -152,7 +181,11 @@ export function simulatePayment(input: SimulateInput): SimulateResult {
   // Build recommendation
   let recommendation: string;
   if (exceedsLiquidity) {
-    recommendation = `Payment of $${paymentUsd.toFixed(2)} exceeds available liquidity ($${currentLiquidity.toFixed(2)}). Reduce amount or wait for replenishment.`;
+    if (paymentUsd > tokenLiquidityUsd && paymentUsd <= currentLiquidity) {
+      recommendation = `Payment of $${paymentUsd.toFixed(2)} in ${token.toUpperCase()} exceeds available ${token.toUpperCase()} balance ($${tokenLiquidityUsd.toFixed(2)}).`;
+    } else {
+      recommendation = `Payment of $${paymentUsd.toFixed(2)} exceeds available liquidity ($${currentLiquidity.toFixed(2)}). Reduce amount or wait for replenishment.`;
+    }
   } else if (wouldTrigger.length > 0) {
     recommendation = `Payment would trigger ${wouldTrigger.join(", ")} anomaly(s). Risk score projected to rise by ${riskDelta} points. Consider reducing size or splitting the payment.`;
   } else if (decision.verdict === "allow") {

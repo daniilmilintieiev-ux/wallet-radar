@@ -265,13 +265,17 @@ export function detectAnomalies(
     .filter((s): s is SwapEvent => s !== null);
 
   // NEW_VENUE: first swap on a venue not seen in the baseline.
+  // Deduplicate venues within the evaluation batch to prevent multi-swap false positives (Audit 2.1).
+  const seenNewVenues = new Set<string>();
   for (const s of swaps) {
     if (
       baseline &&
       s.dex &&
       s.dex !== "unknown" &&
-      !baseline.knownVenues.includes(s.dex)
+      !baseline.knownVenues.includes(s.dex) &&
+      !seenNewVenues.has(s.dex)
     ) {
+      seenNewVenues.add(s.dex);
       anomalies.push({
         type: "NEW_VENUE",
         wallet,
@@ -641,9 +645,19 @@ export function detectAnomalies(
     }
   }
 
-  // Multi-anomaly correlation (anti-evasion): 3+ distinct anomaly types firing in the batch
+  // Multi-anomaly correlation (anti-evasion): 3+ distinct anomaly types firing in the batch.
+  // Overlapping venue/protocol anomalies from the same event are grouped into a single dimension
+  // so a single trade on a new DEX does not double-count and trigger a false-positive REGIME_SHIFT (Audit 5.1).
+  const distinctCategories = new Set<string>();
+  for (const a of anomalies) {
+    if (a.type === "NEW_VENUE" || a.type === "NEW_PROTOCOL") {
+      distinctCategories.add("NEW_VENUE_OR_PROTOCOL");
+    } else {
+      distinctCategories.add(a.type);
+    }
+  }
   const distinctTypes = new Set(anomalies.map((a) => a.type));
-  const multiAnomalyShift = distinctTypes.size >= 3;
+  const multiAnomalyShift = distinctCategories.size >= 3;
 
   if (shiftedDimensions.size > 0 || multiAnomalyShift) {
     if (multiAnomalyShift && shiftReasons.length === 0) {

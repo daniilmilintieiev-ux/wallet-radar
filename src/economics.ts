@@ -18,11 +18,17 @@ export interface CostRates {
   heliusPerCallUsd: number;
   /** USD cost per LLM digest call. */
   llmPerCallUsd: number;
+  /**
+   * Estimated on-chain gas + rent cost per oracle commit (Light Protocol compression + SPL memo).
+   * ~85,000 lamports = ~0.000085 SOL (~$0.013–0.015 USD at $150/SOL). (Audit 3.1)
+   */
+  onchainCommitUsd?: number;
 }
 
 export const DEFAULT_COST_RATES: CostRates = {
   heliusPerCallUsd: 0.0005,
   llmPerCallUsd: 0.001,
+  onchainCommitUsd: 0.015,
 };
 
 function num(v: unknown): number {
@@ -34,9 +40,11 @@ function num(v: unknown): number {
 export function loadCostRates(env: Record<string, string | undefined> = process.env): CostRates {
   const helius = num(env.RADAR_HELIUS_COST_PER_CALL_USD);
   const llm = num(env.RADAR_LLM_COST_PER_CALL_USD);
+  const onchain = num(env.RADAR_ONCHAIN_COMMIT_USD);
   return {
     heliusPerCallUsd: Number.isFinite(helius) ? helius : DEFAULT_COST_RATES.heliusPerCallUsd,
     llmPerCallUsd: Number.isFinite(llm) ? llm : DEFAULT_COST_RATES.llmPerCallUsd,
+    onchainCommitUsd: Number.isFinite(onchain) ? onchain : DEFAULT_COST_RATES.onchainCommitUsd,
   };
 }
 
@@ -161,6 +169,19 @@ export function recordHeliusCost(store: Store, detail?: string, rates?: CostRate
     quantity: 1,
     unitPriceUsd: r.heliusPerCallUsd,
     totalUsd: r.heliusPerCallUsd,
+    detail,
+  });
+}
+
+/** Record on-chain oracle commitment cost (Light Protocol compression + SPL memo) (Audit 3.1). */
+export function recordOracleCommitCost(store: Store, detail?: string, rates?: CostRates): void {
+  const r = rates ?? loadCostRates();
+  const cost = r.onchainCommitUsd ?? DEFAULT_COST_RATES.onchainCommitUsd ?? 0.015;
+  store.recordCostEvent({
+    category: "onchain_commit",
+    quantity: 1,
+    unitPriceUsd: cost,
+    totalUsd: cost,
     detail,
   });
 }

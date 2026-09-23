@@ -136,4 +136,49 @@ describe("simulatePayment", () => {
     assert.equal(result.decision.legacyVerdict, "hold");
     assert.notEqual(result.decision.verdict, "allow");
   });
+
+  it("audit 2.2: paying in USDC with 0 USDC balance fails even if SOL liquidity is high", () => {
+    // 0 USDC, 1 SOL ($150) -> total liquidity is $150, but USDC liquidity is $0
+    const result = simulatePayment(makeInput({
+      token: "usdc",
+      amountUsd: 10,
+      balances: { sol: 1, usdc: 0, usdt: 0 },
+      solPrice: 150,
+    }));
+    assert.equal(result.exceedsLiquidity, true);
+    assert.equal(result.safeToExecute, false);
+    assert.ok(result.recommendation.includes("exceeds available USDC balance"));
+  });
+
+  it("audit 2.2: raw amount in SOL converts to USD via solPrice", () => {
+    // 2 SOL @ $150 = $300 payment
+    const result = simulatePayment(makeInput({
+      token: "sol",
+      amount: 2,
+      amountUsd: 0,
+      balances: { sol: 3, usdc: 0, usdt: 0 },
+      solPrice: 150,
+      medianSwapAmountUsd: 50,
+    }));
+    assert.equal(result.exceedsLiquidity, false);
+    // $300 / $50 = 6x ratio -> triggers LARGE_PAYMENT
+    assert.ok(result.wouldTrigger.includes("LARGE_PAYMENT"));
+  });
+
+  it("audit 2.4: falls back to DEFAULT_FALLBACK_SOL_PRICE (150) when solPrice is omitted", () => {
+    // 2 SOL with solPrice: null -> $300 payment at fallback $150/SOL
+    const result = simulatePayment(makeInput({
+      token: "sol",
+      amount: 2,
+      amountUsd: 0,
+      balances: { sol: 3, usdc: 0, usdt: 0 },
+      solPrice: null,
+      medianSwapAmountUsd: 50,
+    }));
+    assert.equal(result.exceedsLiquidity, false);
+    // $300 / $50 = 6x ratio -> triggers LARGE_PAYMENT
+    assert.ok(result.wouldTrigger.includes("LARGE_PAYMENT"));
+    assert.equal(result.liquidityAfterUsd, 150);
+  });
 });
+
