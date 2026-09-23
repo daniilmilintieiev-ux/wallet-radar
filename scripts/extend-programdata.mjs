@@ -4,6 +4,7 @@
 // additional_bytes = 10240 satisfies SIMD-0431's 10 KiB minimum whether or
 // not the feature gate is active on devnet.
 import fs from "node:fs";
+import path from "node:path";
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 const BPF_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
@@ -13,7 +14,14 @@ const PROGRAM = new PublicKey(process.env.PROGRAM || "wvN1kyvjoFSJq5YqaniVRUm9Ta
 const ADDITIONAL_BYTES = Number(process.env.ADDITIONAL_BYTES || "10240");
 const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
 
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR ||
+  path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
+if (!fs.existsSync(DEPLOYER_PATH)) {
+  console.error(`Deployer keypair not found at ${DEPLOYER_PATH}. Set DEPLOYER_KEYPAIR or SOLANA_KEY_DIR.`);
+  process.exit(1);
+}
 const conn = new Connection(RPC, "confirmed");
 const deployer = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),

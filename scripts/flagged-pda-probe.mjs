@@ -6,6 +6,7 @@
 // V1: correct P4-derived record (has FLAGGED data from prior retries)
 // V2: record PDA derived under the OLD program (likely nonexistent account)
 import fs from "node:fs";
+import path from "node:path";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import {
   buildTransferHookExecuteInstruction,
@@ -20,7 +21,14 @@ const SENDER = new PublicKey(process.env.SENDER_TA || "4gaY71d7WfqWnwKF7JdKerKXN
 const CP_TOKEN = new PublicKey(process.env.CP_TOKEN || "ETDFexyBDZaZ9vnokDYsBWmMuhRsyLR3Ld4jg9NYCEtD");
 const CP_WALLET = new PublicKey(process.env.CP_WALLET || "4UAH3q1pVUQF3kUQ8SHHYu6HZtT8gCGXUdZ3AwX3BZAY");
 
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR ||
+  path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
+if (!fs.existsSync(DEPLOYER_PATH)) {
+  console.error(`Deployer keypair not found at ${DEPLOYER_PATH}. Set DEPLOYER_KEYPAIR or SOLANA_KEY_DIR.`);
+  process.exit(1);
+}
 const conn = new Connection(RPC, "confirmed");
 const deployer = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),
@@ -36,8 +44,8 @@ function extractCode(err) {
   if (err.Custom !== undefined) return "Custom=" + err.Custom;
   return "Err:" + JSON.stringify(err).slice(0, 80);
 }
-const [correctRecord] = deriveRadarRecordPda(CP_WALLET, P4);
-const [wrongRecord] = deriveRadarRecordPda(CP_WALLET, OLD);
+const [correctRecord] = deriveRadarRecordPda(CP_WALLET, MINT, P4);
+const [wrongRecord] = deriveRadarRecordPda(CP_WALLET, MINT, OLD);
 console.log(`correct record (P4-derived):  ${correctRecord.toBase58()}`);
 console.log(`wrong record   (OLD-derived): ${wrongRecord.toBase58()}`);
 const wrongAcc = await conn.getAccountInfo(wrongRecord);

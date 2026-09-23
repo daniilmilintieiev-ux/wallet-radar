@@ -19,3 +19,9 @@ target/
 
 # Serena semantic index (local tool state)
 .serena/
+
+# Audit findings doc lives outside the repo (E:/JOB/earn/AUDIT-FINDINGS.md) — never commit
+AUDIT-FINDINGS.md
+
+# Audit findings doc (lives outside the repo, never commit)
+AUDIT-FINDINGS.md

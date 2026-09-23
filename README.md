@@ -251,13 +251,16 @@ Wallet Radar exposes a standalone HTTP service (`bin/x402-server` or `npm run x4
 - **Handshake (402)**: Requests without proof receive `HTTP 402 Payment Required` containing amount, recipient, and USDC mint (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`).
 - **Proof Format**: Provide tx signature and payer via HTTP headers: `X-Payment-Signature: <tx_sig>` and `X-Payment-Payer: <payer_address>` (or `Authorization: x402 <sig>:<payer>`, or `X-Payment: {"signature":"...","payer":"..."}`).
 - **Settlement & Anti-Replay**: On-chain verification confirms the USDC transfer to the recipient with amount >= price. Settled signatures are recorded in SQLite (`settled_payments`) to prevent replay attacks across calls.
+- **Anti-Frontrunning & Caller Proof**: Protects against mempool front-running and payment theft using Ed25519 cryptographic caller proof headers (`X-Payment-Proof` signed over `<timestamp>:<path>` by the payer) and on-chain memo binding (`RadarScan:<targetWallet>`), ensuring public transactions cannot be hijacked by third parties.
+- **Async Execution**: Supports non-blocking on-chain oracle and hook commitments via the `Prefer: respond-async` HTTP header or `RADAR_ASYNC_COMMIT=1` server environment, returning instant scan results while anchoring in the background.
 
 ## On-Chain ZK Scan Ledger (The Oracle)
 
-Wallet Radar turns real-time anomaly assessments into an immutable, verifiable on-chain oracle (`src/oracle`) powered by **Light Protocol ZK compression**:
+Wallet Radar turns real-time anomaly assessments into an immutable, verifiable on-chain oracle (`src/oracle`) powered by **Light Protocol ZK compression** and **Ed25519 cryptographic attestations**:
 
+- **Dual Architecture**: Scan records use a compact binary format (`RS01`, 34–130 bytes) signed with the oracle's Ed25519 key (`@noble/curves/ed25519`). State is committed via Light Protocol compressed accounts (~0.000005 SOL rent-free state) and anchored on-chain with SPL Memo / Lamports-packing indexing. This dual model provides instant zero-SNARK deserialization for off-chain clients alongside verifiable on-chain audit trails with pagination up to 400 historical transactions.
 - **~400x Cost Reduction**: Regular Solana PDAs require ~0.002039 SOL in rent deposit per account. By storing state in ZK-compressed state trees, Wallet Radar commits audit attestations for **~0.000005 SOL** (rent-free state), enabling affordable, continuous on-chain logging.
-- **Compact Binary Encoding (`RS01`)**: Scan records pack fixed 48-byte headers (`magic: RS01`, `wallet: 32B`, `risk_score: u8`, `verdict_code: u8`, `timestamp: u64LE`, `payload_len: u16LE`) with JSON evidence payloads for zero-copy deserialization in on-chain programs and off-chain indexers.
+- **Compact Binary Encoding (`RS01`)**: Scan records pack fixed 48-byte headers (`magic: RS01`, `wallet: 32B`, `risk_score: u8`, `verdict_code: u8`, `timestamp: u64LE`, `payload_len: u16LE`) with JSON evidence payloads and a 96-byte Ed25519 signature trailer for zero-copy deserialization in on-chain programs and off-chain indexers.
 - **Tamper-Evident Receipts**: State mutations append to on-chain merkle trees verified against Solana state roots.
 - **Autonomous Gating**: Smart contracts and AI agents query on-chain scan attestations before executing transactions, copy-trades, or token transfers.
 
@@ -387,8 +390,10 @@ Wallet Radar delivers autonomous on-chain risk gating via an SPL Token-22 transf
 
 When an SPL Token-22 mint enables the `TransferHook` extension pointing to `radar-transfer-hook`, every `transfer_checked` automatically CPIs into the hook to verify the counterparty on-chain:
 
-- **Scan-on-Transfer Enforcement**: Resolves the destination wallet's Radar Scan Ledger record (`RS01` binary attestation).
-- **Threshold Gating**: Reverts the transaction if the destination's risk score exceeds `maxRiskScore` (default: 80 / 100) or carries a `HIGH RISK` verdict.
+- **Two-Sided Counterparty Gating**: Evaluates risk records for both the destination AND source accounts (via remaining account introspection during the Token-22 transfer CPI), preventing transfers involving compromised senders or recipients.
+- **Cross-Mint Isolation**: Scan record PDAs are strictly derived with seeds `[b"radar_record", mint, wallet]`, preventing cross-mint replay of audit verdicts.
+- **Dynamic Authority Rotation**: Provides a secure `set_authority` instruction (`buildSetAuthorityInstruction`) allowing the hook authority to rotate administrative credentials or transition control to a multisig/governance PDA.
+- **Threshold Gating**: Reverts the transaction if a counterparty's risk score exceeds `maxRiskScore` (default: 80 / 100) or carries a `HIGH RISK` verdict.
 - **Freshness Policy**: Configurable maximum attestation age in seconds (`maxAttestationAgeSec`).
 - **Policy for Unverified Wallets**: Configurable `allowUnverified: bool`.
 - **Instruction Builders & Client**:

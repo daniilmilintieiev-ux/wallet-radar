@@ -2,13 +2,17 @@
 //   accounts: [buffer(w), recipient(w), authority(signer)]
 // Env: BUFFER_LABEL (default radar-buffer-fresh)
 import fs from "node:fs";
+import path from "node:path";
 import crypto from "node:crypto";
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 const BPF_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 const RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const AUTHORITY_PATH =
+  process.env.AUTHORITY_KEYPAIR || path.join(DEFAULT_KEY_DIR, "radar-hook-program-keypair.json");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR || path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
 const LABEL = process.env.BUFFER_LABEL || "radar-buffer-fresh";
 
 function deriveKp(base, label) {
@@ -16,9 +20,16 @@ function deriveKp(base, label) {
   return Keypair.fromSeed(seed);
 }
 
+function loadKp(p, label) {
+  if (!fs.existsSync(p)) {
+    throw new Error(`${label} keypair not found at ${p}. Set corresponding env variable or SOLANA_KEY_DIR.`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(p, "utf8"))));
+}
+
 const conn = new Connection(RPC, "confirmed");
-const authority = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(AUTHORITY_PATH, "utf8"))));
-const deployer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))));
+const authority = loadKp(AUTHORITY_PATH, "Authority");
+const deployer = loadKp(DEPLOYER_PATH, "Deployer");
 const bufferKp = deriveKp(deployer, LABEL);
 const BUFFER = bufferKp.publicKey;
 

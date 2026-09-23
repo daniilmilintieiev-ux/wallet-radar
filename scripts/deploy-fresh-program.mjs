@@ -21,6 +21,7 @@
 // u32, and DeployWithMaxDataLen carries a fixed 8-byte LE u64 `max_data_len`.
 //   node scripts/deploy-fresh-program.mjs
 import fs from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   Connection,
@@ -40,8 +41,11 @@ const PROGRAM_SIZE = 36; // size_of_program()
 const PROGRAMDATA_METADATA = 45; // size_of_programdata_metadata()
 
 const RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
-const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR || path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
+const AUTHORITY_PATH =
+  process.env.AUTHORITY_KEYPAIR || path.join(DEFAULT_KEY_DIR, "radar-hook-program-keypair.json");
 // Deterministic label for the FRESH program identity + its buffer (distinct from
 // the existing program's "radar-buffer" so the two never interfere).
 const PROGRAM_LABEL = process.env.PROGRAM_LABEL || "radar-program-fresh";
@@ -50,9 +54,13 @@ const PROGRAM_LABEL = process.env.PROGRAM_LABEL || "radar-program-fresh";
 const PROGRAM_KEYPAIR = process.env.PROGRAM_KEYPAIR;
 // Label used to derive the transient deploy buffer (closed again after deploy).
 const BUFFER_LABEL = process.env.BUFFER_LABEL || "radar-buffer-fresh";
-const SO_PATH = process.env.SO_PATH || "E:/JOB/earn/repos/wallet-radar/programs/radar-transfer-hook/target/deploy/radar_transfer_hook.so";
+const DEFAULT_SO = path.join(process.cwd(), "programs/radar-transfer-hook/target/deploy/radar_transfer_hook.so");
+const SO_PATH = process.env.SO_PATH || DEFAULT_SO;
 
-function loadKp(p) {
+function loadKp(p, label = "Keypair") {
+  if (!fs.existsSync(p)) {
+    throw new Error(`${label} file not found at ${p}. Set DEPLOYER_KEYPAIR/AUTHORITY_KEYPAIR or SOLANA_KEY_DIR.`);
+  }
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(p, "utf8"))));
 }
 function deriveKp(base, label) {
@@ -109,7 +117,9 @@ console.log(`[fresh] ELF size: ${elfLen}  -> buffer space: ${bufferSpace}, progr
 // (only when derived, not when an explicit keypair was supplied).
 if (!PROGRAM_KEYPAIR) {
   try {
-    fs.writeFileSync(process.env.PROGRAM_KEYPAIR_PATH || "E:/JOB/earn/solana-keys/radar-hook-program-fresh.json", JSON.stringify(Array.from(programKp.secretKey)));
+    const defaultFreshKpPath = path.join(DEFAULT_KEY_DIR, "radar-hook-program-fresh.json");
+    const freshKpPath = process.env.PROGRAM_KEYPAIR_PATH || defaultFreshKpPath;
+    fs.writeFileSync(freshKpPath, JSON.stringify(Array.from(programKp.secretKey)));
   } catch {
     /* best-effort */
   }

@@ -2,6 +2,7 @@
 // one tx) several times to see whether the stale 12000-range error is per-validator
 // (a retry might hit a fresh executable -> 6001) or deterministic (always 12001).
 import fs from "node:fs";
+import path from "node:path";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import {
   buildWriteScanRecordInstruction,
@@ -17,7 +18,14 @@ const CP_WALLET = new PublicKey(process.env.CP_WALLET || "2gjFkrw3BdioMKnbzf6KaK
 const decimals = 6;
 const amount = 1_000_000n;
 
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR ||
+  path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
+if (!fs.existsSync(DEPLOYER_PATH)) {
+  console.error(`Deployer keypair not found at ${DEPLOYER_PATH}. Set DEPLOYER_KEYPAIR or SOLANA_KEY_DIR.`);
+  process.exit(1);
+}
 const conn = new Connection(RPC, "confirmed");
 const deployer = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),

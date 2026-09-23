@@ -23,6 +23,7 @@ import {
   buildUpdateConfigInstruction,
   buildWriteScanRecordInstruction,
   buildRecordPdaMetaSeeds,
+  buildSourceRecordPdaMetaSeeds,
   RADAR_RECORD_SEED,
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
@@ -492,6 +493,7 @@ export async function runTransferHookDevnet(options: {
     const hookMetas: HookMetaSpec[] = [
       { kind: "pubkey", pubkey: configPda, isSigner: false, isWritable: false },
       { kind: "seeds", seeds: buildRecordPdaMetaSeeds(), isSigner: false, isWritable: false },
+      { kind: "seeds", seeds: buildSourceRecordPdaMetaSeeds(), isSigner: false, isWritable: false },
     ];
     const metaIx = buildInitializeExtraAccountMetaListInstruction({
       mint,
@@ -515,7 +517,7 @@ export async function runTransferHookDevnet(options: {
     console.log(`[transfer-hook] Minted ${mintAmount / 10n ** BigInt(decimals)} tokens to sender (sig: ${sig})`);
   }
 
-  // ---- 6. SAFE: write a SAFE scan record, then transfer (expect success) ----
+  // ---- 6. SAFE: write SAFE scan records for both counterparty and sender, then transfer (expect success) ----
   console.log(`\n[transfer-hook] === SAFE CASE ===`);
   const safeNow = Math.floor(Date.now() / 1000);
   const safeRecordIx = buildWriteScanRecordInstruction({
@@ -527,10 +529,19 @@ export async function runTransferHookDevnet(options: {
     authority: payer.publicKey,
     programId: hookProgramId,
   });
+  const safeSenderRecordIx = buildWriteScanRecordInstruction({
+    wallet: payer.publicKey,
+    mint,
+    riskScore: 10,
+    verdictCode: 0, // SAFE
+    timestamp: safeNow,
+    authority: payer.publicKey,
+    programId: hookProgramId,
+  });
   {
-    const { sig, err, logs } = await sendAndInspect(connection, [safeRecordIx], [payer], payer.publicKey);
+    const { sig, err, logs } = await sendAndInspect(connection, [safeRecordIx, safeSenderRecordIx], [payer], payer.publicKey);
     if (err) throw new Error(`SAFE record write failed: ${JSON.stringify(err)}\n${logs.join("\n")}`);
-    console.log(`[transfer-hook] SAFE scan record written (score 20, verdict SAFE) (sig: ${sig})`);
+    console.log(`[transfer-hook] SAFE scan records written for destination and sender (sig: ${sig})`);
   }
 
   const safeTransferIx = createRiskGatedTransferCheckedInstruction({
@@ -541,6 +552,7 @@ export async function runTransferHookDevnet(options: {
     amount: transferAmount,
     decimals,
     destinationWallet: cpWallet,
+    sourceWallet: payer.publicKey,
     hookProgramId,
   });
   const safeBefore = (await connection.getTokenAccountBalance(senderToken)).value.uiAmount ?? 0;

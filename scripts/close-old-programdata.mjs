@@ -6,18 +6,29 @@
 // ProgramData. After close, the lamports move to the recipient and the loader
 // stores a CLOSED tombstone for the program key in the program cache.
 import fs from "node:fs";
+import path from "node:path";
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 const BPF_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 const RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const AUTHORITY_PATH =
+  process.env.AUTHORITY_KEYPAIR || path.join(DEFAULT_KEY_DIR, "radar-hook-program-keypair.json");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR || path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
 const PROGRAM_DATA = new PublicKey(process.env.CLOSE_PROGRAM_DATA || "GFD5PTTLvJCEkL4qvvEjBCDH38hcjNtGe9Tf219LrVoH");
 const PROGRAM = new PublicKey(process.env.CLOSE_PROGRAM || "ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz");
 
+function loadKp(p, label) {
+  if (!fs.existsSync(p)) {
+    throw new Error(`${label} keypair not found at ${p}. Set corresponding env variable or SOLANA_KEY_DIR.`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(p, "utf8"))));
+}
+
 const conn = new Connection(RPC, "confirmed");
-const authority = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(AUTHORITY_PATH, "utf8"))));
-const deployer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))));
+const authority = loadKp(AUTHORITY_PATH, "Authority");
+const deployer = loadKp(DEPLOYER_PATH, "Deployer");
 
 // ---- Pre-flight: verify ProgramData state + upgrade authority ----
 const pd = await conn.getAccountInfo(PROGRAM_DATA);

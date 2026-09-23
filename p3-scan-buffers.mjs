@@ -1,8 +1,16 @@
 import { Keypair, PublicKey, Connection } from "@solana/web3.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 const conn = new Connection("https://api.devnet.solana.com", "confirmed");
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR ||
+  (process.env.SOLANA_KEY_DIR ? path.join(process.env.SOLANA_KEY_DIR, "devnet-deployer.json") : null) ||
+  path.join(process.cwd(), "keys", "devnet-deployer.json");
+if (!fs.existsSync(DEPLOYER_PATH)) {
+  console.error(`Deployer keypair not found at ${DEPLOYER_PATH}. Set DEPLOYER_KEYPAIR or SOLANA_KEY_DIR.`);
+  process.exit(1);
+}
 const deployer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))));
 function deriveKp(label) {
   const seed = createHash("sha256").update(Buffer.concat([deployer.secretKey, Buffer.from(label)])).digest();

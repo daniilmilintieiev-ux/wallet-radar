@@ -3,6 +3,7 @@
 // to bust the stale 12000-range cache while staying on PUBLIC devnet.
 // Authority = radar-hook-program-keypair (P2's upgrade authority from the fresh deploy).
 import fs from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   Connection,
@@ -19,19 +20,29 @@ const P2_DATA = new PublicKey(process.env.PROGRAM_DATA || "9L33ZtFxBErLSFfmVP7CC
 const P2_PROGRAM = new PublicKey(process.env.PROGRAM || "7DeRG1BDToqYnfACzSdS4MfEwTGBCmkFo7Y61dmE2t2C");
 const SYSVAR_RENT = new PublicKey("SysvarRent111111111111111111111111111111111");
 const SYSVAR_CLOCK = new PublicKey("SysvarC1ock11111111111111111111111111111111");
-const SO_PATH = process.env.SO_PATH || "E:/JOB/earn/repos/wallet-radar/programs/radar-transfer-hook/target/deploy/radar_transfer_hook.so";
+const DEFAULT_SO = path.join(process.cwd(), "programs/radar-transfer-hook/target/deploy/radar_transfer_hook.so");
+const SO_PATH = process.env.SO_PATH || DEFAULT_SO;
 const BUFFER_LABEL = process.env.BUFFER_LABEL || "radar-buffer-reupgrade";
 const BUFFER_METADATA = 37;
 
-const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
-const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
+const DEFAULT_KEY_DIR = process.env.SOLANA_KEY_DIR || path.join(process.cwd(), "keys");
+const DEPLOYER_PATH =
+  process.env.DEPLOYER_KEYPAIR ||
+  path.join(DEFAULT_KEY_DIR, "devnet-deployer.json");
+const AUTHORITY_PATH =
+  process.env.AUTHORITY_KEYPAIR ||
+  path.join(DEFAULT_KEY_DIR, "radar-hook-program-keypair.json");
+
+function loadKp(p, label) {
+  if (!fs.existsSync(p)) {
+    throw new Error(`${label} keypair not found at ${p}. Set corresponding env variable or SOLANA_KEY_DIR.`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(p, "utf8"))));
+}
+
 const conn = new Connection(RPC, "confirmed");
-const deployer = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),
-);
-const authority = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(AUTHORITY_PATH, "utf8"))),
-);
+const deployer = loadKp(DEPLOYER_PATH, "Deployer");
+const authority = loadKp(AUTHORITY_PATH, "Authority");
 function deriveKp(base, label) {
   const seed = createHash("sha256").update(Buffer.concat([base.secretKey, Buffer.from(label)])).digest();
   return Keypair.fromSeed(seed);
