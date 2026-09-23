@@ -377,9 +377,10 @@ export async function runTransferHookDevnet(options: {
   const connection = new Connection(rpcUrl, "confirmed");
   const balanceSol = (await connection.getBalance(payer.publicKey)) / LAMPORTS_PER_SOL;
   console.log(`[transfer-hook] Deployer balance: ${balanceSol.toFixed(4)} SOL`);
-  if (balanceSol < 0.5) {
+  const minSol = parseFloat(process.env.RADAR_PROOF_MIN_SOL || "0.5");
+  if (balanceSol < minSol) {
     throw new Error(
-      `Deployer ${payer.publicKey.toBase58()} has ${balanceSol.toFixed(4)} SOL; need >= 0.5 SOL for the proof.`,
+      `Deployer ${payer.publicKey.toBase58()} has ${balanceSol.toFixed(4)} SOL; need >= ${minSol} SOL for the proof.`,
     );
   }
 

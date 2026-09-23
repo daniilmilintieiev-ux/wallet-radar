@@ -92,6 +92,9 @@ async function sendRaw(ix, signers) {
 }
 
 // ---- 1. Create + init buffer (idempotent) ----
+// BUFFER_FUNDER=authority -> the upgrade authority pays rent+fee for the buffer
+// (used when the deployer is out of SOL and the airdrop cap is hit).
+const funder = process.env.BUFFER_FUNDER === "authority" ? authority : deployer;
 const existing = await conn.getAccountInfo(bufferKp.publicKey);
 if (existing == null) {
   const rent = await rpc(() => conn.getMinimumBalanceForRentExemption(bufferSpace), "rent");
@@ -104,10 +107,10 @@ if (existing == null) {
     data: InitializeBuffer,
   });
   const tx = new Transaction();
-  tx.add(SystemProgram.createAccount({ fromPubkey: deployer.publicKey, newAccountPubkey: bufferKp.publicKey, lamports: rent, space: bufferSpace, programId: BPF_LOADER }));
+  tx.add(SystemProgram.createAccount({ fromPubkey: funder.publicKey, newAccountPubkey: bufferKp.publicKey, lamports: rent, space: bufferSpace, programId: BPF_LOADER }));
   tx.add(initIx);
   const bh = await getBlockhash(true);
-  tx.recentBlockhash = bh.blockhash; tx.feePayer = deployer.publicKey; tx.sign(deployer, bufferKp);
+  tx.recentBlockhash = bh.blockhash; tx.feePayer = funder.publicKey; tx.sign(funder, bufferKp);
   const sig = await rpc(() => conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 }), "create");
   await confirmSig(sig, "buffer-create");
   console.log(`[reup] buffer created sig=${sig}`);
