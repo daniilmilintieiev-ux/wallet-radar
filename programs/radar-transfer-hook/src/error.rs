@@ -34,4 +34,7 @@ pub enum RadarHookError {
 
     #[msg("Destination token account is too small to read owner")]
     InvalidDestination = 6010,
+
+    #[msg("Record account is not owned by the transfer hook program")]
+    InvalidAccountOwner = 6011,
 }
