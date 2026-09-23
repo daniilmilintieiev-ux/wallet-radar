@@ -7,11 +7,15 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Store } from "../src/store.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
+import { USDC_MINT } from "../src/types.js";
 import {
   createX402Server,
   extractPaymentProof,
   PaymentProof,
   PaymentRequirement,
+  signPaymentProof,
+  verifyPaymentProof,
   verifySolanaPaymentRpc,
   X402_PRICING,
 } from "../src/x402server.js";
@@ -637,6 +641,47 @@ test("verifySolanaPaymentRpc: ignores non-target mint balances and handles RPC e
   }
 });
 
+test("verifySolanaPaymentRpc: rejects fake tokens in transferChecked instructions (audit 1.2)", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            meta: { err: null, preTokenBalances: [], postTokenBalances: [] },
+            transaction: {
+              message: {
+                instructions: [
+                  {
+                    parsed: {
+                      type: "transferChecked",
+                      info: {
+                        destination: "RecipientTarget1",
+                        mint: "FakeTokenMint1111111111111111111111111111",
+                        tokenAmount: { uiAmount: 0.005 },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      );
+
+    const res = await verifySolanaPaymentRpc(
+      { signature: "s_fake_token", payer: "Payer1" },
+      { endpoint: "/scan", recipient: "RecipientTarget1", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(res.valid, false);
+    assert.match(res.error ?? "", /Insufficient payment/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("x402: parameter validation errors do NOT settle payment signature", async () => {
   const { store, dir } = tmpDb();
   const recipient = "RecipientWappet111111111111111111111111111";
@@ -944,6 +989,490 @@ test("x402: failed handler does not burn the payment (retry with same signature 
     await close();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("audit 1.1: signPaymentProof and verifyPaymentProof round-trip, tampering and expiry", () => {
+  const kp = Keypair.generate();
+  const payer = kp.publicKey.toBase58();
+  const targetWallet = "TargetWallet11111111111111111111111111111";
+  const now = Math.floor(Date.now() / 1000);
+
+  // 1. Valid signature
+  const proof = signPaymentProof({ targetWallet, timestamp: now }, kp);
+  assert.equal(typeof proof.proofSignature, "string");
+  assert.equal(
+    verifyPaymentProof({ payer, proofSignature: proof.proofSignature, timestamp: now }, targetWallet, 300),
+    true,
+  );
+
+  // 2. Target wallet mismatch
+  assert.equal(
+    verifyPaymentProof({ payer, proofSignature: proof.proofSignature, timestamp: now }, "OtherWallet11111111111111111111111111111", 300),
+    false,
+  );
+
+  // 3. Payer mismatch
+  const otherKp = Keypair.generate();
+  assert.equal(
+    verifyPaymentProof(
+      { payer: otherKp.publicKey.toBase58(), proofSignature: proof.proofSignature, timestamp: now },
+      targetWallet,
+      300,
+    ),
+    false,
+  );
+
+  // 4. Timestamp expired (> 300s window)
+  assert.equal(
+    verifyPaymentProof({ payer, proofSignature: proof.proofSignature, timestamp: now - 400 }, targetWallet, 300),
+    false,
+  );
+
+  // 5. Tampered proof
+  assert.equal(
+    verifyPaymentProof({ payer, proofSignature: "invalid_proof_base64", timestamp: now }, targetWallet, 300),
+    false,
+  );
+});
+
+test("audit 1.1: server validates X-Payment-Proof and rejects fraudulent proofs", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWallet1111111111111111111111111";
+  const kp = Keypair.generate();
+  const payer = kp.publicKey.toBase58();
+  const otherKp = Keypair.generate();
+  const sig = "valid_tx_sig_proof_test_123456789";
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async (proof, req) => {
+      if (proof.proofSignature && req.targetWallet) {
+        const ok = verifyPaymentProof(
+          { payer: proof.payer, proofSignature: proof.proofSignature, timestamp: proof.timestamp },
+          req.targetWallet,
+          300,
+        );
+        if (!ok) return { valid: false, error: "invalid payment proof" };
+      }
+      return { valid: true, amount: 0.005, payer: proof.payer, recipient };
+    },
+    scanHandler: async () => ({ ok: true, riskScore: 10 }),
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    // 1. Wrong proof from a different keypair -> 402 Unauthorized
+    const forgedProof = signPaymentProof({ targetWallet, timestamp: now }, otherKp);
+    const res1 = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+        "X-Payment-Proof": forgedProof.proofSignature,
+        "X-Payment-Timestamp": String(now),
+      },
+      body: JSON.stringify({ wallet: targetWallet }),
+    });
+    assert.equal(res1.status, 402);
+    const body1 = (await res1.json()) as any;
+    assert.ok((body1.detail || body1.message || "").includes("invalid payment proof"));
+
+    // 2. Valid proof from legitimate payer -> 200 OK
+    const validProof = signPaymentProof({ targetWallet, timestamp: now }, kp);
+    const res2 = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+        "X-Payment-Proof": validProof.proofSignature,
+        "X-Payment-Timestamp": String(now),
+      },
+      body: JSON.stringify({ wallet: targetWallet }),
+    });
+    assert.equal(res2.status, 200);
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("audit 3.1: server honors Prefer: respond-async header and asyncCommit option", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWallet1111111111111111111111111";
+  const payer = Keypair.generate().publicKey.toBase58();
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+  const sig = "sig_async_commit_test_123456789";
+
+  let oracleCommitted = false;
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async () => ({ valid: true, amount: 0.005, payer, recipient }),
+    scanHandler: async () => ({ ok: true, riskScore: 10 }),
+    oracleClient: {
+      commit: async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        oracleCommitted = true;
+        return { signature: "oracle_sig_async_123", slot: 100 };
+      },
+      readScanLedger: async () => [],
+    } as any,
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+        "Prefer": "respond-async",
+      },
+      body: JSON.stringify({ wallet: targetWallet }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("preference-applied"), "respond-async");
+    const data = (await res.json()) as any;
+    assert.equal(data.asyncCommit, true);
+    assert.equal(data.onchainLedgerStatus, "pending");
+
+    // Wait briefly for background commit
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(oracleCommitted, true, "background commit should finish asynchronously");
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("audit 3.2: server returns 500 configuration error on paid endpoint when recipient is unconfigured", async () => {
+  const oldEnv = process.env.RADAR_X402_RECIPIENT;
+  const oldPayer = process.env.RADAR_ORACLE_PAYER;
+  delete process.env.RADAR_X402_RECIPIENT;
+  delete process.env.RADAR_ORACLE_PAYER;
+
+  const { store, dir } = tmpDb();
+  const server = createX402Server({ store });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: "SafeWallet11111111111111111111111111111111" }),
+    });
+    assert.equal(res.status, 500);
+    const json = (await res.json()) as any;
+    assert.equal(json.error, "Configuration Error");
+    assert.ok(json.message?.includes("RADAR_X402_RECIPIENT must be configured"));
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (oldEnv) process.env.RADAR_X402_RECIPIENT = oldEnv;
+    if (oldPayer) process.env.RADAR_ORACLE_PAYER = oldPayer;
+  }
+});
+
+test("audit 3.3: verifySolanaPaymentRpc matches recipient ATA in instruction fallback", async () => {
+  const recipientKp = Keypair.generate();
+  const recipientWallet = recipientKp.publicKey.toBase58();
+  const payerKp = Keypair.generate();
+  const payerWallet = payerKp.publicKey.toBase58();
+
+  // Derive recipient's ATA for USDC mint
+  const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+  const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+  const [recipientAta] = PublicKey.findProgramAddressSync(
+    [recipientKp.publicKey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), new PublicKey(USDC_MINT).toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+
+  const proof: PaymentProof = {
+    signature: "sig_instruction_ata_fallback",
+    payer: payerWallet,
+  };
+
+  const requirement: PaymentRequirement = {
+    endpoint: "/scan",
+    recipient: recipientWallet,
+    minAmount: 0.005,
+    mint: USDC_MINT,
+  };
+
+  // Mock RPC response where postTokenBalances has no balance delta (transferred = 0 in step 1),
+  // but instruction parsed info has destination equal to the recipient's ATA
+  const mockTx = {
+    blockTime: Math.floor(Date.now() / 1000) - 10,
+    meta: {
+      err: null,
+      preTokenBalances: [],
+      postTokenBalances: [],
+    },
+    transaction: {
+      signatures: ["sig_instruction_ata_fallback"],
+      message: {
+        accountKeys: [
+          { pubkey: payerWallet, signer: true, writable: true },
+          { pubkey: recipientWallet, signer: false, writable: false },
+        ],
+        instructions: [
+          {
+            program: "spl-token",
+            programId: TOKEN_PROGRAM_ID,
+            parsed: {
+              type: "transferChecked",
+              info: {
+                mint: USDC_MINT,
+                source: "SourceAta1111111111111111111111111111111111",
+                destination: recipientAta.toBase58(),
+                authority: payerWallet,
+                tokenAmount: {
+                  uiAmount: 0.005,
+                  amount: "5000",
+                  decimals: 6,
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: 1,
+        result: mockTx,
+      }),
+    } as any;
+  }) as any;
+
+  try {
+    const result = await verifySolanaPaymentRpc(proof, requirement, "https://mock-rpc.solana.com");
+    assert.equal(result.valid, true);
+    assert.equal(result.amount, 0.005);
+    assert.equal(result.recipient, recipientWallet);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("audit 1.3: verifySolanaPaymentRpc enforces targetWallet binding against front-running", async () => {
+  const originalFetch = globalThis.fetch;
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const payer = Keypair.generate().publicKey.toBase58();
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+
+  const makeTx = (memo?: string) => ({
+    blockTime: Math.floor(Date.now() / 1000),
+    meta: {
+      err: null,
+      preTokenBalances: [{ accountIndex: 0, mint: USDC_MINT, owner: payer, uiTokenAmount: { uiAmount: 10 } }],
+      postTokenBalances: [
+        { accountIndex: 0, mint: USDC_MINT, owner: payer, uiTokenAmount: { uiAmount: 9.995 } },
+        { accountIndex: 1, mint: USDC_MINT, owner: recipient, uiTokenAmount: { uiAmount: 0.005 } },
+      ],
+    },
+    transaction: {
+      message: {
+        accountKeys: [
+          { pubkey: payer, signer: true, writable: true },
+          { pubkey: recipient, signer: false, writable: true },
+        ],
+        instructions: memo
+          ? [
+              {
+                program: "spl-memo",
+                parsed: memo,
+              },
+            ]
+          : [],
+      },
+    },
+  });
+
+  try {
+    // 1. Unbound payment: targetWallet specified, but no proofSignature and no memo -> REJECTED
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: makeTx() }),
+    })) as any;
+
+    const resUnbound = await verifySolanaPaymentRpc(
+      { signature: "sig_unbound_tx", payer },
+      { endpoint: "/scan", recipient, minAmount: 0.005, targetWallet },
+      "https://mock-rpc",
+    );
+    assert.equal(resUnbound.valid, false);
+    assert.ok(resUnbound.error?.includes("Payment unbound"));
+
+    // 2. Bound via matching on-chain memo -> ACCEPTED without proofSignature
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: makeTx(`RadarScan:${targetWallet}`) }),
+    })) as any;
+
+    const resBoundMemo = await verifySolanaPaymentRpc(
+      { signature: "sig_bound_memo_tx", payer },
+      { endpoint: "/scan", recipient, minAmount: 0.005, targetWallet },
+      "https://mock-rpc",
+    );
+    assert.equal(resBoundMemo.valid, true);
+
+    // 3. Mismatched on-chain memo -> REJECTED
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: makeTx("RadarScan:OtherWallet11111111111111111111111111111") }),
+    })) as any;
+
+    const resMismatchedMemo = await verifySolanaPaymentRpc(
+      { signature: "sig_mismatched_memo_tx", payer },
+      { endpoint: "/scan", recipient, minAmount: 0.005, targetWallet },
+      "https://mock-rpc",
+    );
+    assert.equal(resMismatchedMemo.valid, false);
+    assert.ok(resMismatchedMemo.error?.includes("Payment memo mismatch"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("audit revision 9: verifySolanaPaymentRpc handles accountKeys as objects { pubkey: string }", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const recipient = "RecipientObj11111111111111111111111111111";
+    const payer = "PayerObj111111111111111111111111111111111";
+    const recipientTokenAcc = "RecipientTokenAcc111111111111111111111111";
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: Math.floor(Date.now() / 1000),
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [
+                {
+                  accountIndex: 1,
+                  owner: recipient,
+                  mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                  uiTokenAmount: { uiAmount: 0.05, decimals: 6 },
+                },
+              ],
+            },
+            transaction: {
+              message: {
+                accountKeys: [
+                  { pubkey: payer, signer: true, writable: true },
+                  { pubkey: recipientTokenAcc, signer: false, writable: true },
+                ],
+                instructions: [
+                  {
+                    parsed: {
+                      type: "transfer",
+                      info: {
+                        destination: recipientTokenAcc,
+                        amount: "50000",
+                      },
+                    },
+                  },
+                ],
+              },
+              signatures: ["sig_obj_keys"],
+            },
+          },
+        }),
+      );
+
+    const res = await verifySolanaPaymentRpc(
+      { signature: "sig_obj_keys", payer },
+      { endpoint: "/scan", recipient, minAmount: 0.05 },
+      "http://mock-rpc",
+    );
+    assert.equal(res.valid, true);
+    assert.equal(res.amount, 0.05);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("audit revision 9: verifySolanaPaymentRpc handles dynamic token decimals in parsed instructions", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const recipient = "RecipientDynDec1111111111111111111111111";
+    const payer = "PayerDynDec111111111111111111111111111111";
+    const solMint = "So11111111111111111111111111111111111111112";
+    // 9 decimals for SOL: 50000000 lamports = 0.05 SOL
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: Math.floor(Date.now() / 1000),
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [],
+              innerInstructions: [
+                {
+                  instructions: [
+                    {
+                      parsed: {
+                        type: "transfer",
+                        info: {
+                          destination: recipient,
+                          amount: "50000000",
+                          tokenAmount: { decimals: 9 },
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+            transaction: {
+              message: {
+                accountKeys: [
+                  { pubkey: payer, signer: true, writable: true },
+                  { pubkey: recipient, signer: false, writable: true },
+                ],
+                instructions: [],
+              },
+              signatures: ["sig_dyn_dec"],
+            },
+          },
+        }),
+      );
+
+    const res = await verifySolanaPaymentRpc(
+      { signature: "sig_dyn_dec", payer },
+      { endpoint: "/scan", recipient, minAmount: 0.05, mint: solMint },
+      "http://mock-rpc",
+    );
+    assert.equal(res.valid, true);
+    assert.equal(res.amount, 0.05);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

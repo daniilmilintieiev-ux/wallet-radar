@@ -26,6 +26,7 @@ export interface BlinkScanActionConfig {
 }
 
 export interface BlinkScanPostOptions {
+  baseUrl?: string;
   recipient?: string;
   priceUsdc?: number;
   rpcUrl?: string;
@@ -63,6 +64,13 @@ export interface BlinkServerOptions {
   recentBlockhash?: string;
   priceUsdc?: number;
   iconUrl?: string;
+  scanHandler?: (wallet: string) => Promise<any>;
+  /** Optional payment verifier callback to validate the completed transaction (Audit 1.2: prevent free scan exploit) */
+  verifyPayment?: (
+    signature: string,
+    payer: string,
+    targetWallet: string,
+  ) => Promise<{ ok: boolean; reason?: string }>;
 }
 
 /**
@@ -178,13 +186,15 @@ export async function buildRadarScanActionPost(
     throw new Error(`Invalid target wallet public key: ${targetWallet}`);
   }
 
-  const recipientStr =
-    options.recipient || process.env.RADAR_X402_RECIPIENT || "11111111111111111111111111111111";
+  const recipientStr = options.recipient || process.env.RADAR_X402_RECIPIENT;
+  if (!recipientStr || recipientStr === "11111111111111111111111111111111") {
+    throw new Error("RADAR_X402_RECIPIENT is required to build a Blink payment transaction");
+  }
   let recipientPubkey: PublicKey;
   try {
     recipientPubkey = new PublicKey(recipientStr);
   } catch {
-    recipientPubkey = new PublicKey("11111111111111111111111111111111");
+    throw new Error(`Invalid recipient public key: ${recipientStr}`);
   }
 
   const price = typeof options.priceUsdc === "number" ? options.priceUsdc : 0.005;
@@ -222,8 +232,15 @@ export async function buildRadarScanActionPost(
   if (options.recentBlockhash) {
     tx.recentBlockhash = options.recentBlockhash;
   } else if (options.connection) {
-    const { blockhash } = await options.connection.getLatestBlockhash("confirmed");
-    tx.recentBlockhash = blockhash;
+    try {
+      const { blockhash } = await options.connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+    } catch (err) {
+      throw new Error(
+        `Failed to fetch recent blockhash from RPC for Blink transaction: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
   } else {
     const rpcUrl = options.rpcUrl || process.env.SOLANA_RPC_URL;
     if (rpcUrl) {
@@ -231,20 +248,32 @@ export async function buildRadarScanActionPost(
         const conn = new Connection(rpcUrl, "confirmed");
         const { blockhash } = await conn.getLatestBlockhash("confirmed");
         tx.recentBlockhash = blockhash;
-      } catch {
-        tx.recentBlockhash = userPubkey.toBase58();
+      } catch (err) {
+        throw new Error(
+          `Failed to fetch recent blockhash from RPC for Blink transaction: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
       }
     } else {
-      tx.recentBlockhash = userPubkey.toBase58();
+      throw new Error(
+        "Failed to fetch recent blockhash from RPC for Blink transaction: neither connection, rpcUrl, nor recentBlockhash provided",
+      );
     }
   }
 
   const shortTarget = `${targetPubkey.toBase58().slice(0, 4)}...${targetPubkey.toBase58().slice(-4)}`;
+  const nextHref = `${options.baseUrl || ""}/api/actions/radar-scan/complete?wallet=${targetPubkey.toBase58()}`;
   return await createPostResponse({
     fields: {
       type: "transaction",
       transaction: tx,
       message: `Radar audit initiated for ${shortTarget} (${price} USDC). Results commit to on-chain ZK ledger.`,
+      links: {
+        next: {
+          type: "post",
+          href: nextHref,
+        },
+      },
     },
   });
 }
@@ -320,17 +349,63 @@ export function getBlinkRegistrationManifest(
 
 function readBody(req: http.IncomingMessage, maxBytes = 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk) => {
-      data += chunk.toString();
-      if (data.length > maxBytes) {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let rejected = false;
+    req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        rejected = true;
         req.destroy();
         reject(new Error("Request payload too large"));
+        return;
       }
+      chunks.push(chunk);
     });
-    req.on("end", () => resolve(data));
+    req.on("end", () => {
+      if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
     req.on("error", reject);
   });
+}
+
+/**
+ * Builds the completed ActionGetResponse for the /api/actions/radar-scan/complete endpoint (Audit 2.2).
+ */
+export async function buildRadarScanCompleteActionPost(
+  account: string,
+  targetWallet: string,
+  options: {
+    signature?: string;
+    iconUrl?: string;
+    scanHandler?: (wallet: string) => Promise<any>;
+  } = {},
+): Promise<ActionGetResponse> {
+  let scanRes: any = null;
+  if (options.scanHandler) {
+    try {
+      scanRes = await options.scanHandler(targetWallet);
+    } catch (err) {
+      if (process.env.RADAR_DEBUG === "1") console.error("[blink] complete scan failed:", err);
+    }
+  }
+
+  const riskScore = typeof scanRes?.riskScore === "number" ? scanRes.riskScore : 0;
+  const verdict = scanRes?.verdict || "UNKNOWN";
+  const shortTarget = targetWallet.length > 8 ? `${targetWallet.slice(0, 4)}...${targetWallet.slice(-4)}` : targetWallet;
+  const icon =
+    options.iconUrl ||
+    "https://raw.githubusercontent.com/daniilmilintieiev-ux/wallet-radar/main/docs/assets/radar-icon.png";
+
+  return {
+    type: "action",
+    icon,
+    title: `Radar Audit Completed: ${verdict}`,
+    description: `Wallet ${shortTarget} evaluated. Risk score: ${riskScore}/100. Verdict: ${verdict}.${scanRes?.onchainLedgerSig ? ` On-chain ZK attestation: ${scanRes.onchainLedgerSig}` : ""}`,
+    label: "Completed",
+    disabled: true,
+  };
 }
 
 /**
@@ -363,7 +438,7 @@ export async function handleBlinkHttpRequest(
       res.end(JSON.stringify({ error: "Method Not Allowed" }));
       return true;
     }
-    const manifest = buildActionsJson({ endpointUrl: `${options.baseUrl || ""}/api/actions/radar-scan` });
+    const manifest = buildActionsJson({ endpointUrl: "/api/actions/radar-scan" });
     res.writeHead(200, ACTIONS_CORS_HEADERS);
     res.end(JSON.stringify(manifest, null, 2));
     return true;
@@ -420,6 +495,7 @@ export async function handleBlinkHttpRequest(
 
       try {
         const postRes = await buildRadarScanActionPost(account, targetWallet, {
+          baseUrl: options.baseUrl,
           recipient: options.recipient,
           priceUsdc: options.priceUsdc,
           rpcUrl: options.rpcUrl,
@@ -438,6 +514,55 @@ export async function handleBlinkHttpRequest(
 
     res.writeHead(405, ACTIONS_CORS_HEADERS);
     res.end(JSON.stringify({ error: "Method Not Allowed" }));
+    return true;
+  }
+
+  // 3. /api/actions/radar-scan/complete (Action completion step, Audit 2.2)
+  if (pathname === "/api/actions/radar-scan/complete") {
+    if (method !== "POST") {
+      res.writeHead(405, ACTIONS_CORS_HEADERS);
+      res.end(JSON.stringify({ error: "Method Not Allowed" }));
+      return true;
+    }
+    const targetWallet = url.searchParams.get("wallet");
+    if (!targetWallet) {
+      res.writeHead(400, ACTIONS_CORS_HEADERS);
+      res.end(JSON.stringify({ error: "Missing required 'wallet' query parameter" }));
+      return true;
+    }
+
+    const rawBody = await readBody(req);
+    let body: Record<string, unknown> = {};
+    try {
+      body = rawBody ? JSON.parse(rawBody) : {};
+    } catch {}
+    const account = typeof body?.account === "string" ? body.account : "";
+    const bodySig = typeof body?.signature === "string" ? body.signature : "";
+    const querySig = url.searchParams.get("signature") || "";
+    const signature = bodySig || querySig;
+
+    // Audit 1.2: Validate transaction payment to prevent free scan bypass
+    if (options.verifyPayment) {
+      if (!signature) {
+        res.writeHead(400, ACTIONS_CORS_HEADERS);
+        res.end(JSON.stringify({ error: "Missing required 'signature' in transaction completion payload" }));
+        return true;
+      }
+      const verifyRes = await options.verifyPayment(signature, account, targetWallet);
+      if (!verifyRes.ok) {
+        res.writeHead(402, ACTIONS_CORS_HEADERS);
+        res.end(JSON.stringify({ error: verifyRes.reason || "Payment verification failed" }));
+        return true;
+      }
+    }
+
+    const completedAction = await buildRadarScanCompleteActionPost(account, targetWallet, {
+      iconUrl: options.iconUrl,
+      scanHandler: options.scanHandler,
+    });
+
+    res.writeHead(200, ACTIONS_CORS_HEADERS);
+    res.end(JSON.stringify(completedAction, null, 2));
     return true;
   }
 

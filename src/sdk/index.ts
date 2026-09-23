@@ -3,6 +3,7 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } f
 import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "../oracle/index.js";
 import { USDC_MINT } from "../types.js";
+import { signPaymentProof } from "../x402server.js";
 import type { TrustProofBundle } from "../trust-proof.js";
 
 export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -81,11 +82,15 @@ export interface PaymentRequirementDetails {
   token: string;
   mint?: string;
   endpoint: string;
+  targetWallet?: string;
+  includeMemo?: boolean;
 }
 
 export interface PaymentProof {
   signature: string;
   payer: string;
+  proofSignature?: string;
+  timestamp?: number;
 }
 
 export type PaymentSignerFn = (
@@ -109,6 +114,8 @@ export interface RadarClientConfig {
   oracleClient?: ZKOracleClient;
   /** Optional explicit payment signer callback */
   paymentSigner?: PaymentSignerFn;
+  /** When true, falls back to offline signed proof if RPC payment fails. Default is false (rethrows real RPC errors). */
+  offlineFallback?: boolean;
 }
 
 export interface RadarClientScanResult {
@@ -158,8 +165,10 @@ export class RadarClientImpl implements RadarClient {
   private fetchFn: typeof fetch;
   readonly oracleClient?: ZKOracleClient;
   readonly paymentSigner?: PaymentSignerFn;
+  readonly offlineFallback: boolean;
 
   constructor(config: RadarClientConfig = {}) {
+    this.offlineFallback = config.offlineFallback ?? false;
     const rawUrl = config.baseUrl || process.env.RADAR_API_URL || "http://127.0.0.1:4020";
     this.baseUrl = rawUrl.replace(/\/+$/, "");
     if (!this.baseUrl.startsWith("http://") && !this.baseUrl.startsWith("https://")) {
@@ -238,6 +247,10 @@ export class RadarClientImpl implements RadarClient {
         kp.publicKey instanceof PublicKey ? kp.publicKey : new PublicKey(kp.publicKey);
       const payerAddress = payerPubkey.toBase58();
 
+      const authProof = requirement.targetWallet
+        ? signPaymentProof({ targetWallet: requirement.targetWallet }, kp)
+        : undefined;
+
       // If connection is available, attempt real on-chain transaction submission
       if (this.connection) {
         try {
@@ -257,6 +270,18 @@ export class RadarClientImpl implements RadarClient {
           const ataDestIx = createAssociatedTokenAccountIdempotentInstruction(payerPubkey, destAta, recipientPubkey, mintPubkey);
           const transferIx = buildSplTransferInstruction(sourceAta, destAta, payerPubkey, amountUnits);
           const tx = new Transaction().add(ataSourceIx, ataDestIx, transferIx);
+
+          // Audit 1.1: If requested, bind the transfer with an on-chain Memo instruction
+          if (requirement.includeMemo && requirement.targetWallet) {
+            tx.add(
+              new TransactionInstruction({
+                keys: [{ pubkey: payerPubkey, isSigner: true, isWritable: false }],
+                programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+                data: Buffer.from(`RadarScan:${requirement.targetWallet}`),
+              }),
+            );
+          }
+
           tx.feePayer = payerPubkey;
 
           let lastValidBlockHeight: number | undefined;
@@ -289,9 +314,16 @@ export class RadarClientImpl implements RadarClient {
                 "confirmed",
               );
             }
-            return { signature: sig, payer: payerAddress };
+            return {
+              signature: sig,
+              payer: payerAddress,
+              ...(authProof ? { proofSignature: authProof.proofSignature, timestamp: authProof.timestamp } : {}),
+            };
           }
         } catch (err) {
+          if (!this.offlineFallback) {
+            throw new Error(`On-chain payment transaction failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+          }
           if (process.env.RADAR_DEBUG === "1") {
             console.warn("[sdk] On-chain RPC payment failed, falling back to signed proof:", err);
           }
@@ -312,7 +344,11 @@ export class RadarClientImpl implements RadarClient {
       const sig = tx.signature
         ? encodeBase58(tx.signature)
         : `sig_${createHash("sha256").update(`${payerAddress}:${Date.now()}`).digest("hex").slice(0, 48)}`;
-      return { signature: sig, payer: payerAddress };
+      return {
+        signature: sig,
+        payer: payerAddress,
+        ...(authProof ? { proofSignature: authProof.proofSignature, timestamp: authProof.timestamp } : {}),
+      };
     }
 
     if (typeof payer === "string") {
@@ -370,18 +406,23 @@ export class RadarClientImpl implements RadarClient {
         token,
         mint,
         endpoint: "/scan",
+        targetWallet: wallet,
       };
 
       const proof = await this.resolvePaymentProof(requirement);
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": proof.signature,
+        "X-Payment-Payer": proof.payer,
+      };
+      if (proof.proofSignature) headers["X-Payment-Proof"] = proof.proofSignature;
+      if (proof.timestamp !== undefined) headers["X-Payment-Timestamp"] = String(proof.timestamp);
+
       // Retry request with payment proof headers
       res = await this.fetchFn(endpointUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Payment-Signature": proof.signature,
-          "X-Payment-Payer": proof.payer,
-        },
+        headers,
         body: payload,
       });
     }
@@ -476,15 +517,20 @@ export class RadarClientImpl implements RadarClient {
         token,
         mint,
         endpoint: "/analyze",
+        targetWallet: wallet,
       });
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": proof.signature,
+        "X-Payment-Payer": proof.payer,
+      };
+      if (proof.proofSignature) headers["X-Payment-Proof"] = proof.proofSignature;
+      if (proof.timestamp !== undefined) headers["X-Payment-Timestamp"] = String(proof.timestamp);
 
       res = await this.fetchFn(endpointUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Payment-Signature": proof.signature,
-          "X-Payment-Payer": proof.payer,
-        },
+        headers,
         body: payload,
       });
     }

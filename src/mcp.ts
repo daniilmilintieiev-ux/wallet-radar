@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
-import { updateBaseline } from "./baseline.js";
+import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
@@ -17,6 +17,7 @@ import { Baseline, EnhancedTx } from "./types.js";
 import { Store } from "./store.js";
 import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
+import { applyDefense, applyDefenseToTrust } from "./http-server.js";
 
 function json(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
@@ -78,7 +79,8 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
         const storedBaseline = options.store ? options.store.getBaseline(wallet) : null;
         const baseline: Baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
         if (options.store) options.store.saveBaseline(baseline);
-        const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
+        const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, txs, prices);
+        const anomalies = detectAnomalies(wallet, txs, scoringBaseline, undefined, prices, mintRisk);
         const riskScore = computeRiskScore(anomalies);
         const verdict = computeVerdict(riskScore);
         const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
@@ -101,6 +103,10 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           digest: digestAnomalies(anomalies),
           freshness: buildFreshness(lastActivity, Math.floor(Date.now() / 1000), windowStart, lastActivity),
         };
+
+        if (options.store) {
+          applyDefense(options.store, { wallet }, payload);
+        }
 
         const isOracleEnabled =
           options.enableOracle ??
@@ -166,7 +172,10 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           isError: true,
         };
       }
-      const anomalies = detectAnomalies(wallet, parsed, null);
+      const storedBaseline = options.store ? options.store.getBaseline(wallet) : null;
+      const baseline = updateBaseline(wallet, storedBaseline, parsed);
+      const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
+      const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
       return json({ wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) });
     }
   );
@@ -207,7 +216,10 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
         };
       }
       try {
-        const result = await runTrustCheck(apiKey, wallet, { maxRisk, minLiquidityUsd, windowDays });
+        let result = await runTrustCheck(apiKey, wallet, { maxRisk, minLiquidityUsd, windowDays });
+        if (options.store) {
+          result = applyDefenseToTrust(options.store, result);
+        }
         return json(result);
       } catch (err) {
         return {

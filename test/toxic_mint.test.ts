@@ -11,10 +11,13 @@ import {
   computeTop10Pct,
   fetchMintMetadata,
   fetchSwapMintRisk,
+  getPumpFunBondingCurvePda,
+  KNOWN_AMM_OWNERS,
   parseDasAssetResponse,
   parseDasAssetSupply,
   parseRpcAccountInfoResponse,
   parseRpcMintSupply,
+  resolveSystemHolderAddresses,
 } from "../src/mint.js";
 import { Store } from "../src/store.js";
 import { watchOnce } from "../src/watch.js";
@@ -611,4 +614,89 @@ test("detectAnomalies TOXIC_MINT: renounced authorities but concentrated still f
   assert.equal(toxic.severity, "medium");
   assert.match(toxic.text, /top-10 holders control 75%/);
   assert.doesNotMatch(toxic.text, /authority/);
+});
+
+test("audit 3.1: fetchSwapMintRisk bounds concurrency and chunks requests", async () => {
+  // Generate 9 distinct non-major mints
+  const mints = Array.from({ length: 9 }, (_, i) => `CustomMint${i}111111111111111111111111111111111`);
+  const txs = mints.map((m, i) => makeSwapTx(`sig_${i}`, USDC_MINT, m, 1700000000 + i));
+
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+  const processedMints: string[] = [];
+
+  const mockFetchMint = async (mint: string) => {
+    activeRequests++;
+    if (activeRequests > maxActiveRequests) {
+      maxActiveRequests = activeRequests;
+    }
+    // Artificial small delay to measure concurrency
+    await new Promise((r) => setTimeout(r, 10));
+    processedMints.push(mint);
+    activeRequests--;
+    return {
+      mint,
+      freezeAuthority: null,
+      mintAuthority: null,
+      top10Pct: 50,
+    };
+  };
+
+  const concurrency = 3;
+  const result = await fetchSwapMintRisk(txs, {
+    fetchMintFn: mockFetchMint,
+    concurrency,
+  });
+
+  assert.equal(Object.keys(result).length, 9);
+  assert.equal(processedMints.length, 9);
+  assert.ok(
+    maxActiveRequests <= concurrency,
+    `Max active concurrent requests (${maxActiveRequests}) exceeded concurrency limit (${concurrency})`,
+  );
+});
+
+test("audit 2.1: getPumpFunBondingCurvePda derives valid PDA with bonding-curve seeds", () => {
+  const mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const pda = getPumpFunBondingCurvePda(mint);
+  assert.equal(typeof pda, "string");
+  assert.ok(pda && pda.length >= 32 && pda.length <= 44);
+});
+
+test("audit 2.1: resolveSystemHolderAddresses includes Raydium v4 authority and bonding curve PDA", async () => {
+  const mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const mockFetch: any = async () => ({
+    ok: true,
+    json: async () => ({
+      result: {
+        value: [
+          { data: { parsed: { info: { owner: "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1" } } } },
+        ],
+      },
+    }),
+  });
+  const tokenAccount = "RaydiumPoolVault1111111111111111111111111111";
+  const systemAddrs = await resolveSystemHolderAddresses(mockFetch, "https://api.devnet.solana.com", [tokenAccount], mint);
+  assert.ok(systemAddrs);
+  assert.ok(systemAddrs.has(tokenAccount), "Token account owned by Raydium v4 authority must be included");
+  const bondingCurve = getPumpFunBondingCurvePda(mint);
+  assert.ok(bondingCurve && systemAddrs.has(bondingCurve), "pump.fun bonding curve PDA must be included");
+});
+
+test("audit 2.1: computeTop10Pct excludes AMM and bonding curve accounts from concentration calculation", () => {
+  const mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const bondingCurve = getPumpFunBondingCurvePda(mint)!;
+  const totalSupplyBaseUnits = "1000000000000000"; // 1B with 6 decimals
+
+  // 1. Without filtering: bonding curve holds 80% -> top10 would be 80% (high toxic concentration)
+  const holdersWithAmm = [
+    { address: bondingCurve, amount: "800000000000000" },
+    { address: "Holder111111111111111111111111111111111111", amount: "50000000000000" },
+    { address: "Holder222222222222222222222222222222222222", amount: "50000000000000" },
+  ];
+
+  // 2. With systemHolders: bonding curve is excluded, remaining top holders only hold 100M / 1B = 10%
+  const systemHolders = new Set([bondingCurve]);
+  const top10Pct = computeTop10Pct(totalSupplyBaseUnits, 6, holdersWithAmm, systemHolders);
+  assert.equal(top10Pct, 10, "AMM/bonding curve pools must be excluded so top10 is only 10%");
 });

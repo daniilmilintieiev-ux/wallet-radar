@@ -314,6 +314,7 @@ describe("Agent SDK v1 (src/sdk)", () => {
         rpc: stubConn,
         x402Payer: payerKeypair,
         recipient,
+        offlineFallback: true,
       });
 
       const result = await client.scan(targetWallet);
@@ -322,6 +323,47 @@ describe("Agent SDK v1 (src/sdk)", () => {
       // Confirmation failed, so the unconfirmed on-chain signature must NOT be used
       assert.notEqual(proofSig, fakeSig);
       assert.ok(proofSig.length > 10, "offline fallback proof signature present");
+    } finally {
+      await close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("audit 2.5: on-chain payment failure rethrows descriptive error by default (offlineFallback: false)", async () => {
+    const { store, dir } = tmpDb();
+
+    const stubConn: any = {
+      _rpcEndpoint: "https://rpc.example.com",
+      async getLatestBlockhash() {
+        return { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 12345 };
+      },
+      async sendRawTransaction() {
+        throw new Error("Transaction simulation failed: Insufficient funds for rent (0x1)");
+      },
+    };
+
+    const server = createX402Server({ store, recipient });
+    const { port, close } = await startServer(server);
+
+    try {
+      const client = createRadarClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        rpc: stubConn,
+        x402Payer: payerKeypair,
+        recipient,
+        // offlineFallback defaults to false
+      });
+
+      await assert.rejects(
+        async () => {
+          await client.scan(targetWallet);
+        },
+        {
+          name: "Error",
+          message: /On-chain payment transaction failed.*Insufficient funds/i,
+        },
+      );
     } finally {
       await close();
       store.close();

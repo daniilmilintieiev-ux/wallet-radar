@@ -56,6 +56,8 @@ export interface BuildTrustProofOptions {
   store?: Store;
   /** Virtual clock override for deterministic tests */
   nowSec?: number;
+  /** Anonymize payer address in the returned payment receipt (Audit 3.2). */
+  anonymizePayer?: boolean;
 }
 
 /**
@@ -93,7 +95,10 @@ export async function buildTrustProof(
   let topRules: string[] = [];
 
   if (latest) {
-    verified = Boolean(latest.onchainSignature || latest.compressedAddress);
+    // Audit 1.2: an attestation read through the legacy lamports path is
+    // explicitly flagged `verified: false` (forgeable); only records whose
+    // Ed25519 signature was verified by the oracle client count as verified.
+    verified = Boolean(latest.onchainSignature || latest.compressedAddress) && latest.verified !== false;
     attestation = {
       signature: latest.onchainSignature ?? null,
       slot: latest.slot ?? null,
@@ -120,25 +125,18 @@ export async function buildTrustProof(
   // 2. Look up x402 payment receipt in store (if scan was earned in USDC)
   let payment: TrustProofPayment | null = null;
   if (options.store) {
-    let settled = options.store.getLatestSettledPaymentForWallet(wallet);
-
-    // If not found by wallet address, check signature if on-chain attestation exists
-    if (!settled && latest?.onchainSignature) {
-      settled = options.store.getSettledPayment(latest.onchainSignature);
-    }
-    if (!settled && latest?.txSignatures && latest.txSignatures.length > 0) {
-      for (const sig of latest.txSignatures) {
-        const found = options.store.getSettledPayment(sig);
-        if (found) {
-          settled = found;
-          break;
-        }
-      }
-    }
+    const settled = options.store.getLatestSettledPaymentForWallet(wallet);
 
     if (settled) {
+      const anonymize =
+        options.anonymizePayer ?? (process.env.RADAR_ANONYMIZE_PAYER === "1");
+      const payerDisplay =
+        anonymize && settled.payer && settled.payer.length > 8
+          ? `${settled.payer.slice(0, 4)}...${settled.payer.slice(-4)}`
+          : settled.payer;
+
       payment = {
-        payer: settled.payer,
+        payer: payerDisplay,
         recipient: settled.recipient,
         amountUsdc: settled.amount,
         txSignature: settled.signature,

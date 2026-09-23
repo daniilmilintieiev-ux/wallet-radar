@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, getVersion } from "./mcp-server.js";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
-import { updateBaseline } from "./baseline.js";
+import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { timingSafeEqual } from "node:crypto";
 import type { EnhancedTx } from "./types.js";
 import { commitScan, type ZKOracleClient } from "./oracle/index.js";
+import { buildEnvHookBridge } from "./hook/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
@@ -97,15 +98,28 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 
 /**
  * API auth (opt-in via RADAR_API_TOKEN): only the mutating watch/defense
- * endpoints are gated; read endpoints stay open. Returns true when the
- * request is allowed, false when it must be rejected with 401.
+ * endpoints are gated; read endpoints stay open.
+ * When authHeavy is enabled (Audit 1.3), resource-intensive endpoints
+ * (/batch, /scan, /trust, /simulate) also require authorization.
+ * Returns true when the request is allowed, false when it must be rejected with 401.
  */
-function authorizeMutating(method: string, p: string, req: http.IncomingMessage, token: string | undefined): boolean {
+function authorizeMutating(
+  method: string,
+  p: string,
+  req: http.IncomingMessage,
+  token: string | undefined,
+  authHeavy: boolean = false,
+): boolean {
   if (!token) return true;
   const isMutating =
     method === "POST" &&
     (p === "/watch" || p === "/unwatch" || p === "/poll" || /^\/defense\/[^/]+\/clear$/.test(p));
-  if (!isMutating) return true;
+  const isHeavy =
+    authHeavy &&
+    method === "POST" &&
+    (p === "/batch" || p === "/scan" || p === "/trust" || p === "/simulate");
+
+  if (!isMutating && !isHeavy) return true;
   const header = req.headers.authorization;
   const provided =
     typeof header === "string" && header.startsWith("Bearer ")
@@ -114,21 +128,24 @@ function authorizeMutating(method: string, p: string, req: http.IncomingMessage,
   return typeof provided === "string" && provided.length > 0 && timingSafeEqualStr(token, provided);
 }
 
-async function readBody(req: http.IncomingMessage): Promise<string> {
+async function readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = "";
+    let size = 0;
+    const chunks: Buffer[] = [];
     let rejected = false;
     req.on("data", (chunk: Buffer) => {
       if (rejected) return;
-      data += chunk.toString();
-      if (data.length > 1_000_000) {
+      size += chunk.length;
+      if (size > maxBytes) {
         rejected = true;
         reject(new HttpError(413, "Payload Too Large"));
         req.resume();
+        return;
       }
+      chunks.push(chunk);
     });
     req.on("end", () => {
-      if (!rejected) resolve(data);
+      if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
     });
     req.on("error", (err) => {
       if (!rejected) reject(err);
@@ -151,7 +168,8 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
   const storedBaseline = ctx.store ? ctx.store.getBaseline(wallet) : null;
   const baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
   if (ctx.store) ctx.store.saveBaseline(baseline);
-  const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
+  const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, txs, prices);
+  const anomalies = detectAnomalies(wallet, txs, scoringBaseline, undefined, prices, mintRisk);
   const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
   const lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
   const windowStart = stamps.length > 0 ? minOf(stamps) : null;
@@ -174,14 +192,21 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
     freshness: buildFreshness(lastActivity, nowSec, windowStart, lastActivity),
   };
 
+  if (ctx.store) {
+    applyDefense(ctx.store, body, result);
+  }
+
+  const finalRiskScore = typeof result.riskScore === "number" ? result.riskScore : riskScore;
+  const finalVerdict = typeof result.verdict === "string" ? result.verdict : verdict;
+
   if (process.env.RADAR_ORACLE === "1") {
     try {
       const topRules = Array.from(new Set(anomalies.map((a) => a.type)));
       const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
       const commitRes = await commitScan({
         wallet,
-        riskScore,
-        verdict,
+        riskScore: finalRiskScore,
+        verdict: finalVerdict,
         timestamp: nowSec,
         topRules,
         txSignatures,
@@ -197,10 +222,28 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
     }
   }
 
+  // Audit 2.3: best-effort oracle→hook bridge — publish the fresh scan result
+  // to the destination wallet's on-chain hook scan-record PDA so the transfer
+  // hook gates the wallet on the latest verdict. A bridge failure never fails
+  // the scan.
+  if (ctx.hookBridge) {
+    try {
+      result.hookBridge = await ctx.hookBridge({ wallet, riskScore: finalRiskScore, verdict: finalVerdict, timestamp: nowSec });
+    } catch (err) {
+      result.hookBridge = {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      if (process.env.RADAR_DEBUG === "1") {
+        console.error("[http-server] toolScan hook bridge failed:", err);
+      }
+    }
+  }
+
   return result;
 }
 
-async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
+async function toolAnalyze(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallet = typeof body.wallet === "string" ? body.wallet : "anonymous";
   if (typeof wallet !== "string" || wallet.length > 64) {
     throw new HttpError(400, "body.wallet must be a string up to 64 characters.");
@@ -222,7 +265,10 @@ async function toolAnalyze(body: Record<string, unknown>): Promise<unknown> {
   if (parsed.length > 1000) {
     throw new HttpError(400, "body.txs: at most 1000 transactions allowed.");
   }
-  const anomalies = detectAnomalies(wallet, parsed, null);
+  const storedBaseline = ctx?.store && isBase58Address(wallet) ? ctx.store.getBaseline(wallet) : null;
+  const baseline = updateBaseline(wallet, storedBaseline, parsed);
+  const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
+  const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
   return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) };
 }
 
@@ -434,7 +480,7 @@ function extractWallet(body: Record<string, unknown>): string | null {
   return walk(msg) ?? walk(body);
 }
 
-function defenseView(wallet: string, st: DefenseStateInfo): DefenseView {
+export function defenseView(wallet: string, st: DefenseStateInfo): DefenseView {
   return {
     wallet,
     state: st.state,
@@ -452,7 +498,7 @@ function defenseView(wallet: string, st: DefenseStateInfo): DefenseView {
  * tighten the actionable verdict — the more conservative of fresh vs. stance wins.
  * No-op for wallets with no stance (the common case).
  */
-function applyDefense(store: Store, body: Record<string, unknown>, out: Record<string, unknown>): void {
+export function applyDefense(store: Store, body: Record<string, unknown>, out: Record<string, unknown>): void {
   const wallet = typeof body.wallet === "string" ? body.wallet : undefined;
   if (!wallet) return;
   const st = store.getDefenseState(wallet);
@@ -466,12 +512,31 @@ function applyDefense(store: Store, body: Record<string, unknown>, out: Record<s
         st.state,
       );
     }
+    // Audit 2.3: /scan responses carry out.verdict directly without an out.action container.
+    // Tighten out.verdict (and out.riskScore) when the wallet is blocked or gated.
+    if (typeof out.verdict === "string") {
+      if (st.state === "blocked") {
+        out.verdict = "HIGH RISK";
+        if (typeof out.riskScore === "number" && out.riskScore < 85) {
+          out.riskScore = 85;
+        }
+        out.enforcedByDefense = true;
+      } else if (st.state === "gated") {
+        if (out.verdict === "SAFE" || out.verdict === "LOW RISK") {
+          out.verdict = "SUSPICIOUS";
+          if (typeof out.riskScore === "number" && out.riskScore < 60) {
+            out.riskScore = 60;
+          }
+          out.enforcedByDefense = true;
+        }
+      }
+    }
   }
   out.defense = view;
 }
 
 /** Defense enforcement for the A2A surface (operates on a TrustResult). */
-function applyDefenseToTrust(store: Store, result: TrustResult): TrustResult {
+export function applyDefenseToTrust(store: Store, result: TrustResult): TrustResult {
   const st = store.getDefenseState(result.wallet);
   if (!st) return result;
   const action = result.action;
@@ -587,6 +652,23 @@ export interface RequestContext {
   fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
   fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
   fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  /**
+   * Audit 2.3: oracle→hook bridge — publishes a fresh scan result to the
+   * destination wallet's on-chain hook scan-record PDA (best-effort; a
+   * failure never fails the scan).
+   */
+  hookBridge?: (record: {
+    wallet: string;
+    riskScore: number;
+    verdict: string;
+    timestamp: number;
+  }) => Promise<Record<string, unknown>>;
+  /**
+   * When true (or RADAR_AUTH_HEAVY=1 / RADAR_REQUIRE_AUTH=1 in env), heavy POST
+   * endpoints (/batch, /scan, /trust, /simulate) require the Bearer apiToken to
+   * prevent DoS and API key exhaustion (Audit 1.3).
+   */
+  authHeavy?: boolean;
 }
 
 function requireStore(ctx: RequestContext): Store {
@@ -617,7 +699,10 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   }
 
   try {
-    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN)) {
+    const authHeavy =
+      ctx.authHeavy ??
+      (process.env.RADAR_AUTH_HEAVY === "1" || process.env.RADAR_REQUIRE_AUTH === "1");
+    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy)) {
       throw new HttpError(401, "Unauthorized: provide Authorization: Bearer <RADAR_API_TOKEN> (or x-api-token).");
     }
 
@@ -832,22 +917,23 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   }
 }
 
-interface RateLimiter {
+export interface RateLimiter {
   check(ip: string): { ok: boolean; retryAfterSec?: number };
 }
 
 /**
  * Client IP for rate limiting. Behind a reverse proxy (Nginx, Caddy,
  * Cloudflare) the socket address is the proxy's (e.g. 127.0.0.1), which
- * would collapse the per-IP limit into one global limit (audit 1.6).
- * CF-Connecting-IP is set by Cloudflare and unforgeable by clients, so it
- * is always trusted. X-Forwarded-For is client-spoofable, so it is only
- * honored when RADAR_TRUST_PROXY=1 explicitly confirms a proxy in front.
+ * would collapse the per-IP limit into one global limit.
+ *
+ * Headers like CF-Connecting-IP and X-Forwarded-For are client-spoofable
+ * when connecting directly to the server, so they are only honored when
+ * RADAR_TRUST_PROXY=1 confirms an authentic reverse proxy in front (audit 1.3).
  */
 export function clientIp(req: http.IncomingMessage): string {
-  const cfIp = req.headers["cf-connecting-ip"];
-  if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
   if (process.env.RADAR_TRUST_PROXY === "1") {
+    const cfIp = req.headers["cf-connecting-ip"];
+    if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
     const xff = req.headers["x-forwarded-for"];
     if (typeof xff === "string") {
       const first = xff.split(",")[0]?.trim();
@@ -858,8 +944,9 @@ export function clientIp(req: http.IncomingMessage): string {
   return rawIp.replace(/^::ffff:/, "");
 }
 
-function createRateLimiter(limitPerMin: number): RateLimiter {
+export function createRateLimiter(limitPerMin: number): RateLimiter {
   const WINDOW_MS = 60_000;
+  const MAX_BUCKETS = 10_000;
   const buckets = new Map<string, { count: number; resetAt: number }>();
   const timer = setInterval(() => {
     const now = Date.now();
@@ -871,6 +958,11 @@ function createRateLimiter(limitPerMin: number): RateLimiter {
       const now = Date.now();
       const b = buckets.get(ip);
       if (!b || now >= b.resetAt) {
+        // Guard against memory exhaustion from high-cardinality spoofed IPs (audit 3.2)
+        if (buckets.size >= MAX_BUCKETS) {
+          const firstKey = buckets.keys().next().value;
+          if (firstKey !== undefined) buckets.delete(firstKey);
+        }
         buckets.set(ip, { count: 1, resetAt: now + WINDOW_MS });
         return { ok: true };
       }
@@ -905,6 +997,16 @@ export interface ServerOptions {
   rpcUrl?: string;
   /** Injectable ZK oracle client */
   oracleClient?: ZKOracleClient;
+  /**
+   * Audit 2.3: oracle→hook bridge invoked on every /scan. When omitted,
+   * `runCli` builds one from RADAR_HOOK_MINT + RADAR_HOOK_KEYPAIR (see below).
+   */
+  hookBridge?: (record: {
+    wallet: string;
+    riskScore: number;
+    verdict: string;
+    timestamp: number;
+  }) => Promise<Record<string, unknown>>;
   /** Shared API token for mutating endpoints (env RADAR_API_TOKEN if omitted). */
   apiToken?: string;
 }
@@ -922,6 +1024,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
     fetchTxs: options.fetchTxs,
     fetchPrices: options.fetchPrices,
     fetchMintRisk: options.fetchMintRisk,
+    hookBridge: options.hookBridge,
   };
   const server = http.createServer((req, res) => {
     const rawUrl = req.url ?? "/";
@@ -1028,6 +1131,23 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
   if (process.env.RADAR_API_TOKEN) {
     console.log(`${SERVICE} API auth enabled — mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) require a Bearer token.`);
   }
+
+  // Audit 2.3: oracle→hook bridge. When RADAR_HOOK_MINT + RADAR_HOOK_KEYPAIR
+  // are both set, every /scan publishes its verdict to the destination
+  // wallet's on-chain hook scan-record PDA so the transfer hook gates on the
+  // latest scan.
+  try {
+    const bridge = buildEnvHookBridge();
+    if (bridge) {
+      options.hookBridge = bridge;
+      console.log(`${SERVICE} oracle→hook bridge enabled (mint ${process.env.RADAR_HOOK_MINT}).`);
+    } else if (process.env.RADAR_HOOK_MINT || process.env.RADAR_HOOK_KEYPAIR) {
+      console.warn(`${SERVICE} partial hook-bridge config (need BOTH RADAR_HOOK_MINT and RADAR_HOOK_KEYPAIR) — hook bridge disabled.`);
+    }
+  } catch (err) {
+    console.warn(`${SERVICE} failed to build hook bridge: ${err instanceof Error ? err.message : String(err)} — hook bridge disabled.`);
+  }
+
   const server = startServer(port, host, options);
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   console.log(`${SERVICE} HTTP server listening on http://${host}:${port}`);

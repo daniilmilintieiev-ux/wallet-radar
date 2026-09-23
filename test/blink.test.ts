@@ -9,6 +9,7 @@ import {
   buildActionsJson,
   buildRadarScanActionGet,
   buildRadarScanActionPost,
+  buildRadarScanCompleteActionPost,
   buildBlinkUrl,
   buildWalletDeepLink,
   getBlinkRegistrationManifest,
@@ -139,6 +140,41 @@ describe("Solana Actions & Blinks (src/blink)", () => {
     );
   });
 
+  test("audit 2.10-NEW: rejects missing or System Program recipient with configuration error", async () => {
+    const origEnv = process.env.RADAR_X402_RECIPIENT;
+    delete process.env.RADAR_X402_RECIPIENT;
+    try {
+      await assert.rejects(
+        async () => {
+          await buildRadarScanActionPost(payerAccount, targetWallet, { priceUsdc: 0.005 });
+        },
+        { message: /RADAR_X402_RECIPIENT is required/i },
+      );
+
+      await assert.rejects(
+        async () => {
+          await buildRadarScanActionPost(payerAccount, targetWallet, {
+            recipient: "11111111111111111111111111111111",
+          });
+        },
+        { message: /RADAR_X402_RECIPIENT is required/i },
+      );
+
+      await assert.rejects(
+        async () => {
+          await buildRadarScanActionPost(payerAccount, targetWallet, {
+            recipient: "not_a_pubkey",
+          });
+        },
+        { message: /Invalid recipient public key/i },
+      );
+    } finally {
+      if (origEnv !== undefined) {
+        process.env.RADAR_X402_RECIPIENT = origEnv;
+      }
+    }
+  });
+
   test("buildBlinkUrl and buildWalletDeepLink: generates Dialect, Phantom, and Solflare URLs", () => {
     const actionUrl = "https://wallet-radar.app/api/actions/radar-scan";
 
@@ -252,7 +288,11 @@ describe("Solana Actions & Blinks (src/blink)", () => {
 
   test("HTTP server integration: handles POST /api/actions/radar-scan generating serialized signable transaction", async () => {
     const { store, dir } = tmpDb();
-    const server = createX402Server({ store, recipient: recipientAddress });
+    const server = createX402Server({
+      store,
+      recipient: recipientAddress,
+      recentBlockhash: "11111111111111111111111111111111",
+    });
     const { port, close } = await startServer(server);
 
     try {
@@ -283,6 +323,34 @@ describe("Solana Actions & Blinks (src/blink)", () => {
     }
   });
 
+  test("audit 2.6: rejects POST with descriptive error when RPC blockhash fails or is missing", async () => {
+    // 1. Missing RPC and blockhash
+    await assert.rejects(
+      async () => {
+        await buildRadarScanActionPost(payerAccount, targetWallet, {
+          recipient: recipientAddress,
+        });
+      },
+      { message: /Failed to fetch recent blockhash from RPC for Blink transaction/i },
+    );
+
+    // 2. Failing connection
+    const failingConn: any = {
+      getLatestBlockhash: async () => {
+        throw new Error("RPC network unreachable");
+      },
+    };
+    await assert.rejects(
+      async () => {
+        await buildRadarScanActionPost(payerAccount, targetWallet, {
+          recipient: recipientAddress,
+          connection: failingConn,
+        });
+      },
+      { message: /Failed to fetch recent blockhash from RPC for Blink transaction: RPC network unreachable/i },
+    );
+  });
+
   test("HTTP server integration: POST returns 400 when account or wallet is missing", async () => {
     const { store, dir } = tmpDb();
     const server = createX402Server({ store, recipient: recipientAddress });
@@ -308,6 +376,139 @@ describe("Solana Actions & Blinks (src/blink)", () => {
       assert.equal(res2.status, 400);
       const json2 = (await res2.json()) as any;
       assert.ok(json2.error.includes("wallet"));
+    } finally {
+      await close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("audit 2.2: buildRadarScanActionPost returns links.next pointing to complete action", async () => {
+    const postRes = await buildRadarScanActionPost(payerAccount, targetWallet, {
+      recipient: recipientAddress,
+      recentBlockhash: "11111111111111111111111111111111",
+    });
+
+    assert.ok(postRes.links);
+    assert.ok(postRes.links.next);
+    assert.equal(postRes.links.next.type, "post");
+    assert.ok(postRes.links.next.href.includes("/api/actions/radar-scan/complete"));
+    assert.ok(postRes.links.next.href.includes(targetWallet));
+  });
+
+  test("audit 2.2: buildRadarScanCompleteActionPost returns completed ActionGetResponse with audit card", async () => {
+    const completeRes = await buildRadarScanCompleteActionPost(payerAccount, targetWallet, {
+      signature: "dummy_tx_sig_12345",
+      scanHandler: async () => ({ ok: true, riskScore: 12 }),
+    });
+
+    assert.equal(completeRes.type, "action");
+    assert.ok(completeRes.title.includes("Complete"));
+    assert.ok(completeRes.description.includes("12/100"));
+    assert.equal(completeRes.disabled, true);
+    assert.ok(completeRes.label.includes("Completed"));
+  });
+
+  test("audit 2.2: HTTP server integration: handles POST /api/actions/radar-scan/complete", async () => {
+    const { store, dir } = tmpDb();
+    const server = createX402Server({
+      store,
+      recipient: recipientAddress,
+      scanHandler: async () => ({ ok: true, riskScore: 25 }),
+    });
+    const { port, close } = await startServer(server);
+
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${port}/api/actions/radar-scan/complete?wallet=${targetWallet}&signature=tx123`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: payerAccount }),
+        },
+      );
+
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("access-control-allow-origin"), "*");
+      const data = (await res.json()) as any;
+      assert.equal(data.type, "action");
+      assert.ok(data.title.includes("Complete"));
+      assert.ok(data.description.includes("25/100"));
+    } finally {
+      await close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("audit 1.2: POST /api/actions/radar-scan/complete rejects missing signature or failed verification", async () => {
+    const { store, dir } = tmpDb();
+    const server = createX402Server({
+      store,
+      recipient: recipientAddress,
+      paymentVerifier: async (proof) => {
+        if (proof.signature === "sig_valid_blink") {
+          return { valid: true, amount: 0.005, payer: proof.payer, recipient: recipientAddress };
+        }
+        return { valid: false, error: "Payment transaction invalid" };
+      },
+      scanHandler: async () => ({ ok: true, riskScore: 10 }),
+    });
+    const { port, close } = await startServer(server);
+
+    try {
+      // 1. Missing signature -> 400
+      const resMissing = await fetch(
+        `http://127.0.0.1:${port}/api/actions/radar-scan/complete?wallet=${targetWallet}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: payerAccount }),
+        },
+      );
+      assert.equal(resMissing.status, 400);
+      const jsonMissing = (await resMissing.json()) as any;
+      assert.ok(jsonMissing.error?.includes("Missing required 'signature'"));
+
+      // 2. Failed verification -> 402
+      const resBad = await fetch(
+        `http://127.0.0.1:${port}/api/actions/radar-scan/complete?wallet=${targetWallet}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: payerAccount, signature: "sig_fake_blink" }),
+        },
+      );
+      assert.equal(resBad.status, 402);
+      const jsonBad = (await resBad.json()) as any;
+      assert.ok(jsonBad.error?.includes("Payment transaction invalid"));
+
+      // 3. Valid payment verification -> 200
+      const resOk = await fetch(
+        `http://127.0.0.1:${port}/api/actions/radar-scan/complete?wallet=${targetWallet}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: payerAccount, signature: "sig_valid_blink" }),
+        },
+      );
+      assert.equal(resOk.status, 200);
+      const jsonOk = (await resOk.json()) as any;
+      assert.equal(jsonOk.type, "action");
+      assert.ok(jsonOk.description.includes("10/100"));
+
+      // 4. Replay rejected -> 402
+      const resReplay = await fetch(
+        `http://127.0.0.1:${port}/api/actions/radar-scan/complete?wallet=${targetWallet}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: payerAccount, signature: "sig_valid_blink" }),
+        },
+      );
+      assert.equal(resReplay.status, 402);
+      const jsonReplay = (await resReplay.json()) as any;
+      assert.ok(jsonReplay.error?.includes("already settled"));
     } finally {
       await close();
       store.close();

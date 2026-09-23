@@ -3,8 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
+import { createPublicKey, createPrivateKey, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
+import bs58 from "bs58";
+import { buildEnvHookBridge } from "./hook/index.js";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
-import { updateBaseline } from "./baseline.js";
+import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
@@ -16,13 +19,19 @@ import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js"
 import { computeVerdict } from "./htmlreport.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
-import { recordHeliusCost } from "./economics.js";
 import { isValidBase58, validateConfig } from "./config.js";
+import { recordHeliusCost, recordOracleCommitCost } from "./economics.js";
 import { buildTrustProof } from "./trust-proof.js";
+import { clientIp, createRateLimiter, applyDefense } from "./http-server.js";
+import { Keypair, PublicKey, type Connection } from "@solana/web3.js";
+
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
 /** Pricing in USDC per endpoint matching AgenticTrade manifest. */
 export const X402_PRICING: Record<string, number> = {
-  "/scan": 0.005,
+  "/scan": Number(process.env.RADAR_SCAN_PRICE_USDC || 0.005),
   "/analyze": 0.001,
   "/selftest": 0.0,
 };
@@ -30,6 +39,8 @@ export const X402_PRICING: Record<string, number> = {
 export interface PaymentProof {
   signature: string;
   payer: string;
+  proofSignature?: string;
+  timestamp?: number;
 }
 
 export interface PaymentRequirement {
@@ -38,6 +49,74 @@ export interface PaymentRequirement {
   minAmount: number;
   maxAgeSec?: number;
   mint?: string;
+  targetWallet?: string;
+}
+
+/** Ed25519 SPKI DER prefix for a raw 32-byte public key */
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+/** Ed25519 PKCS8 DER prefix for a raw 32-byte private-key seed */
+const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+
+export function buildPaymentMessage(targetWallet: string, timestamp?: number): Buffer {
+  const msg = timestamp ? `RadarScan:${targetWallet}:${timestamp}` : `RadarScan:${targetWallet}`;
+  return Buffer.from(msg, "utf-8");
+}
+
+/**
+ * Signs a payment authorization proof with the payer's Keypair (Audit 1.1).
+ * Binds the on-chain transfer to the specific target wallet and freshness timestamp,
+ * preventing mempool front-running or payment hijacking.
+ */
+export function signPaymentProof(
+  params: { targetWallet: string; timestamp?: number },
+  signer: Keypair,
+): { proofSignature: string; timestamp: number } {
+  const ts = params.timestamp ?? Math.floor(Date.now() / 1000);
+  const msg = buildPaymentMessage(params.targetWallet, ts);
+  const seed = Buffer.from(signer.secretKey).subarray(0, 32);
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([ED25519_PKCS8_PREFIX, seed]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const sig = cryptoSign(null, msg, privateKey);
+  return {
+    proofSignature: bs58.encode(sig),
+    timestamp: ts,
+  };
+}
+
+/**
+ * Verifies that the payment proof was cryptographically authorized by `payer` for `targetWallet`.
+ */
+export function verifyPaymentProof(
+  proof: { payer: string; proofSignature: string; timestamp?: number },
+  targetWallet: string,
+  maxAgeSec: number = 300,
+): boolean {
+  if (!proof.proofSignature || !proof.payer || !targetWallet) return false;
+  if (proof.timestamp) {
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - proof.timestamp) > maxAgeSec) return false;
+  }
+  try {
+    const signatureBytes = bs58.decode(proof.proofSignature);
+    const publicKeyBytes = new PublicKey(proof.payer).toBuffer();
+    if (signatureBytes.length !== 64 || publicKeyBytes.length !== 32) return false;
+    const key = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, publicKeyBytes]),
+      format: "der",
+      type: "spki",
+    });
+    if (proof.timestamp) {
+      const msgWithTs = buildPaymentMessage(targetWallet, proof.timestamp);
+      if (cryptoVerify(null, msgWithTs, key, Buffer.from(signatureBytes))) return true;
+    }
+    const msgPlain = buildPaymentMessage(targetWallet);
+    return cryptoVerify(null, msgPlain, key, Buffer.from(signatureBytes));
+  } catch {
+    return false;
+  }
 }
 
 export interface PaymentVerificationResult {
@@ -68,6 +147,30 @@ export interface X402ServerOptions {
   oracleClient?: ZKOracleClient;
   commitScanFn?: typeof commitScan;
   enableOracle?: boolean;
+  rateLimitPerMin?: number;
+  /**
+   * Audit 2.3: oracle→hook bridge — after an oracle commit on /scan, publish
+   * the fresh verdict to the destination wallet's on-chain hook scan-record
+   * PDA. Best-effort; a failure never fails the scan.
+   */
+  hookBridge?: (record: {
+    wallet: string;
+    riskScore: number;
+    verdict: string;
+    timestamp: number;
+  }) => Promise<Record<string, unknown>>;
+  connection?: Connection;
+  recentBlockhash?: string;
+  /**
+   * When true, ZK oracle commits and transfer hook bridge updates execute
+   * in the background, preventing slow upstream RPC confirmations from
+   * blocking the HTTP response (Audit 3.1).
+   */
+  asyncCommit?: boolean;
+  /**
+   * When true, allows test/mock payments when no RPC endpoint is configured.
+   */
+  allowMockPayments?: boolean;
 }
 
 function getRpcUrl(): string {
@@ -118,14 +221,108 @@ export async function verifySolanaPaymentRpc(
       return { valid: false, error: "Transaction failed on-chain" };
     }
 
+    // Enforce a freshness window even when the caller does not pass
+    // maxAgeSec (audit 1.3: production startup left it undefined, so the
+    // check was never executed).
+    const maxAgeSec = requirement.maxAgeSec ?? 300;
+
+    // Audit 1.1 & 1.3: Front-running and hijacking protection via cryptographic proof or on-chain memo binding
+    if (requirement.targetWallet) {
+      let boundToTarget = false;
+
+      if (proof.proofSignature) {
+        const proofValid = verifyPaymentProof(
+          { payer: proof.payer, proofSignature: proof.proofSignature, timestamp: proof.timestamp },
+          requirement.targetWallet,
+          maxAgeSec,
+        );
+        if (!proofValid) {
+          return {
+            valid: false,
+            error: `Invalid X-Payment-Proof: signature does not verify for payer ${proof.payer} and targetWallet ${requirement.targetWallet}`,
+          };
+        }
+        boundToTarget = true;
+      }
+
+      // Audit 1.1 & 1.3: If transaction carries an SPL memo, verify whether it matches targetWallet
+      const inspectMemos = (insts: any[]) => {
+        let matching = false;
+        let mismatched: string | null = null;
+        for (const inst of insts) {
+          if (
+            (inst.program === "spl-memo" || inst.programId === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr") &&
+            typeof inst.parsed === "string"
+          ) {
+            const memoStr = inst.parsed;
+            if (memoStr.startsWith("RadarScan:")) {
+              const parts = memoStr.split(":");
+              const memoTarget = parts[1];
+              if (memoTarget) {
+                if (memoTarget === requirement.targetWallet) {
+                  matching = true;
+                } else if (!mismatched) {
+                  mismatched = memoTarget;
+                }
+              }
+            }
+          }
+        }
+        return { matching, mismatched };
+      };
+
+      let memoRes = { matching: false, mismatched: null as string | null };
+      if (Array.isArray(tx.transaction?.message?.instructions)) {
+        memoRes = inspectMemos(tx.transaction.message.instructions);
+      }
+      if (!memoRes.matching && !memoRes.mismatched && Array.isArray(tx.meta?.innerInstructions)) {
+        for (const inner of tx.meta.innerInstructions) {
+          if (Array.isArray(inner.instructions)) {
+            const innerRes = inspectMemos(inner.instructions);
+            if (innerRes.matching) memoRes.matching = true;
+            if (innerRes.mismatched && !memoRes.mismatched) memoRes.mismatched = innerRes.mismatched;
+            if (memoRes.matching || memoRes.mismatched) break;
+          }
+        }
+      }
+
+      if (memoRes.mismatched) {
+        return {
+          valid: false,
+          error: `Payment memo mismatch: on-chain memo bound to ${memoRes.mismatched}, but scan requested for ${requirement.targetWallet}`,
+        };
+      }
+      if (memoRes.matching) {
+        boundToTarget = true;
+      }
+
+      // Audit 1.3: If neither X-Payment-Proof nor matching on-chain memo binds the payment to targetWallet,
+      // reject to prevent front-running/hijacking by an eavesdropping attacker in mempool/blocks.
+      if (!boundToTarget) {
+        return {
+          valid: false,
+          error: `Payment unbound: scan for targetWallet ${requirement.targetWallet} requires a valid X-Payment-Proof or matching on-chain RadarScan:${requirement.targetWallet} memo`,
+        };
+      }
+    }
+
     // Payer must be an actual on-chain signer of the payment transaction,
     // otherwise any third-party transfer to the recipient could be replayed
     // as a valid x402 payment (audit 1.3).
     const accountKeys = tx.transaction?.message?.accountKeys;
     if (Array.isArray(accountKeys) && accountKeys.length > 0) {
-      const payerIsSigner = accountKeys.some(
-        (k: any) => k && k.pubkey === proof.payer && k.signer === true,
-      );
+      const payerIsSigner = accountKeys.some((k: any) => {
+        if (typeof k === "string") return k === proof.payer;
+        const pk =
+          typeof k?.pubkey === "string"
+            ? k.pubkey
+            : typeof k?.pubkey?.toBase58 === "function"
+              ? k.pubkey.toBase58()
+              : typeof k?.toBase58 === "function"
+                ? k.toBase58()
+                : null;
+        return pk === proof.payer && (k.signer === true || k.isSigner === true);
+      });
       if (!payerIsSigner) {
         return {
           valid: false,
@@ -134,10 +331,6 @@ export async function verifySolanaPaymentRpc(
       }
     }
 
-    // Enforce a freshness window even when the caller does not pass
-    // maxAgeSec (audit 1.3: production startup left it undefined, so the
-    // check was never executed).
-    const maxAgeSec = requirement.maxAgeSec ?? 300;
     if (tx.blockTime) {
       const nowSec = Math.floor(Date.now() / 1000);
       if (nowSec - tx.blockTime > maxAgeSec) {
@@ -155,7 +348,7 @@ export async function verifySolanaPaymentRpc(
 
     // 1. Balance delta inspection for recipient
     for (const post of postTokenBalances) {
-      if (post.owner === requirement.recipient && (!post.mint || post.mint === targetMint)) {
+      if (post.owner === requirement.recipient && (post.mint ? post.mint === targetMint : false)) {
         const pre = preTokenBalances.find((b: any) => b.accountIndex === post.accountIndex);
         const preAmount = Number(pre?.uiTokenAmount?.uiAmount || 0);
         const postAmount = Number(post?.uiTokenAmount?.uiAmount || 0);
@@ -164,16 +357,84 @@ export async function verifySolanaPaymentRpc(
       }
     }
 
-    // 2. Parsed instructions fallback
+    // 2. Parsed instructions fallback (Audit 3.3: resolve recipient's ATA accounts)
     if (transferred === 0) {
+      const recipientAccounts = new Set<string>();
+      if (requirement.recipient) recipientAccounts.add(requirement.recipient);
+
+      try {
+        const recipientPk = new PublicKey(requirement.recipient);
+        const mintPk = new PublicKey(targetMint);
+        const [splAta] = PublicKey.findProgramAddressSync(
+          [recipientPk.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPk.toBuffer()],
+          ASSOCIATED_TOKEN_PROGRAM_ID,
+        );
+        recipientAccounts.add(splAta.toBase58());
+        const [t22Ata] = PublicKey.findProgramAddressSync(
+          [recipientPk.toBuffer(), TOKEN_2022_PROGRAM_ID.toBuffer(), mintPk.toBuffer()],
+          ASSOCIATED_TOKEN_PROGRAM_ID,
+        );
+        recipientAccounts.add(t22Ata.toBase58());
+      } catch {
+        // Non-standard address or stub in tests: fallback to direct match
+      }
+
+      const accountKeysList = tx.transaction?.message?.accountKeys;
+      const getAccountKeyStr = (idx: number): string | null => {
+        if (!Array.isArray(accountKeysList) || idx < 0 || idx >= accountKeysList.length) return null;
+        const k = accountKeysList[idx];
+        if (typeof k === "string") return k;
+        if (typeof k?.pubkey === "string") return k.pubkey;
+        if (typeof k?.pubkey?.toBase58 === "function") return k.pubkey.toBase58();
+        if (typeof k?.toBase58 === "function") return k.toBase58();
+        return null;
+      };
+
+      // Also map accountKeys from postTokenBalances where owner === requirement.recipient
+      if (Array.isArray(accountKeysList)) {
+        for (const bal of postTokenBalances) {
+          if (bal.owner === requirement.recipient && typeof bal.accountIndex === "number" && bal.accountIndex < accountKeysList.length) {
+            const keyStr = getAccountKeyStr(bal.accountIndex);
+            if (keyStr) recipientAccounts.add(keyStr);
+          }
+        }
+      }
+
       const inspectInstructions = (insts: any[]) => {
         for (const inst of insts) {
           const parsed = inst.parsed;
           if (parsed && (parsed.type === "transfer" || parsed.type === "transferChecked")) {
             const info = parsed.info;
             if (info) {
-              const amount = Number(info.tokenAmount?.uiAmount ?? (info.amount ? Number(info.amount) / 1e6 : 0));
-              if (info.destination === requirement.recipient || info.owner === requirement.recipient) {
+              // Audit 1.2: reject transfers with non-target mint
+              if (info.mint && info.mint !== targetMint) {
+                continue;
+              }
+              // Audit 1.4: If token balances are recorded for destination, verify its mint matching destination specifically
+              let destBalance: any = undefined;
+              if (postTokenBalances.length > 0 && info.destination) {
+                destBalance = postTokenBalances.find((b: any) => {
+                  const accKey = typeof b.accountIndex === "number" ? getAccountKeyStr(b.accountIndex) : null;
+                  if (accKey && accKey === info.destination) return true;
+                  if (b.owner && recipientAccounts.has(b.owner) && accKey === info.destination) return true;
+                  return false;
+                });
+                if (destBalance && destBalance.mint && destBalance.mint !== targetMint) {
+                  continue;
+                }
+              }
+              // Bug 5: Resolve decimals dynamically instead of hardcoded 1e6
+              const decimals =
+                typeof info.tokenAmount?.decimals === "number"
+                  ? info.tokenAmount.decimals
+                  : (destBalance && typeof destBalance.uiTokenAmount?.decimals === "number")
+                    ? destBalance.uiTokenAmount.decimals
+                    : (targetMint === "So11111111111111111111111111111111111111112" ? 9 : 6);
+              const amount = Number(
+                info.tokenAmount?.uiAmount ??
+                  (info.amount ? Number(info.amount) / Math.pow(10, decimals) : 0),
+              );
+              if (info.destination && recipientAccounts.has(info.destination)) {
                 transferred += amount;
               }
             }
@@ -216,8 +477,19 @@ export async function verifySolanaPaymentRpc(
 export function extractPaymentProof(req: http.IncomingMessage, body?: any): PaymentProof | null {
   const sigHeader = req.headers["x-payment-signature"];
   const payerHeader = req.headers["x-payment-payer"];
+  const proofHeader = req.headers["x-payment-proof"];
+  const tsHeader = req.headers["x-payment-timestamp"];
+
+  const proofSig = typeof proofHeader === "string" && proofHeader.trim() ? proofHeader.trim() : undefined;
+  const ts = typeof tsHeader === "string" && !isNaN(Number(tsHeader)) ? Number(tsHeader) : undefined;
+
   if (typeof sigHeader === "string" && typeof payerHeader === "string" && sigHeader.trim() && payerHeader.trim()) {
-    return { signature: sigHeader.trim(), payer: payerHeader.trim() };
+    return {
+      signature: sigHeader.trim(),
+      payer: payerHeader.trim(),
+      ...(proofSig ? { proofSignature: proofSig } : {}),
+      ...(ts !== undefined ? { timestamp: ts } : {}),
+    };
   }
 
   const xPayHeader = req.headers["x-payment"];
@@ -227,12 +499,25 @@ export function extractPaymentProof(req: http.IncomingMessage, body?: any): Paym
       try {
         const parsed = JSON.parse(trimmed);
         if (parsed.signature && parsed.payer) {
-          return { signature: String(parsed.signature).trim(), payer: String(parsed.payer).trim() };
+          return {
+            signature: String(parsed.signature).trim(),
+            payer: String(parsed.payer).trim(),
+            ...(parsed.proofSignature || parsed.proof ? { proofSignature: String(parsed.proofSignature || parsed.proof).trim() } : {}),
+            ...(parsed.timestamp !== undefined ? { timestamp: Number(parsed.timestamp) } : {}),
+          };
         }
       } catch {}
     } else if (trimmed.includes(":")) {
-      const [s, p] = trimmed.split(":");
-      if (s && p) return { signature: s.trim(), payer: p.trim() };
+      const parts = trimmed.split(":");
+      const [s, p] = parts;
+      if (s && p) {
+        return {
+          signature: s.trim(),
+          payer: p.trim(),
+          ...(parts[2] ? { proofSignature: parts[2].trim() } : {}),
+          ...(parts[3] && !isNaN(Number(parts[3])) ? { timestamp: Number(parts[3]) } : {}),
+        };
+      }
     }
   }
 
@@ -240,15 +525,28 @@ export function extractPaymentProof(req: http.IncomingMessage, body?: any): Paym
   if (typeof authHeader === "string" && authHeader.toLowerCase().startsWith("x402 ")) {
     const token = authHeader.slice(5).trim();
     if (token.includes(":")) {
-      const [s, p] = token.split(":");
-      if (s && p) return { signature: s.trim(), payer: p.trim() };
+      const parts = token.split(":");
+      const [s, p] = parts;
+      if (s && p) {
+        return {
+          signature: s.trim(),
+          payer: p.trim(),
+          ...(parts[2] ? { proofSignature: parts[2].trim() } : {}),
+          ...(parts[3] && !isNaN(Number(parts[3])) ? { timestamp: Number(parts[3]) } : {}),
+        };
+      }
     }
   }
 
   if (body && typeof body === "object" && body.payment) {
-    const { signature, payer } = body.payment;
+    const { signature, payer, proofSignature, proof, timestamp } = body.payment;
     if (signature && payer) {
-      return { signature: String(signature).trim(), payer: String(payer).trim() };
+      return {
+        signature: String(signature).trim(),
+        payer: String(payer).trim(),
+        ...(proofSignature || proof ? { proofSignature: String(proofSignature || proof).trim() } : {}),
+        ...(timestamp !== undefined ? { timestamp: Number(timestamp) } : {}),
+      };
     }
   }
 
@@ -310,19 +608,22 @@ class PayloadTooLargeError extends Error {
 
 function readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = "";
+    let size = 0;
+    const chunks: Buffer[] = [];
     let rejected = false;
-    req.on("data", (chunk) => {
+    req.on("data", (chunk: Buffer) => {
       if (rejected) return;
-      data += chunk.toString();
-      if (data.length > maxBytes) {
+      size += chunk.length;
+      if (size > maxBytes) {
         rejected = true;
         reject(new PayloadTooLargeError());
         req.resume();
+        return;
       }
+      chunks.push(chunk);
     });
     req.on("end", () => {
-      if (!rejected) resolve(data);
+      if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
     });
     req.on("error", (err) => {
       if (!rejected) reject(err);
@@ -334,7 +635,17 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
   const recipient =
     options.recipient ??
     process.env.RADAR_X402_RECIPIENT ??
-    "11111111111111111111111111111111";
+    (() => {
+      const payer = process.env.RADAR_ORACLE_PAYER;
+      if (payer) {
+        try {
+          return Keypair.fromSecretKey(bs58.decode(payer)).publicKey.toBase58();
+        } catch {
+          return undefined;
+        }
+      }
+      return undefined;
+    })();
 
   const inFlightPayments = new Set<string>();
 
@@ -371,11 +682,12 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
     const storedBaseline = store.getBaseline(wallet);
     const baseline: Baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
     store.saveBaseline(baseline);
-    const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
+    const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, txs, prices);
+    const anomalies = detectAnomalies(wallet, txs, scoringBaseline, undefined, prices, mintRisk);
     const riskScore = computeRiskScore(anomalies);
     const verdict = computeVerdict(riskScore);
     const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
-    return {
+    const resultObj: Record<string, unknown> = {
       wallet,
       txCount: txs.length,
       lastSeenAt: baseline.lastSeenAt,
@@ -389,6 +701,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       digest: digestAnomalies(anomalies),
       txSignatures,
     };
+    applyDefense(store, { wallet }, resultObj);
+    return resultObj;
   };
 
   const defaultAnalyzeHandler = async (wallet: string, txs: EnhancedTx[] | string) => {
@@ -400,7 +714,10 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
     } else {
       throw new Error("Invalid txs: expected a JSON array of transaction objects");
     }
-    const anomalies = detectAnomalies(wallet, parsed, null);
+    const storedBaseline = isValidBase58(wallet) ? store.getBaseline(wallet) : null;
+    const baseline = updateBaseline(wallet, storedBaseline, parsed);
+    const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
+    const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
     return {
       wallet,
       txCount: parsed.length,
@@ -414,8 +731,24 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
   const analyzeHandler = options.analyzeHandler ?? defaultAnalyzeHandler;
   const selftestHandler = options.selftestHandler ?? defaultSelftestHandler;
 
+  const rateLimitPerMin = options.rateLimitPerMin ?? 120;
+  const limiter = rateLimitPerMin > 0 ? createRateLimiter(rateLimitPerMin) : null;
+
   const server = http.createServer(async (req, res) => {
     try {
+      const ip = clientIp(req);
+      if (limiter) {
+        const limit = limiter.check(ip);
+        if (!limit.ok) {
+          res.writeHead(429, {
+            "Content-Type": "application/json",
+            "Retry-After": String(limit.retryAfterSec ?? 60),
+          });
+          res.end(JSON.stringify({ error: "Too Many Requests", retryAfterSec: limit.retryAfterSec ?? 60 }));
+          return;
+        }
+      }
+
       const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
       const pathname = url.pathname;
       const method = req.method?.toUpperCase() ?? "GET";
@@ -423,8 +756,84 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       // 0. Solana Actions / Blinks routes (/actions.json, /api/actions/...)
       if (pathname === "/actions.json" || pathname.startsWith("/api/actions")) {
         const handled = await handleBlinkHttpRequest(req, res, {
+          baseUrl: `http://${req.headers.host || "localhost"}`,
           recipient,
           rpcUrl: options.rpcUrl,
+          connection: options.connection,
+          recentBlockhash: options.recentBlockhash,
+          scanHandler,
+          verifyPayment: async (signature: string, payer: string, targetWallet: string) => {
+            if (store.hasSettledPayment(signature)) {
+              return { ok: false, reason: "Payment signature already settled (replay rejected)" };
+            }
+            const activeRecipient = recipient || options.recipient || process.env.RADAR_X402_RECIPIENT;
+            if (!activeRecipient) {
+              return { ok: false, reason: "Service recipient unconfigured" };
+            }
+            if (options.paymentVerifier) {
+              const verRes = await options.paymentVerifier(
+                { signature, payer },
+                { endpoint: "/api/actions/radar-scan/complete", recipient: activeRecipient, minAmount: 0.005, targetWallet },
+              );
+              if (!verRes.valid) {
+                return { ok: false, reason: verRes.error || "Payment verification failed" };
+              }
+              store.recordSettledPayment({
+                signature,
+                payer: verRes.payer || payer,
+                recipient: activeRecipient,
+                amount: verRes.amount ?? 0.005,
+                endpoint: "/api/actions/radar-scan/complete",
+                wallet: targetWallet,
+              });
+              return { ok: true };
+            }
+            const rpcTarget =
+              options.rpcUrl ||
+              options.connection?.rpcEndpoint ||
+              process.env.SOLANA_RPC_URL ||
+              process.env.HELIUS_RPC_URL ||
+              (process.env.HELIUS_API_KEY
+                ? "https://mainnet.helius-rpc.com/?api-key=" + process.env.HELIUS_API_KEY
+                : undefined);
+            if (rpcTarget) {
+              const verRes = await verifySolanaPaymentRpc(
+                { signature, payer },
+                { endpoint: "/api/actions/radar-scan/complete", recipient: activeRecipient, minAmount: 0.005, targetWallet },
+                rpcTarget,
+              );
+              if (!verRes.valid) {
+                return { ok: false, reason: verRes.error || "Payment verification failed" };
+              }
+              store.recordSettledPayment({
+                signature,
+                payer: verRes.payer || payer,
+                recipient: activeRecipient,
+                amount: verRes.amount ?? 0.005,
+                endpoint: "/api/actions/radar-scan/complete",
+                wallet: targetWallet,
+              });
+              return { ok: true };
+            }
+            // Audit 1.3: Prevent free scan exploit in production. Reject payment if no RPC verification target is configured.
+            // Allow mock fallback only when explicitly enabled or running in test runner without an RPC
+            const isMockEnv =
+              Boolean(options.allowMockPayments) ||
+              process.env.NODE_ENV === "test" ||
+              Boolean(process.env.NODE_TEST_CONTEXT);
+            if (isMockEnv) {
+              store.recordSettledPayment({
+                signature,
+                payer,
+                recipient: activeRecipient,
+                amount: 0.005,
+                endpoint: "/api/actions/radar-scan/complete",
+                wallet: targetWallet,
+              });
+              return { ok: true };
+            }
+            return { ok: false, reason: "Payment RPC verification unavailable (no RPC endpoint configured)" };
+          },
         });
         if (handled) return;
       }
@@ -537,22 +946,34 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           return;
         }
 
+        if (requiredPrice > 0 && !recipient) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "Configuration Error",
+              message: "RADAR_X402_RECIPIENT must be configured for paid endpoints",
+            }),
+          );
+          return;
+        }
+        const activeRecipient = recipient ?? "";
+
         // 1. Extract payment proof
         const proof = extractPaymentProof(req, body);
         if (!proof) {
-          send402(res, pathname, requiredPrice, recipient);
+          send402(res, pathname, requiredPrice, activeRecipient);
           return;
         }
 
         // Reject dry-run / mock payment bypass on paid routes
         if (req.headers["x-payment-dry-run"] === "true") {
-          send402(res, pathname, requiredPrice, recipient, "Dry-run payments not allowed on paid routes");
+          send402(res, pathname, requiredPrice, activeRecipient, "Dry-run payments not allowed on paid routes");
           return;
         }
 
         // 2. Check replay in settled ledger and in-flight payments
         if (inFlightPayments.has(proof.signature) || store.hasSettledPayment(proof.signature)) {
-          send402(res, pathname, requiredPrice, recipient, "Payment signature already settled (replay rejected)");
+          send402(res, pathname, requiredPrice, activeRecipient, "Payment signature already settled (replay rejected)");
           return;
         }
 
@@ -561,14 +982,15 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           // 3. Verify payment
           const verResult = await verifier(proof, {
             endpoint: pathname,
-            recipient,
+            recipient: activeRecipient,
             minAmount: requiredPrice,
             maxAgeSec: options.maxAgeSec,
             mint: USDC_MINT,
+            targetWallet: typeof body?.wallet === "string" ? body.wallet : undefined,
           });
 
           if (!verResult.valid) {
-            send402(res, pathname, requiredPrice, recipient, verResult.error || "Payment verification failed");
+            send402(res, pathname, requiredPrice, activeRecipient, verResult.error || "Payment verification failed");
             return;
           }
 
@@ -625,38 +1047,79 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
                 (process.env.RADAR_ORACLE === "1" || options.oracleClient !== undefined);
 
               if (isOracleEnabled) {
-                try {
-                  const anomalies = Array.isArray(scanRes.anomalies) ? scanRes.anomalies : [];
-                  const topRules = Array.from(
-                    new Set(anomalies.map((a: any) => a.type || a.rule).filter(Boolean)),
-                  );
-                  const txSignatures = Array.isArray(scanRes.txSignatures)
-                    ? scanRes.txSignatures
-                    : Array.isArray(scanRes.txs)
-                    ? scanRes.txs.map((t: any) => t.signature).filter(Boolean).slice(0, 10)
-                    : [];
+                const executeCommitAndBridge = async () => {
+                  try {
+                    const anomalies = Array.isArray(scanRes.anomalies) ? scanRes.anomalies : [];
+                    const topRules = Array.from(
+                      new Set(anomalies.map((a: any) => a.type || a.rule).filter(Boolean)),
+                    );
+                    const txSignatures = Array.isArray(scanRes.txSignatures)
+                      ? scanRes.txSignatures
+                      : Array.isArray(scanRes.txs)
+                      ? scanRes.txs.map((t: any) => t.signature).filter(Boolean).slice(0, 10)
+                      : [];
 
-                  const commitFn = options.commitScanFn ?? commitScan;
-                  const commitRes = await commitFn(
-                    {
-                      wallet: body.wallet as string,
-                      riskScore,
-                      verdict,
-                      timestamp: Math.floor(Date.now() / 1000),
-                      topRules,
-                      txSignatures,
-                    },
-                    { client: options.oracleClient, rpcUrl: options.rpcUrl },
-                  );
+                    const commitFn = options.commitScanFn ?? commitScan;
+                    const commitRes = await commitFn(
+                      {
+                        wallet: body.wallet as string,
+                        riskScore,
+                        verdict,
+                        timestamp: Math.floor(Date.now() / 1000),
+                        topRules,
+                        txSignatures,
+                      },
+                      { client: options.oracleClient, rpcUrl: options.rpcUrl },
+                    );
 
-                  if (commitRes.signature) {
-                    scanRes.onchainLedgerSig = commitRes.signature;
+                    if (commitRes.signature) {
+                      scanRes.onchainLedgerSig = commitRes.signature;
+                      recordOracleCommitCost(store, "/scan");
+                    }
+                    scanRes.oracle = commitRes;
+                  } catch (err) {
+                    if (process.env.RADAR_DEBUG === "1") {
+                      console.error("[x402] oracle commitScan failed:", err);
+                    }
                   }
-                  scanRes.oracle = commitRes;
-                } catch (err) {
-                  if (process.env.RADAR_DEBUG === "1") {
-                    console.error("[x402] oracle commitScan failed:", err);
+
+                  // Audit 2.3: best-effort oracle→hook bridge — publish the fresh
+                  // verdict to the destination wallet's on-chain hook scan-record
+                  // PDA so the transfer hook gates on the latest scan.
+                  if (options.hookBridge) {
+                    try {
+                      scanRes.hookBridge = await options.hookBridge({
+                        wallet: body.wallet as string,
+                        riskScore,
+                        verdict,
+                        timestamp: Math.floor(Date.now() / 1000),
+                      });
+                    } catch (err) {
+                      scanRes.hookBridge = {
+                        success: false,
+                        error: err instanceof Error ? err.message : String(err),
+                      };
+                      if (process.env.RADAR_DEBUG === "1") {
+                        console.error("[x402] hook bridge failed:", err);
+                      }
+                    }
                   }
+                };
+
+                const preferHeader = req.headers["prefer"];
+                const isAsync =
+                  options.asyncCommit ??
+                  (preferHeader === "respond-async" || process.env.RADAR_ASYNC_COMMIT === "1");
+
+                if (isAsync) {
+                  scanRes.asyncCommit = true;
+                  scanRes.onchainLedgerStatus = "pending";
+                  scanRes.oracle = { status: "pending", async: true };
+                  void executeCommitAndBridge().catch((err) => {
+                    if (process.env.RADAR_DEBUG === "1") console.error("[x402] background commit failed:", err);
+                  });
+                } else {
+                  await executeCommitAndBridge();
                 }
               }
             }
@@ -665,7 +1128,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             const settled = store.recordSettledPayment({
               signature: proof.signature,
               payer: proof.payer,
-              recipient,
+              recipient: activeRecipient,
               amount: verResult.amount ?? requiredPrice,
               endpoint: pathname,
               wallet: typeof body.wallet === "string" ? body.wallet : undefined,
@@ -673,7 +1136,11 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             if (!settled && process.env.RADAR_DEBUG === "1") {
               console.warn("[x402] payment signature settled concurrently; scan still delivered");
             }
-            res.writeHead(200, { "Content-Type": "application/json" });
+            const resHeaders: Record<string, string> = { "Content-Type": "application/json" };
+            if (req.headers["prefer"] === "respond-async") {
+              resHeaders["Preference-Applied"] = "respond-async";
+            }
+            res.writeHead(200, resHeaders);
             res.end(JSON.stringify(scanRes, null, 2));
             return;
           }
@@ -683,7 +1150,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             const settled = store.recordSettledPayment({
               signature: proof.signature,
               payer: proof.payer,
-              recipient,
+              recipient: activeRecipient,
               amount: verResult.amount ?? requiredPrice,
               endpoint: pathname,
               wallet: typeof body.wallet === "string" ? body.wallet : undefined,
@@ -765,7 +1232,24 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     recipient = args[recipientIdx + 1];
   }
 
-  const server = createX402Server({ recipient });
+  // Audit 2.3: oracle→hook bridge from env (RADAR_HOOK_MINT + RADAR_HOOK_KEYPAIR).
+  let hookBridge: X402ServerOptions["hookBridge"] | null = null;
+  try {
+    hookBridge = buildEnvHookBridge();
+    if (hookBridge) {
+      console.log(`wallet-radar x402 oracle→hook bridge enabled (mint ${process.env.RADAR_HOOK_MINT}).`);
+    } else if (process.env.RADAR_HOOK_MINT || process.env.RADAR_HOOK_KEYPAIR) {
+      console.warn(`wallet-radar x402 partial hook-bridge config (need BOTH RADAR_HOOK_MINT and RADAR_HOOK_KEYPAIR) — hook bridge disabled.`);
+    }
+  } catch (err) {
+    console.warn(`wallet-radar x402 failed to build hook bridge: ${err instanceof Error ? err.message : String(err)} — hook bridge disabled.`);
+  }
+
+  const rpcUrl =
+    process.env.SOLANA_RPC_URL ||
+    process.env.HELIUS_RPC_URL ||
+    (process.env.HELIUS_API_KEY ? "https://mainnet.helius-rpc.com/?api-key=" + process.env.HELIUS_API_KEY : undefined);
+  const server = createX402Server({ recipient, hookBridge: hookBridge ?? undefined, rpcUrl });
   server.listen(port, host, () => {
     console.log(`wallet-radar x402 server running at http://${host}:${port}`);
     console.log(`Recipient wallet: ${recipient ?? "unconfigured (set RADAR_X402_RECIPIENT)"}`);

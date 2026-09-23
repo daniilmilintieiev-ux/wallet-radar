@@ -66,16 +66,31 @@ export async function fetchUsdPrices(
 
 const STABLE_MINTS = [USDC_MINT, USDT_MINT];
 
+export type HistoricalPriceResolver = (mint: string, timestamp: number) => number | null | undefined;
+
 /**
  * USD value of a swap. Prefers a stablecoin leg (USDC/USDT are 1:1 with USD,
- * no price feed needed), otherwise uses whichever side has a known price.
+ * no price feed needed), then checks historical price resolver (if provided and timestamp present),
+ * otherwise uses whichever side has a known spot price.
  * Returns null when neither leg is priceable — callers must fall back to
  * unnormalized (major-only) behavior. Results are rounded to the micro-USD
  * so float products of price * amount stay deterministic.
  */
-export function swapUsdValue(swap: SwapEvent, prices: UsdPriceMap): number | null {
+export function swapUsdValue(
+  swap: SwapEvent,
+  prices: UsdPriceMap,
+  historicalResolver?: HistoricalPriceResolver | null,
+): number | null {
   for (const leg of [swap.tokenOut, swap.tokenIn]) {
     if (STABLE_MINTS.includes(leg.mint)) return leg.amount;
+  }
+  if (historicalResolver && typeof swap.timestamp === "number" && swap.timestamp > 0) {
+    for (const leg of [swap.tokenIn, swap.tokenOut]) {
+      const histPrice = historicalResolver(leg.mint, swap.timestamp);
+      if (typeof histPrice === "number" && histPrice > 0) {
+        return Math.round(leg.amount * histPrice * 1e6) / 1e6;
+      }
+    }
   }
   for (const leg of [swap.tokenIn, swap.tokenOut]) {
     const price = prices[leg.mint];

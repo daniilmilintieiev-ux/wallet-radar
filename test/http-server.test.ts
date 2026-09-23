@@ -87,7 +87,7 @@ test("http-server: rate limiting returns 429 when per-minute limit exceeded", as
   }
 });
 
-test("http-server: clientIp resolves proxy headers (audit 1.6)", () => {
+test("http-server: clientIp resolves proxy headers (audit 1.3 & 1.6)", () => {
   const prevTrust = process.env.RADAR_TRUST_PROXY;
   try {
     const base = { socket: { remoteAddress: "::ffff:127.0.0.1" } } as any;
@@ -95,21 +95,25 @@ test("http-server: clientIp resolves proxy headers (audit 1.6)", () => {
     // No headers -> socket address without the IPv4-mapped prefix
     assert.equal(clientIp({ ...base, headers: {} }), "127.0.0.1");
 
-    // Cloudflare header is always trusted (unforgeable)
+    // Without RADAR_TRUST_PROXY=1, proxy headers are ignored (client-spoofable)
+    delete process.env.RADAR_TRUST_PROXY;
     assert.equal(
       clientIp({ ...base, headers: { "cf-connecting-ip": "203.0.113.7" } }),
-      "203.0.113.7",
+      "127.0.0.1",
     );
-
-    // X-Forwarded-For is ignored without RADAR_TRUST_PROXY (client-spoofable)
-    delete process.env.RADAR_TRUST_PROXY;
     assert.equal(
       clientIp({ ...base, headers: { "x-forwarded-for": "198.51.100.9, 127.0.0.1" } }),
       "127.0.0.1",
     );
 
-    // With RADAR_TRUST_PROXY=1 the first XFF hop wins
+    // With RADAR_TRUST_PROXY=1, CF-Connecting-IP is trusted
     process.env.RADAR_TRUST_PROXY = "1";
+    assert.equal(
+      clientIp({ ...base, headers: { "cf-connecting-ip": "203.0.113.7" } }),
+      "203.0.113.7",
+    );
+
+    // With RADAR_TRUST_PROXY=1 the first XFF hop is used when CF is absent
     assert.equal(
       clientIp({ ...base, headers: { "x-forwarded-for": "198.51.100.9, 127.0.0.1" } }),
       "198.51.100.9",
@@ -130,6 +134,8 @@ test("http-server: clientIp resolves proxy headers (audit 1.6)", () => {
 });
 
 test("http-server: rate limits stay per-client behind a proxy (audit 1.6)", async () => {
+  const prevTrust = process.env.RADAR_TRUST_PROXY;
+  process.env.RADAR_TRUST_PROXY = "1";
   const server = createServer({ rateLimitPerMin: 2 });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const addr = server.address();
@@ -147,6 +153,8 @@ test("http-server: rate limits stay per-client behind a proxy (audit 1.6)", asyn
     // Client B (same proxy socket) is unaffected
     assert.equal((await hit("198.51.100.2")).status, 200);
   } finally {
+    if (prevTrust === undefined) delete process.env.RADAR_TRUST_PROXY;
+    else process.env.RADAR_TRUST_PROXY = prevTrust;
     (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
@@ -1103,4 +1111,81 @@ test("http-server: /scan uses the saved baseline for repeat scans (audit 2.1)", 
     cleanup(dir);
   }
 });
+
+test("audit 1.3: RADAR_AUTH_HEAVY / authHeavy gates /scan, /trust, /simulate, /batch under RADAR_API_TOKEN", async () => {
+  const { store, dir } = tmpStore();
+  const prevToken = process.env.RADAR_API_TOKEN;
+  const prevHeavy = process.env.RADAR_AUTH_HEAVY;
+  process.env.RADAR_API_TOKEN = "secret-token-123";
+  process.env.RADAR_AUTH_HEAVY = "1";
+
+  const r = await startWatchServer(store, { apiKey: "key" });
+  try {
+    const endpoints = [
+      { path: "/scan", method: "POST", body: { wallet: "11111111111111111111111111111111" } },
+      { path: "/trust", method: "POST", body: { wallet: "11111111111111111111111111111111" } },
+      { path: "/simulate", method: "POST", body: { wallet: "11111111111111111111111111111111", amountUsd: 10 } },
+      { path: "/batch", method: "POST", body: { wallets: ["11111111111111111111111111111111"] } },
+    ];
+
+    for (const ep of endpoints) {
+      // 1. Without token -> 401
+      const resUnauth = await fetch(`${r.base}${ep.path}`, {
+        method: ep.method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ep.body),
+      });
+      assert.equal(resUnauth.status, 401, `${ep.path} must return 401 when unauthenticated in authHeavy mode`);
+
+      // 2. With invalid token -> 401
+      const resBad = await fetch(`${r.base}${ep.path}`, {
+        method: ep.method,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer wrong-token",
+        },
+        body: JSON.stringify(ep.body),
+      });
+      assert.equal(resBad.status, 401, `${ep.path} must reject wrong token`);
+
+      // 3. With valid token -> authorized (not 401)
+      const resAuth = await fetch(`${r.base}${ep.path}`, {
+        method: ep.method,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer secret-token-123",
+        },
+        body: JSON.stringify(ep.body),
+      });
+      assert.notEqual(resAuth.status, 401, `${ep.path} must accept valid token`);
+    }
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+    if (prevToken === undefined) delete process.env.RADAR_API_TOKEN;
+    else process.env.RADAR_API_TOKEN = prevToken;
+    if (prevHeavy === undefined) delete process.env.RADAR_AUTH_HEAVY;
+    else process.env.RADAR_AUTH_HEAVY = prevHeavy;
+  }
+});
+
+test("audit 2.5: readBody rejects payload larger than 1MB with 413", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "key" });
+  try {
+    const largeBody = "x".repeat(1_000_001);
+    const res = await fetch(`${r.base}/selftest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: largeBody,
+    });
+    assert.equal(res.status, 413);
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
 
