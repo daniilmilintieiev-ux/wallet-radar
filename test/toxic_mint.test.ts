@@ -399,6 +399,119 @@ test("computeTop10Pct: clamps to 100 and returns null on invalid supply", () => 
   assert.equal(computeTop10Pct("abc", 6, [{ amount: "100", uiAmount: 1 }]), null);
 });
 
+test("computeTop10Pct: excludes AMM pool vaults / incinerator via systemHolders (audit 3.2)", () => {
+  // supply 1_000_000. One pool vault (600k) + incinerator (200k) + 2 wallets (100k each).
+  // Unfiltered top-10 = 100%; with the 2 system accounts excluded = 20%.
+  const accounts = [
+    { address: "PoolVaultAAA", amount: "600000000000", uiAmount: 600_000 },
+    { address: "BurnVaultCCC", amount: "200000000000", uiAmount: 200_000 },
+    { address: "Wallet1", amount: "100000000000", uiAmount: 100_000 },
+    { address: "Wallet2", amount: "100000000000", uiAmount: 100_000 },
+  ];
+  const system = new Set(["PoolVaultAAA", "BurnVaultCCC"]);
+  assert.equal(computeTop10Pct("1000000000000", 6, accounts), 100);
+  assert.equal(computeTop10Pct("1000000000000", 6, accounts, system), 20);
+});
+
+test("fetchMintMetadata: pool vaults + incinerator excluded from top-10 (audit 3.2, end-to-end)", async () => {
+  const RAYDIUM_AMM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+  const INCINERATOR = "1nc1nerator11111111111111111111111111111111";
+  const stubFetch: typeof fetch = async (_url: any, init: any) => {
+    const body = JSON.parse(init.body);
+    if (body.method === "getAsset") {
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          result: {
+            id: TOXIC_MINT,
+            token_info: { mint_authority: null, freeze_authority: null, supply: "1000000000000", decimals: 6 },
+          },
+        }),
+      } as any;
+    }
+    if (body.method === "getTokenLargestAccounts") {
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          result: {
+            value: [
+              { address: "PoolVaultAAA", amount: "400000000000", uiAmount: 400_000 },
+              { address: "PoolVaultBBB", amount: "200000000000", uiAmount: 200_000 },
+              { address: "BurnVaultCCC", amount: "200000000000", uiAmount: 200_000 },
+              { address: "Wallet1", amount: "100000000000", uiAmount: 100_000 },
+              { address: "Wallet2", amount: "100000000000", uiAmount: 100_000 },
+            ],
+          },
+        }),
+      } as any;
+    }
+    if (body.method === "getMultipleAccounts") {
+      // Token accounts: top-level owner is always the SPL Token program; the
+      // real holder lives in data.parsed.info.owner (verified on mainnet).
+      const holders = [RAYDIUM_AMM, RAYDIUM_AMM, INCINERATOR, "Wallet1Owner", "Wallet2Owner"];
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          result: {
+            value: holders.map((owner) => ({
+              owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              data: { parsed: { info: { owner } } },
+            })),
+          },
+        }),
+      } as any;
+    }
+    throw new Error("unexpected RPC method: " + body.method);
+  };
+  const info = await fetchMintMetadata(TOXIC_MINT, { fetchFn: stubFetch, rpcUrl: "http://rpc.test" });
+  assert.ok(info, "metadata should be fetched");
+  // Unfiltered would be 100%; with 2 pool vaults + incinerator excluded: 20%
+  assert.equal(info.top10Pct, 20);
+});
+
+test("fetchMintMetadata: falls back to unfiltered top-10 when owner resolution fails (audit 3.2)", async () => {
+  const stubFetch: typeof fetch = async (_url: any, init: any) => {
+    const body = JSON.parse(init.body);
+    if (body.method === "getAsset") {
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          result: {
+            id: TOXIC_MINT,
+            token_info: { mint_authority: null, freeze_authority: null, supply: "1000000000000", decimals: 6 },
+          },
+        }),
+      } as any;
+    }
+    if (body.method === "getTokenLargestAccounts") {
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          result: {
+            value: [
+              { address: "PoolVaultAAA", amount: "750000000000", uiAmount: 750_000 },
+              { address: "Wallet1", amount: "20000000000", uiAmount: 20_000 },
+            ],
+          },
+        }),
+      } as any;
+    }
+    if (body.method === "getMultipleAccounts") {
+      return { ok: false, json: async () => ({}) } as any;
+    }
+    throw new Error("unexpected RPC method: " + body.method);
+  };
+  const info = await fetchMintMetadata(TOXIC_MINT, { fetchFn: stubFetch, rpcUrl: "http://rpc.test" });
+  assert.ok(info, "metadata should be fetched");
+  // getMultipleAccounts failed -> unfiltered: 770k / 1M = 77%
+  assert.equal(info.top10Pct, 77);
+});
+
 test("parseDasAssetSupply: extracts supply and decimals from DAS token_info", () => {
   const data = { result: { id: TOXIC_MINT, token_info: { supply: "1000000000", decimals: 6 } } };
   const { supply, decimals } = parseDasAssetSupply(data);

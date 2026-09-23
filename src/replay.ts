@@ -51,7 +51,7 @@ export interface ReplayOptions {
   /** Injectable fetcher for tests. */
   fetchHistory?: (wallet: string, query: HistoryQuery) => Promise<EnhancedTx[]>;
   /** Injectable mint risk fetcher for tests. */
-  fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  fetchMintRisk?: (txs: EnhancedTx[], wallet?: string) => Promise<MintRiskMap>;
 }
 
 /**
@@ -127,7 +127,7 @@ export async function replayWallet(
   const fetchHistory =
     opts.fetchHistory ?? ((w: string, q: HistoryQuery) => fetchWalletHistory(apiKey, w, q));
   const fetchMintRisk =
-    opts.fetchMintRisk ?? ((txs: EnhancedTx[]) => fetchSwapMintRisk(txs, { apiKey }));
+    opts.fetchMintRisk ?? ((txs: EnhancedTx[], wallet?: string) => fetchSwapMintRisk(txs, { apiKey, wallet }));
 
   const [burstSide, historySide] = await Promise.all([
     fetchHistory(wallet, { gteTime: win.sinceSec, ltTime: win.untilSec, maxPages }),
@@ -140,8 +140,8 @@ export async function replayWallet(
     );
   }
 
-  const prices = usePrices ? await fetchSwapPrices([...burst, ...history]) : null;
-  const mintRisk = await fetchMintRisk(burst);
+  const prices = usePrices ? await fetchSwapPrices([...burst, ...history], { wallet }) : null;
+  const mintRisk = await fetchMintRisk(burst, wallet);
   const { baseline, anomalies, riskScore } = buildReplay(
     wallet,
     history,

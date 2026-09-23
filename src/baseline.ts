@@ -14,6 +14,13 @@ export { computePnlLite, mergePnl };
  */
 export const RECENT_SWAP_WINDOW = 32;
 
+/**
+ * How many most-recent tx timestamps to retain for the median inter-activity
+ * interval (the robust cadence baseline). A fixed recency window, so long
+ * dormant gaps fall out of it instead of diluting the rate to ~0.
+ */
+export const RECENT_TS_WINDOW = 256;
+
 /** Append values to a most-recent window, keeping only the last `windowSize`. */
 function pushWindow(prev: number[] | undefined, values: number[], windowSize: number): number[] {
   const next = [...(prev ?? []), ...values];
@@ -58,7 +65,7 @@ export function updateBaseline(
   for (const tx of txs) {
     if (tx.source) venues.add(tx.source);
     for (const p of txPrograms(tx)) programs.add(p);
-    const s = extractSwap(tx);
+    const s = extractSwap(tx, wallet);
     // Median is tracked on major tokens only — raw quantities of different
     // mints are not comparable (see LARGE_SWAP rule).
     if (s && MAJOR_MINTS.includes(s.tokenIn.mint)) swapSizes.push(s.tokenIn.amount);
@@ -90,11 +97,32 @@ export function updateBaseline(
 
   // Lifetime activity rate (tx per minute) over the full observed span,
   // clamped to at least one minute so same-second bursts do not divide by zero.
+  // NOTE: this is a lifetime MEAN — dormant gaps dilute it. Kept for the
+  // ACTIVITY_BURST reference text and as a legacy cadence fallback only; the
+  // cadence rule prefers the robust `medianIntervalSec` below.
   const txTotal = prevB.txCount + txs.length;
   const spanMin = firstSeen !== null && lastSeen !== null ? (lastSeen - firstSeen) / 60 : 0;
   const medianTps = txTotal > 1 ? txTotal / Math.max(spanMin, 1) : 0;
 
-  const batchPnl = computePnlLite(txs, prices, prevB.openLots);
+  // Robust cadence baseline: median of inter-activity intervals (seconds) over
+  // a bounded MOST-RECENT timestamp window. Unlike the lifetime mean above, a
+  // month of dormancy followed by a burst does not collapse this to ~0, which
+  // is what produced false REGIME_SHIFT "cadence accelerated 5000x" alarms.
+  const batchTs = txs
+    .map((t) => (typeof t.timestamp === "number" ? t.timestamp : 0))
+    .filter((t) => t > 0);
+  const recentTimestamps = pushWindow(prevB.recentTimestamps, batchTs, RECENT_TS_WINDOW);
+  const sortedRecentTs = [...recentTimestamps].sort((a, b) => a - b);
+  const recentIntervals: number[] = [];
+  for (let i = 1; i < sortedRecentTs.length; i++) {
+    recentIntervals.push(sortedRecentTs[i] - sortedRecentTs[i - 1]);
+  }
+  // Need >= 2 intervals (3 timestamps) for a meaningful median; otherwise keep
+  // the previous value so legacy baselines migrate in gradually.
+  const medianIntervalSec =
+    recentIntervals.length >= 2 ? median(recentIntervals) : prevB.medianIntervalSec ?? 0;
+
+  const batchPnl = computePnlLite(txs, prices, prevB.openLots, wallet);
   const pnl = mergePnl(prevB.pnl, batchPnl);
   const openLots = batchPnl.openLots;
 
@@ -109,15 +137,18 @@ export function updateBaseline(
       realizedUsd: pnl.realizedUsd,
       winRate: pnl.winRate,
       roundTrips: pnl.roundTrips,
+      windowDays: pnl.windowDays,
     },
     openLots,
     medianTps,
+    recentTimestamps,
+    medianIntervalSec,
     activeHours,
     firstSeenAt: firstSeen,
     recentSwapAmounts,
     recentSwapAmountsUsd,
     lastSeenAt: lastSeen,
     txCount: txTotal,
-    counterparties: foldCounterparties(prevB.counterparties, txs, nowSec, prices),
+    counterparties: foldCounterparties(prevB.counterparties, txs, nowSec, prices, wallet),
   };
 }

@@ -20,9 +20,10 @@ const SENDER = new PublicKey(process.env.SENDER_TA || "4gaY71d7WfqWnwKF7JdKerKXN
 const CP_TOKEN = new PublicKey(process.env.CP_TOKEN || "ETDFexyBDZaZ9vnokDYsBWmMuhRsyLR3Ld4jg9NYCEtD");
 const CP_WALLET = new PublicKey(process.env.CP_WALLET || "4UAH3q1pVUQF3kUQ8SHHYu6HZtT8gCGXUdZ3AwX3BZAY");
 
+const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
 const conn = new Connection(RPC, "confirmed");
 const deployer = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync("E:/JOB/earn/solana-keys/devnet-deployer.json", "utf8"))),
+  Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),
 );
 
 function extractCode(err) {

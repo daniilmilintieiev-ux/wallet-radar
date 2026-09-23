@@ -23,6 +23,7 @@ import {
   buildUpdateConfigInstruction,
   buildWriteScanRecordInstruction,
   buildRecordPdaMetaSeeds,
+  RADAR_RECORD_SEED,
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
   RadarHookErrorCode,
@@ -621,7 +622,7 @@ export async function runTransferHookDevnet(options: {
   const cp2Wallet = deriveKeypair(payer, `radar-cp2-wallet-${LABEL}`).publicKey;
   const cp2TokenKp = deriveKeypair(payer, `radar-cp2-ta-${LABEL}`);
   const cp2Token = cp2TokenKp.publicKey;
-  const [cp2RecordPda] = deriveRadarRecordPda(cp2Wallet, hookProgramId);
+  const [cp2RecordPda, cp2RecordBump] = deriveRadarRecordPda(cp2Wallet, hookProgramId);
 
   if (await accountExists(connection, cp2Token)) {
     console.log(`[transfer-hook] Unverified counterparty token account already exists; skipping.`);
@@ -672,7 +673,24 @@ export async function runTransferHookDevnet(options: {
       space: 48,
       programId: hookProgramId,
     });
-    const { sig, err, logs } = await sendAndInspect(connection, [createRecordIx], [payer], payer.publicKey);
+    // createAccount requires the NEW account to sign. The record PDA's keypair
+    // is derivable from its seeds + bump + program id (see solana PDA derivation).
+    const pdaSeed = createHash("sha256")
+      .update(Buffer.concat([
+        Buffer.from("ProgramDerivedAddress"),
+        RADAR_RECORD_SEED,
+        cp2Wallet.toBuffer(),
+        Buffer.from([cp2RecordBump]),
+        hookProgramId.toBuffer(),
+      ]))
+      .digest();
+    const recordKp = Keypair.fromSeed(pdaSeed);
+    const { sig, err, logs } = await sendAndInspect(
+      connection,
+      [createRecordIx],
+      [payer, recordKp],
+      payer.publicKey,
+    );
     if (err) {
       throw new Error(`Unverified record creation failed: ${JSON.stringify(err)}\n${logs.join("\n")}`);
     }

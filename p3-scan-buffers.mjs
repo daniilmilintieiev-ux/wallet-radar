@@ -2,7 +2,8 @@ import { Keypair, PublicKey, Connection } from "@solana/web3.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 const conn = new Connection("https://api.devnet.solana.com", "confirmed");
-const deployer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync("E:/JOB/earn/solana-keys/devnet-deployer.json", "utf8"))));
+const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const deployer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))));
 function deriveKp(label) {
   const seed = createHash("sha256").update(Buffer.concat([deployer.secretKey, Buffer.from(label)])).digest();
   return Keypair.fromSeed(seed);

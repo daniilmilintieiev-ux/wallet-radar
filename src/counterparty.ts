@@ -1,4 +1,4 @@
-import { Anomaly, CounterpartyMemory, CounterpartyStat, EnhancedTx } from "./types.js";
+import { Anomaly, CounterpartyMemory, CounterpartyStat, EnhancedTx, SOL_MINT } from "./types.js";
 import { extractSwap, txCounterparties } from "./analyzer.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
 
@@ -28,6 +28,7 @@ export function foldCounterparties(
   txs: EnhancedTx[],
   nowSec: number,
   prices: UsdPriceMap | null = null,
+  wallet?: string,
 ): CounterpartyMemory {
   const map = new Map<string, CounterpartyStat>();
   let total = 0;
@@ -38,16 +39,44 @@ export function foldCounterparties(
   for (const tx of txs) {
     const ts = typeof tx.timestamp === "number" ? tx.timestamp : nowSec;
     let usd = 0;
-    const s = extractSwap(tx);
+    const s = extractSwap(tx, wallet);
     if (s && prices) {
       const v = swapUsdValue(s, prices);
       if (v !== null) usd = v;
     }
-    for (const cp of txCounterparties(tx)) {
+    // Direct (non-swap) transfers: attribute the USD value of each leg to the
+    // counterparty it moved to/from, so plain transfers build up volumeUsd too
+    // (audit 3.6). Swap txs keep the whole-swap attribution above.
+    const directUsd = new Map<string, number>();
+    if (!s && prices) {
+      const me = wallet ?? tx.feePayer;
+      if (me) {
+        for (const t of tx.tokenTransfers ?? []) {
+          if (!t.mint) continue;
+          if (t.fromUserAccount !== me && t.toUserAccount !== me) continue;
+          // (string | undefined annotation: a later `cp === me` check in this
+          // scope makes TS infer a circular type for cp without it -> TS7022)
+          const cp: string | undefined = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
+          if (!cp || cp === me) continue;
+          const amount = Number(t.tokenAmount ?? 0);
+          const price = prices[t.mint];
+          if (amount > 0 && price) directUsd.set(cp, (directUsd.get(cp) ?? 0) + amount * price);
+        }
+        for (const n of tx.nativeTransfers ?? []) {
+          if (n.fromUserAccount !== me && n.toUserAccount !== me) continue;
+          const cp: string | undefined = n.fromUserAccount === me ? n.toUserAccount : n.fromUserAccount;
+          if (!cp || cp === me) continue;
+          const amount = Number(n.amount ?? 0) / 1e9;
+          const price = prices[SOL_MINT];
+          if (amount > 0 && price) directUsd.set(cp, (directUsd.get(cp) ?? 0) + amount * price);
+        }
+      }
+    }
+    for (const cp of txCounterparties(tx, wallet)) {
       const cur =
         map.get(cp) ?? { address: cp, count: 0, volumeUsd: 0, firstSeen: ts, lastSeen: ts };
       cur.count += 1;
-      cur.volumeUsd += usd;
+      cur.volumeUsd += usd + (directUsd.get(cp) ?? 0);
       if (ts < cur.firstSeen) cur.firstSeen = ts;
       if (ts > cur.lastSeen) cur.lastSeen = ts;
       map.set(cp, cur);
@@ -84,7 +113,7 @@ export function detectCounterpartyAnomalies(
   // Interactions with each counterparty in THIS batch.
   const batch = new Map<string, number>();
   for (const tx of txs) {
-    for (const cp of txCounterparties(tx)) {
+    for (const cp of txCounterparties(tx, wallet)) {
       batch.set(cp, (batch.get(cp) ?? 0) + 1);
     }
   }

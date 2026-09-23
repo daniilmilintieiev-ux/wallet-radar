@@ -225,10 +225,12 @@ async function main(): Promise<void> {
           }
         } else {
           const txs = await fetchWalletTransactions(apiKey, wallet);
-          const prices = await fetchSwapPrices(txs);
-          const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
-          baseline = updateBaseline(wallet, null, txs, Math.floor(Date.now() / 1000), prices);
-          anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+          const prices = await fetchSwapPrices(txs, { wallet });
+          const mintRisk = await fetchSwapMintRisk(txs, { apiKey, wallet });
+          const storedBaseline = inStore ? store.getBaseline(wallet) : null;
+          baseline = updateBaseline(wallet, storedBaseline, txs, Math.floor(Date.now() / 1000), prices);
+          store.saveBaseline(baseline);
+          anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
           if (txs.length > 0) {
             windowSince = txs[txs.length - 1].timestamp;
             windowUntil = txs[0].timestamp;
@@ -343,10 +345,13 @@ async function main(): Promise<void> {
       const wallet = args[0];
       if (!wallet) return usage();
       const txs = await fetchWalletTransactions(apiKey, wallet);
-      const prices = await fetchSwapPrices(txs);
-      const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
-      const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
-      const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+      const prices = await fetchSwapPrices(txs, { wallet });
+      const mintRisk = await fetchSwapMintRisk(txs, { apiKey, wallet });
+      const store = openStore();
+      const storedBaseline = store.getBaseline(wallet);
+      const baseline: Baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
+      store.saveBaseline(baseline);
+      const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
       console.log(
         JSON.stringify(
           {
@@ -365,6 +370,7 @@ async function main(): Promise<void> {
           2,
         ),
       );
+      store.close();
       return;
     }
     case "prices": {

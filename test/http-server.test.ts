@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
-import { createServer } from "../src/http-server.js";
+import { createServer, clientIp } from "../src/http-server.js";
 import { getVersion } from "../src/mcp-server.js";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,6 +81,71 @@ test("http-server: rate limiting returns 429 when per-minute limit exceeded", as
     const body = (await r4.json()) as { error: string; retryAfterSec: number };
     assert.equal(body.error, "Too Many Requests");
     assert.ok(body.retryAfterSec >= 1);
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test("http-server: clientIp resolves proxy headers (audit 1.6)", () => {
+  const prevTrust = process.env.RADAR_TRUST_PROXY;
+  try {
+    const base = { socket: { remoteAddress: "::ffff:127.0.0.1" } } as any;
+
+    // No headers -> socket address without the IPv4-mapped prefix
+    assert.equal(clientIp({ ...base, headers: {} }), "127.0.0.1");
+
+    // Cloudflare header is always trusted (unforgeable)
+    assert.equal(
+      clientIp({ ...base, headers: { "cf-connecting-ip": "203.0.113.7" } }),
+      "203.0.113.7",
+    );
+
+    // X-Forwarded-For is ignored without RADAR_TRUST_PROXY (client-spoofable)
+    delete process.env.RADAR_TRUST_PROXY;
+    assert.equal(
+      clientIp({ ...base, headers: { "x-forwarded-for": "198.51.100.9, 127.0.0.1" } }),
+      "127.0.0.1",
+    );
+
+    // With RADAR_TRUST_PROXY=1 the first XFF hop wins
+    process.env.RADAR_TRUST_PROXY = "1";
+    assert.equal(
+      clientIp({ ...base, headers: { "x-forwarded-for": "198.51.100.9, 127.0.0.1" } }),
+      "198.51.100.9",
+    );
+
+    // CF-Connecting-IP still wins over XFF
+    assert.equal(
+      clientIp({
+        ...base,
+        headers: { "cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "198.51.100.9" },
+      }),
+      "203.0.113.7",
+    );
+  } finally {
+    if (prevTrust === undefined) delete process.env.RADAR_TRUST_PROXY;
+    else process.env.RADAR_TRUST_PROXY = prevTrust;
+  }
+});
+
+test("http-server: rate limits stay per-client behind a proxy (audit 1.6)", async () => {
+  const server = createServer({ rateLimitPerMin: 2 });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    const hit = (client: string) =>
+      fetch(base, { headers: { "CF-Connecting-IP": client } });
+
+    // Client A exhausts its own 2/min bucket
+    assert.equal((await hit("198.51.100.1")).status, 200);
+    assert.equal((await hit("198.51.100.1")).status, 200);
+    assert.equal((await hit("198.51.100.1")).status, 429);
+
+    // Client B (same proxy socket) is unaffected
+    assert.equal((await hit("198.51.100.2")).status, 200);
   } finally {
     (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
@@ -988,6 +1053,54 @@ test("http-server: POST /trust validates maxRisk and minLiquidityUsd", async () 
     assert.equal(res2.status, 400);
   } finally {
     await r.close();
+  }
+});
+
+test("http-server: /scan uses the saved baseline for repeat scans (audit 2.1)", async () => {
+  const { store, dir } = tmpStore();
+  const wallet = "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8";
+  store.addWallet(wallet);
+  let fixture: EnhancedTx[] = [makeSwapTx("s1", 1_700_000_000, USDC_MINT, 100, USDC_MINT, 100)];
+  const server = createServer({
+    store,
+    apiKey: "test-helius-key",
+    rateLimitPerMin: 0,
+    fetchTxs: async () => fixture,
+    fetchPrices: async () => null,
+    fetchMintRisk: async () => ({}),
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (typeof addr === "string" || addr === null) throw new Error("no server address");
+  const base = `http://127.0.0.1:${addr.port}`;
+  const scan = () =>
+    fetch(`${base}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet }),
+    });
+  try {
+    // First scan learns the baseline (JUPITER venue).
+    const res1 = await scan();
+    assert.equal(res1.status, 200);
+    const body1 = (await res1.json()) as { anomalies: Array<{ type: string }> };
+    assert.ok(!body1.anomalies.some((a) => a.type === "NEW_VENUE"));
+
+    // Second scan sees a new venue: NEW_VENUE can only fire when the saved
+    // baseline is passed to detectAnomalies (previously hardcoded null).
+    fixture = [{ ...makeSwapTx("s2", 1_700_003_600, USDC_MINT, 50, USDC_MINT, 50), source: "RAYDIUM" }];
+    const res2 = await scan();
+    assert.equal(res2.status, 200);
+    const body2 = (await res2.json()) as { anomalies: Array<{ type: string }> };
+    assert.ok(
+      body2.anomalies.some((a) => a.type === "NEW_VENUE"),
+      "repeat /scan must detect NEW_VENUE against the saved baseline",
+    );
+  } finally {
+    (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    store.close();
+    cleanup(dir);
   }
 });
 

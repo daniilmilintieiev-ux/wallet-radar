@@ -35,6 +35,37 @@ test("extractSwap decodes token + native legs", () => {
   assert.equal(s.dex, "RAY");
 });
 
+test("audit 2.2: relayer txs attribute swap legs and counterparties to the wallet, not the feePayer", () => {
+  const relayer = "Relayer111111111111111111111111111111111111";
+  const pool = "Pool11111111111111111111111111111111111111111";
+  const meme = "Meme111111111111111111111111111111111111111";
+  const tx: EnhancedTx = {
+    signature: "relayer-sig",
+    timestamp: 1_700_000_000,
+    source: "JUPITER",
+    type: "SWAP",
+    feePayer: relayer,
+    tokenTransfers: [
+      { mint: USDC_MINT, fromUserAccount: WALLET, toUserAccount: pool, tokenAmount: 5_000_000 },
+      { mint: meme, fromUserAccount: pool, toUserAccount: WALLET, tokenAmount: 999 },
+    ],
+  };
+  // Without a wallet, the feePayer (relayer) is treated as "self": the user's
+  // swap is not recognized...
+  assert.equal(extractSwap(tx), null);
+  // ...and the user's own address ends up in their own counterparties.
+  assert.ok(txCounterparties(tx).includes(WALLET));
+  // Passing the wallet under analysis fixes both.
+  const s = extractSwap(tx, WALLET);
+  assert.ok(s);
+  assert.equal(s.tokenIn.mint, USDC_MINT);
+  assert.equal(s.tokenIn.amount, 5_000_000);
+  assert.equal(s.tokenOut.mint, meme);
+  const cps = txCounterparties(tx, WALLET);
+  assert.deepEqual(cps, [pool, pool]);
+  assert.ok(!cps.includes(WALLET));
+});
+
 test("no anomalies on first sight (no baseline)", () => {
   const txs = [swapTx("a", 1_700_000_000, "JUPITER", 1000)];
   assert.equal(detectAnomalies(WALLET, txs, null).length, 0);

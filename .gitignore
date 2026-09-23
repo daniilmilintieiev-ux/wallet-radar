@@ -16,3 +16,6 @@ _*.mjs
 
 # Rust (programs/radar-transfer-hook)
 target/
+
+# Serena semantic index (local tool state)
+.serena/

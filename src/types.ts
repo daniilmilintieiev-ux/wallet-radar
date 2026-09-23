@@ -57,6 +57,12 @@ export interface PnlSummary {
   realizedUsd: number | null;
   winRate: number | null;
   roundTrips: number;
+  /**
+   * Realized PnL is only computed over legs within this many days of the
+   * newest leg in the batch. Prices are the CURRENT spot (Jupiter), not
+   * historical, so a bounded window keeps the approximation honest (audit 3.1).
+   */
+  windowDays?: number;
 }
 
 /** Learned behavioral profile for a watched wallet. */
@@ -82,10 +88,24 @@ export interface Baseline {
   recentSwapAmountsUsd?: number[];
   /**
    * Lifetime activity rate in transactions PER MINUTE: total tx count divided
-   * by the observed activity span (clamped to at least one minute). Drives the
-   * ACTIVITY_BURST reference and REGIME_SHIFT's cadence dimension.
+   * by the observed activity span (clamped to at least one minute). This is a
+   * LIFETIME MEAN (despite the historical name) — long dormant gaps dilute it,
+   * so it is kept only as the ACTIVITY_BURST reference text and as a fallback
+   * cadence baseline for legacy profiles. REGIME_SHIFT's cadence dimension
+   * prefers `medianIntervalSec`.
    */
   medianTps: number;
+  /**
+   * Most-recent transaction timestamps, most-recent last, bounded to
+   * `RECENT_TS_WINDOW`. Feeds the median inter-activity interval.
+   */
+  recentTimestamps?: number[];
+  /**
+   * Median of inter-activity intervals (SECONDS) over the recent window — a
+   * robust cadence baseline that dormant gaps do not dilute. Drives
+   * REGIME_SHIFT's cadence dimension. Absent on legacy baselines.
+   */
+  medianIntervalSec?: number;
   /**
    * 24-bucket histogram of transaction counts by UTC hour (index = UTC hour).
    * Drives the OFF_HOURS rule (activity in hours with no historical activity).

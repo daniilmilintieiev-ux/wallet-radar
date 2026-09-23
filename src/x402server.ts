@@ -118,12 +118,32 @@ export async function verifySolanaPaymentRpc(
       return { valid: false, error: "Transaction failed on-chain" };
     }
 
-    if (tx.blockTime && requirement.maxAgeSec) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (nowSec - tx.blockTime > requirement.maxAgeSec) {
+    // Payer must be an actual on-chain signer of the payment transaction,
+    // otherwise any third-party transfer to the recipient could be replayed
+    // as a valid x402 payment (audit 1.3).
+    const accountKeys = tx.transaction?.message?.accountKeys;
+    if (Array.isArray(accountKeys) && accountKeys.length > 0) {
+      const payerIsSigner = accountKeys.some(
+        (k: any) => k && k.pubkey === proof.payer && k.signer === true,
+      );
+      if (!payerIsSigner) {
         return {
           valid: false,
-          error: `Transaction too old (${nowSec - tx.blockTime}s ago, max allowed ${requirement.maxAgeSec}s)`,
+          error: `X-Payment-Payer ${proof.payer} is not a signer of the payment transaction`,
+        };
+      }
+    }
+
+    // Enforce a freshness window even when the caller does not pass
+    // maxAgeSec (audit 1.3: production startup left it undefined, so the
+    // check was never executed).
+    const maxAgeSec = requirement.maxAgeSec ?? 300;
+    if (tx.blockTime) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec - tx.blockTime > maxAgeSec) {
+        return {
+          valid: false,
+          error: `Transaction too old (${nowSec - tx.blockTime}s ago, max allowed ${maxAgeSec}s)`,
         };
       }
     }
@@ -346,10 +366,12 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       throw new Error("HELIUS_API_KEY is not configured on server");
     }
     const txs = await fetchWalletTransactions(apiKey, wallet);
-    const prices = await fetchSwapPrices(txs);
-    const mintRisk = await fetchSwapMintRisk(txs, { apiKey });
-    const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
-    const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+    const prices = await fetchSwapPrices(txs, { wallet });
+    const mintRisk = await fetchSwapMintRisk(txs, { apiKey, wallet });
+    const storedBaseline = store.getBaseline(wallet);
+    const baseline: Baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
+    store.saveBaseline(baseline);
+    const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
     const riskScore = computeRiskScore(anomalies);
     const verdict = computeVerdict(riskScore);
     const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
@@ -583,21 +605,10 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             return;
           }
 
-          // 4. Settle signature in store
-          const settled = store.recordSettledPayment({
-            signature: proof.signature,
-            payer: proof.payer,
-            recipient,
-            amount: verResult.amount ?? requiredPrice,
-            endpoint: pathname,
-            wallet: typeof body.wallet === "string" ? body.wallet : undefined,
-          });
-          if (!settled) {
-            send402(res, pathname, requiredPrice, recipient, "Payment signature already settled (replay rejected)");
-            return;
-          }
-
-          // 5. Execute endpoint handler
+          // 4. Execute endpoint handler FIRST. The payment signature is only
+          // marked settled after successful delivery, so a failed request
+          // (e.g. upstream RPC outage -> 500) can be retried with the same
+          // on-chain payment instead of burning the user's funds (audit 1.4).
           if (pathname === "/scan") {
             const rawScanRes = (await scanHandler(body.wallet as string)) as Record<string, any>;
             recordHeliusCost(store, "/scan");
@@ -650,6 +661,18 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               }
             }
 
+            // 5. Settle signature after successful delivery (audit 1.4)
+            const settled = store.recordSettledPayment({
+              signature: proof.signature,
+              payer: proof.payer,
+              recipient,
+              amount: verResult.amount ?? requiredPrice,
+              endpoint: pathname,
+              wallet: typeof body.wallet === "string" ? body.wallet : undefined,
+            });
+            if (!settled && process.env.RADAR_DEBUG === "1") {
+              console.warn("[x402] payment signature settled concurrently; scan still delivered");
+            }
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(scanRes, null, 2));
             return;
@@ -657,6 +680,17 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
 
           if (pathname === "/analyze") {
             const analyzeRes = await analyzeHandler(body.wallet as string, body.txs as EnhancedTx[] | string);
+            const settled = store.recordSettledPayment({
+              signature: proof.signature,
+              payer: proof.payer,
+              recipient,
+              amount: verResult.amount ?? requiredPrice,
+              endpoint: pathname,
+              wallet: typeof body.wallet === "string" ? body.wallet : undefined,
+            });
+            if (!settled && process.env.RADAR_DEBUG === "1") {
+              console.warn("[x402] payment signature settled concurrently; analyze still delivered");
+            }
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(analyzeRes, null, 2));
             return;

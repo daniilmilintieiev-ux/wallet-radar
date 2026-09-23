@@ -582,5 +582,29 @@ test("runTrustChecks: handles unhandled runTrustCheck exception in batch", async
   }
 });
 
+test("fetchLiquidity: RPC returning {value: 0} for getTokenAccountsByOwner does not throw (audit 3.5)", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      if (body.method === "getBalance") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_500_000_000 } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      // The shape that used to crash: `value: 0` instead of an array.
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 0 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    const bal = await fetchLiquidity("https://rpc.example.com", "WappetTest1111111111111111111111111111");
+    assert.deepEqual(bal, { sol: 1.5, usdc: 0, usdt: 0 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 
 

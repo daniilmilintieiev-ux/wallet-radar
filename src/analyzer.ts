@@ -61,6 +61,15 @@ export const REGIME_DOMINANT_RATIO = 0.7;
 export const REGIME_CADENCE_FACTOR = 4;
 
 /**
+ * Minimum number of historical inter-activity interval samples (i.e. this many
+ * + 1 timestamps in the recent window) required before the cadence dimension
+ * is evaluated on a new-style baseline. Below this, the history is too sparse
+ * to define a "normal cadence", and comparing against the diluted lifetime
+ * mean produced false REGIME_SHIFT alarms.
+ */
+export const REGIME_MIN_CADENCE_INTERVALS = 10;
+
+/**
  * OFF_HOURS thresholds: the baseline hour profile must rest on at least this
  * many historical txs, the fresh batch must contain at least this many txs,
  * and at least this share of the batch must fall in UTC hours with ZERO
@@ -96,6 +105,7 @@ function tokenUiAmount(item: {
 
 export function extractSwap(
   tx: EnhancedTx,
+  wallet?: string,
 ): SwapEvent | null {
   const swap = tx.swap;
   if (swap) {
@@ -120,9 +130,11 @@ export function extractSwap(
     };
   }
   // Fallback for the newer Helius response shape (no `swap` field):
-  // reconstruct the legs from token/native transfers relative to the fee payer.
+  // reconstruct the legs from token/native transfers relative to the wallet
+  // (or the fee payer when no wallet is supplied — relayer-sponsored txs may
+  // have a feePayer that is not the user).
   if (tx.type !== "SWAP") return null;
-  const me = tx.feePayer;
+  const me = wallet ?? tx.feePayer;
   if (!me) return null;
   let inMint = "";
   let inAmount = 0;
@@ -172,11 +184,12 @@ export function txPrograms(tx: EnhancedTx): string[] {
 /**
  * Counterparty user-accounts a tx interacted with. Prefers the explicit
  * `counterparties` field; otherwise derives the "other side" from the
- * token/native transfer lists relative to the fee payer (self is excluded).
+ * token/native transfer lists relative to the wallet (or the fee payer when
+ * no wallet is supplied; self is excluded).
  */
-export function txCounterparties(tx: EnhancedTx): string[] {
+export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
   if (tx.counterparties && tx.counterparties.length > 0) return tx.counterparties;
-  const me = tx.feePayer;
+  const me = wallet ?? tx.feePayer;
   const out: string[] = [];
   const from = (u?: string) => (u && u !== me ? u : undefined);
   for (const t of tx.tokenTransfers ?? []) {
@@ -248,7 +261,7 @@ export function detectAnomalies(
   }
 
   const swaps = txs
-    .map(extractSwap)
+    .map((tx) => extractSwap(tx, wallet))
     .filter((s): s is SwapEvent => s !== null);
 
   // NEW_VENUE: first swap on a venue not seen in the baseline.
@@ -359,7 +372,7 @@ export function detectAnomalies(
     const freq = new Map<string, number>();
     let total = 0;
     for (const tx of txs) {
-      for (const cp of txCounterparties(tx)) {
+      for (const cp of txCounterparties(tx, wallet)) {
         freq.set(cp, (freq.get(cp) ?? 0) + 1);
         total += 1;
       }
@@ -589,8 +602,25 @@ export function detectAnomalies(
       }
     }
 
-    // 3. CADENCE DIMENSION: inter-activity interval distribution shifted
-    if (baseline.medianTps > 0 && txs.length >= 3) {
+    // 3. CADENCE DIMENSION: inter-activity interval distribution shifted.
+    // The baseline interval prefers the robust recent-window median interval
+    // (`medianIntervalSec` — a true median of real inter-activity gaps, not a
+    // lifetime mean diluted by dormant dead time). Legacy baselines without a
+    // timestamp window fall back to the old lifetime-mean rate. New-style
+    // baselines additionally need enough interval samples
+    // (REGIME_MIN_CADENCE_INTERVALS): a sparse history has no meaningful
+    // "normal cadence" to shift from, so comparing against it produced false
+    // "accelerated 100000x" alarms (audit 3.4).
+    const hasTsWindow = Array.isArray(baseline.recentTimestamps);
+    const baselineIntervalSec = hasTsWindow
+      ? baseline.medianIntervalSec ?? 0
+      : baseline.medianTps > 0
+        ? 60 / baseline.medianTps
+        : 0;
+    const cadenceUsable =
+      baselineIntervalSec > 0 &&
+      (!hasTsWindow || (baseline.recentTimestamps?.length ?? 0) >= REGIME_MIN_CADENCE_INTERVALS + 1);
+    if (cadenceUsable && txs.length >= 3) {
       const sortedTs = txs.map(ts).filter((t) => t > 0).sort((a, b) => a - b);
       if (sortedTs.length >= 3) {
         const intervals: number[] = [];
@@ -598,7 +628,6 @@ export function detectAnomalies(
           intervals.push(sortedTs[i] - sortedTs[i - 1]);
         }
         const recentIntervalSec = median(intervals);
-        const baselineIntervalSec = 60 / baseline.medianTps;
         if (recentIntervalSec > 0 && baselineIntervalSec / recentIntervalSec >= REGIME_CADENCE_FACTOR) {
           const factor = (baselineIntervalSec / recentIntervalSec).toFixed(1);
           shiftReasons.push(`cadence (inter-activity interval accelerated to ${recentIntervalSec.toFixed(0)}s vs baseline ${baselineIntervalSec.toFixed(0)}s, ${factor}x faster)`);

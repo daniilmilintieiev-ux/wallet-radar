@@ -216,7 +216,9 @@ export async function fetchLiquidity(rpcUrl: string, wallet: string): Promise<Tr
       value: Array<{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: number } } } } } }>;
     };
     let total = 0;
-    for (const entry of res.value ?? []) {
+    // RPC may return `value: 0` (or other non-array shapes) instead of the
+    // expected array — guard so a zero-balance wallet does not throw.
+    for (const entry of Array.isArray(res.value) ? res.value : []) {
       total += entry.account.data.parsed?.info?.tokenAmount?.uiAmount ?? 0;
     }
     return total;
@@ -300,7 +302,7 @@ export async function runTrustCheck(
     });
     const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
     lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
-    const prices = opts.noPrices ? null : await fetchSwapPrices(txs);
+    const prices = opts.noPrices ? null : await fetchSwapPrices(txs, { wallet });
     const { baselineTxs, evalTxs } = selectScoring(txs, windowStart);
     const baseline = updateBaseline(wallet, null, baselineTxs, generatedAt, prices);
     txCount = evalTxs.length;

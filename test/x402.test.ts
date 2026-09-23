@@ -806,3 +806,144 @@ test("x402: body > 1MB returns 413 Payload Too Large", async () => {
   }
 });
 
+test("verifySolanaPaymentRpc: rejects payer that is not an on-chain signer (audit 1.3)", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: Math.floor(Date.now() / 1000) - 10,
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [
+                { accountIndex: 1, owner: "RSigner", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", uiTokenAmount: { uiAmount: 0.005 } },
+              ],
+            },
+            transaction: {
+              message: {
+                accountKeys: [
+                  { pubkey: "RealSigner11111111111111111111111111111111", signer: true, writable: true },
+                  { pubkey: "RSigner", signer: false, writable: true },
+                ],
+              },
+            },
+          },
+        }),
+      );
+
+    // Attacker claims a payer wallet they did not sign with -> rejected
+    const resBad = await verifySolanaPaymentRpc(
+      { signature: "s_replay", payer: "Attacker111111111111111111111111111111111" },
+      { endpoint: "/scan", recipient: "RSigner", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(resBad.valid, false);
+    assert.match(resBad.error ?? "", /not a signer/);
+
+    // The real on-chain signer -> accepted
+    const resOk = await verifySolanaPaymentRpc(
+      { signature: "s_replay", payer: "RealSigner11111111111111111111111111111111" },
+      { endpoint: "/scan", recipient: "RSigner", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(resOk.valid, true);
+    assert.equal(resOk.amount, 0.005);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("verifySolanaPaymentRpc: enforces default 300s freshness when maxAgeSec is omitted (audit 1.3)", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const oldBlockTime = Math.floor(Date.now() / 1000) - 3600; // 1 hour old
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: oldBlockTime,
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [
+                { accountIndex: 1, owner: "RDefault", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", uiTokenAmount: { uiAmount: 0.005 } },
+              ],
+            },
+          },
+        }),
+      );
+
+    // No maxAgeSec in requirement -> the default 300s window must still reject the 1h-old tx
+    const res = await verifySolanaPaymentRpc(
+      { signature: "s_stale", payer: "p1" },
+      { endpoint: "/scan", recipient: "RDefault", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(res.valid, false);
+    assert.match(res.error ?? "", /Transaction too old.*300s/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("x402: failed handler does not burn the payment (retry with same signature works, audit 1.4)", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
+  const sig = "sig_payment_burn_fix";
+
+  let failFirst = true;
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async () => ({ valid: true, amount: 0.005, payer, recipient }),
+    scanHandler: async () => {
+      if (failFirst) {
+        failFirst = false;
+        throw new Error("upstream RPC outage");
+      }
+      return { ok: true, riskScore: 5 };
+    },
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const doRequest = () =>
+      fetch(`http://127.0.0.1:${port}/scan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Payment-Signature": sig,
+          "X-Payment-Payer": payer,
+        },
+        body: JSON.stringify({ wallet: "TargetWappet111111111111111111111111111111" }),
+      });
+
+    // 1. First attempt: handler throws -> 500, signature must NOT be settled
+    const res1 = await doRequest();
+    assert.equal(res1.status, 500);
+    await res1.text();
+    assert.equal(store.hasSettledPayment(sig), false, "failed request must not settle the payment");
+
+    // 2. Retry with the SAME signature: handler now succeeds -> 200 + settled
+    const res2 = await doRequest();
+    assert.equal(res2.status, 200);
+    const json2 = (await res2.json()) as any;
+    assert.equal(json2.ok, true);
+    assert.equal(store.hasSettledPayment(sig), true, "successful retry must settle the payment");
+
+    // 3. Third attempt with the same signature -> replay rejected
+    const res3 = await doRequest();
+    assert.equal(res3.status, 402);
+    await res3.text();
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+

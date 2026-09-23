@@ -10,8 +10,8 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } f
 
 const BPF_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 const RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-const AUTHORITY_PATH = "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
-const DEPLOYER_PATH = "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
+const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
 const PROGRAM_DATA = new PublicKey(process.env.CLOSE_PROGRAM_DATA || "GFD5PTTLvJCEkL4qvvEjBCDH38hcjNtGe9Tf219LrVoH");
 const PROGRAM = new PublicKey(process.env.CLOSE_PROGRAM || "ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz");
 

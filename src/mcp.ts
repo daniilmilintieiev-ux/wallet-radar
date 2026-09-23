@@ -14,6 +14,7 @@ import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment } from "./simulate.js";
 import { Baseline, EnhancedTx } from "./types.js";
+import { Store } from "./store.js";
 import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
 
@@ -25,6 +26,7 @@ export interface McpServerOptions {
   oracleClient?: ZKOracleClient;
   commitScanFn?: typeof commitScan;
   enableOracle?: boolean;
+  store?: Store;
   fetchTxs?: typeof fetchWalletTransactions;
   fetchPrices?: typeof fetchSwapPrices;
   fetchMintRisk?: typeof fetchSwapMintRisk;
@@ -56,10 +58,12 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
         const fetchMintRiskFn = options.fetchMintRisk ?? fetchSwapMintRisk;
 
         const txs = await fetchTxsFn(apiKey, wallet);
-        const prices = await fetchPricesFn(txs);
-        const mintRisk = await fetchMintRiskFn(txs, { apiKey });
-        const baseline: Baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
-        const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+        const prices = await fetchPricesFn(txs, { wallet });
+        const mintRisk = await fetchMintRiskFn(txs, { apiKey, wallet });
+        const storedBaseline = options.store ? options.store.getBaseline(wallet) : null;
+        const baseline: Baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
+        if (options.store) options.store.saveBaseline(baseline);
+        const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
         const riskScore = computeRiskScore(anomalies);
         const verdict = computeVerdict(riskScore);
         const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
@@ -254,7 +258,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_simulate",
     {
       description:
-        "Pre-trade what-if simulation: 'if I send X USDC/SOL to wallet Y, what happens?' Runs the full trust check against the target wallet, then models the proposed payment's impact: does it exceed liquidity, trigger a LARGE_SWAP anomaly, raise the risk score? Returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing, not after funds are in motion. Requires HELIUS_API_KEY.",
+        "Pre-trade what-if simulation: 'if wallet Y pays out X USDC/SOL, what happens to Y?' The wallet under analysis is the PAYER (the outgoing payment reduces its liquidity). Runs the full trust check against the wallet, then models the outgoing payment's impact: does it exceed liquidity, count as a large payment relative to the wallet's median swap, drain liquidity, raise the risk score? Returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing, not after funds are in motion. Requires HELIUS_API_KEY.",
       inputSchema: {
         wallet: z.string().describe("Target Solana wallet address (base58)"),
         amountUsd: z.number().positive().describe("Proposed payment amount in USD"),

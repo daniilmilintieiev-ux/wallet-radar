@@ -7,7 +7,7 @@ import {
   detectCounterpartyAnomalies,
   COUNTERPARTY_MEMORY_CAP,
 } from "../src/counterparty.js";
-import { EnhancedTx, Baseline, CounterpartyMemory, USDC_MINT } from "../src/types.js";
+import { EnhancedTx, Baseline, CounterpartyMemory, USDC_MINT, SOL_MINT } from "../src/types.js";
 
 const WALLET = "DemoWallet11111111111111111111111111111111";
 
@@ -90,6 +90,47 @@ test("fold: attributes stablecoin swap USD volume to the counterparty", () => {
   const txs = [usdcSwapTx("u1", 100, 5000, "cpA")];
   const m = foldCounterparties(null, txs, 200, {});
   assert.equal(m.entries.find((e) => e.address === "cpA")?.volumeUsd, 5000);
+});
+
+test("fold: direct (non-swap) token + native transfers build up volumeUsd (audit 3.6)", () => {
+  const txs: EnhancedTx[] = [
+    // 500 USDC sent to cpA (UI units, USDC priced at 1)
+    {
+      signature: "t1",
+      timestamp: 100,
+      type: "TRANSFER",
+      tokenTransfers: [
+        { fromUserAccount: WALLET, toUserAccount: "cpA", tokenAmount: 500, mint: USDC_MINT },
+      ],
+    },
+    // 2 SOL sent to cpB (lamports, SOL priced at 100)
+    {
+      signature: "t2",
+      timestamp: 200,
+      type: "TRANSFER",
+      nativeTransfers: [{ fromUserAccount: WALLET, toUserAccount: "cpB", amount: 2e9 }],
+    },
+  ];
+  const prices = { [USDC_MINT]: 1, [SOL_MINT]: 100 };
+  const m = foldCounterparties(null, txs, 300, prices, WALLET);
+  assert.equal(m.entries.find((e) => e.address === "cpA")?.volumeUsd, 500);
+  assert.equal(m.entries.find((e) => e.address === "cpB")?.volumeUsd, 200);
+});
+
+test("fold: incoming direct transfer is also attributed to the sending counterparty (audit 3.6)", () => {
+  // cpA SENDS 250 USDC to the wallet — the counterparty is still cpA.
+  const txs: EnhancedTx[] = [
+    {
+      signature: "t1",
+      timestamp: 100,
+      type: "TRANSFER",
+      tokenTransfers: [
+        { fromUserAccount: "cpA", toUserAccount: WALLET, tokenAmount: 250, mint: USDC_MINT },
+      ],
+    },
+  ];
+  const m = foldCounterparties(null, txs, 200, { [USDC_MINT]: 1 }, WALLET);
+  assert.equal(m.entries.find((e) => e.address === "cpA")?.volumeUsd, 250);
 });
 
 test("updateBaseline folds counterparty memory into the baseline", () => {

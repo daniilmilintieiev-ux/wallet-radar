@@ -23,12 +23,14 @@ const SO_PATH = process.env.SO_PATH || "E:/JOB/earn/repos/wallet-radar/programs/
 const BUFFER_LABEL = process.env.BUFFER_LABEL || "radar-buffer-reupgrade";
 const BUFFER_METADATA = 37;
 
+const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
 const conn = new Connection(RPC, "confirmed");
 const deployer = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync("E:/JOB/earn/solana-keys/devnet-deployer.json", "utf8"))),
+  Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),
 );
 const authority = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync("E:/JOB/earn/solana-keys/radar-hook-program-keypair.json", "utf8"))),
+  Uint8Array.from(JSON.parse(fs.readFileSync(AUTHORITY_PATH, "utf8"))),
 );
 function deriveKp(base, label) {
   const seed = createHash("sha256").update(Buffer.concat([base.secretKey, Buffer.from(label)])).digest();

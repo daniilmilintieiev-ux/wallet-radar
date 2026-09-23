@@ -14,6 +14,18 @@ export { OpenLot };
 
 const QUOTE_PRIORITY = [USDC_MINT, USDT_MINT, SOL_MINT];
 
+/**
+ * Realized PnL (PnL-lite) values every trade leg at the CURRENT spot price
+ * (Jupiter feed), not the historical price at trade time. Valuing a trade from
+ * months ago at today's spot distorts the result (a token that has since moved
+ * 100x). To keep the approximation honest, realized matching is bounded to a
+ * recent window: only legs within the last PNL_WINDOW_DAYS (relative to the
+ * NEWEST leg in the batch, not the wall clock) participate in FIFO matching.
+ * Open buy lots carried over from the previous scan (initialLots) are kept as
+ * the cost basis for those recent legs. (Audit 3.1)
+ */
+export const PNL_WINDOW_DAYS = 30;
+
 export interface TradeLeg {
   pair: string;
   baseMint: string;
@@ -97,6 +109,7 @@ export function computePnlLite(
   txs: EnhancedTx[],
   prices: UsdPriceMap | null,
   initialLots?: Record<string, OpenLot[]>,
+  wallet?: string,
 ): PnlBatchResult {
   const defaultEmpty: PnlBatchResult = {
     realizedUsd: null,
@@ -106,7 +119,7 @@ export function computePnlLite(
   };
 
   if (!txs || txs.length === 0 || !prices) {
-    return defaultEmpty;
+    return { ...defaultEmpty, windowDays: PNL_WINDOW_DAYS };
   }
 
   // If txs is ordered descending (newest first, typical of Helius), reverse to chronological
@@ -116,17 +129,28 @@ export function computePnlLite(
 
   const legs: TradeLeg[] = [];
   for (const tx of orderedTxs) {
-    const swap = extractSwap(tx);
+    const swap = extractSwap(tx, wallet);
     if (!swap) continue;
     const leg = classifyTradeLeg(swap, prices);
     if (leg) legs.push(leg);
   }
 
   if (legs.length === 0 && (!initialLots || Object.keys(initialLots).length === 0)) {
-    return defaultEmpty;
+    return { ...defaultEmpty, windowDays: PNL_WINDOW_DAYS };
   }
 
   legs.sort((a, b) => a.timestamp - b.timestamp);
+
+  // (Audit 3.1) Bound realized matching to the recent window. Prices are the
+  // current spot, so legs older than PNL_WINDOW_DAYS (relative to the newest
+  // leg, not the wall clock) are priced too far from the spot reference to be
+  // meaningful and are dropped from FIFO. Legs with a missing/zero timestamp
+  // (fixtures) are kept only when there is no real newest timestamp, so
+  // fixture behavior is unchanged.
+  const newestLegTs = legs.length > 0 ? legs[legs.length - 1].timestamp : 0;
+  const windowStartSec = newestLegTs > 0 ? newestLegTs - PNL_WINDOW_DAYS * 86_400 : 0;
+  const windowedLegs =
+    newestLegTs > 0 ? legs.filter((l) => l.timestamp > 0 && l.timestamp >= windowStartSec) : legs;
 
   const buyQueues = new Map<string, OpenLot[]>();
   if (initialLots) {
@@ -142,7 +166,7 @@ export function computePnlLite(
   let totalRoundTrips = 0;
   let positiveRoundTrips = 0;
 
-  for (const leg of legs) {
+  for (const leg of windowedLegs) {
     const queue = buyQueues.get(leg.pair) ?? [];
     if (leg.side === "BUY") {
       queue.push({
@@ -200,6 +224,7 @@ export function computePnlLite(
       winRate: null,
       roundTrips: 0,
       openLots: remainingOpenLots,
+      windowDays: PNL_WINDOW_DAYS,
     };
   }
 
@@ -212,6 +237,7 @@ export function computePnlLite(
     winRate,
     roundTrips: totalRoundTrips,
     openLots: remainingOpenLots,
+    windowDays: PNL_WINDOW_DAYS,
   };
 }
 
@@ -220,8 +246,9 @@ export function mergePnl(prev: PnlSummary | undefined, next: PnlSummary): PnlSum
   if (next.realizedUsd === null || next.roundTrips === 0) return prev;
 
   const totalRoundTrips = prev.roundTrips + next.roundTrips;
+  const windowDays = next.windowDays ?? prev.windowDays;
   if (totalRoundTrips === 0) {
-    return { realizedUsd: null, winRate: null, roundTrips: 0 };
+    return { realizedUsd: null, winRate: null, roundTrips: 0, windowDays };
   }
 
   const prevWins = Math.round((prev.winRate ?? 0) * prev.roundTrips);
@@ -236,5 +263,6 @@ export function mergePnl(prev: PnlSummary | undefined, next: PnlSummary): PnlSum
     realizedUsd: totalRealizedUsd,
     winRate,
     roundTrips: totalRoundTrips,
+    windowDays,
   };
 }

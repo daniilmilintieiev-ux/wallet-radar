@@ -69,9 +69,9 @@ export interface WatchOptions {
   /** Injectable seed history fetcher (tests). Defaults to fetchWalletHistory. */
   fetchSeedHistory?: (wallet: string, maxPages: number) => Promise<EnhancedTx[]>;
   /** Injectable price fetcher (tests). Defaults to fetchSwapPrices. */
-  fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
+  fetchPrices?: (txs: EnhancedTx[], wallet?: string) => Promise<Record<string, number> | null>;
   /** Injectable mint risk fetcher (tests). Defaults to fetchSwapMintRisk. */
-  fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  fetchMintRisk?: (txs: EnhancedTx[], wallet?: string) => Promise<MintRiskMap>;
   /** Abort signal to stop the continuous loop (in-process watch mode). */
   signal?: AbortSignal;
 }
@@ -171,10 +171,10 @@ export async function watchOnce(
     (opts.fetchTxs
       ? (w: string, _pages: number) => opts.fetchTxs!(w)
       : (w: string, pages: number) => fetchWalletHistory(apiKey, w, { maxPages: pages }));
-  const fetchPrices = opts.fetchPrices ?? ((txs: EnhancedTx[]) => fetchSwapPrices(txs));
+  const fetchPrices = opts.fetchPrices ?? ((txs: EnhancedTx[], wallet?: string) => fetchSwapPrices(txs, { wallet }));
   const fetchMintRisk =
     opts.fetchMintRisk ??
-    ((txs: EnhancedTx[]) => fetchSwapMintRisk(txs, { apiKey, store, nowSec }));
+    ((txs: EnhancedTx[], wallet?: string) => fetchSwapMintRisk(txs, { apiKey, store, nowSec, wallet }));
   const nowSec = opts.nowSec ?? Math.floor(Date.now() / 1000);
   const quietThreshold = Math.max(1, opts.quietPolls ?? defaultQuietPolls());
   const maxPollMs = opts.maxPollMs ?? defaultMaxPollMs();
@@ -291,7 +291,7 @@ export async function watchOnce(
       // fresh.length > 0: active wallet, reset quiet streak to base interval
       store.recordPacing(wallet, 0, nowSec + basePollSec);
 
-      const prices = usePrices ? await fetchPrices(fresh) : null;
+      const prices = usePrices ? await fetchPrices(fresh, wallet) : null;
       const baseline = updateBaseline(wallet, prev, fresh, nowSec, prices);
       store.saveBaseline(baseline);
 
@@ -299,7 +299,7 @@ export async function watchOnce(
       let riskScore = 0;
       let defense: DefenseAction | null = null;
       if (!seeded) {
-        const mintRisk = await fetchMintRisk(fresh);
+        const mintRisk = await fetchMintRisk(fresh, wallet);
         const anomalies = detectAnomalies(wallet, fresh, prev, undefined, prices, mintRisk);
         if (anomalies.length > 0) {
           store.recordAnomalies(anomalies, nowSec);

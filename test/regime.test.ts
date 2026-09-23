@@ -9,6 +9,7 @@ import {
   REGIME_MIN_BASELINE_TXS,
   REGIME_MIN_RECENT_TXS,
 } from "../src/analyzer.js";
+import { updateBaseline } from "../src/baseline.js";
 import { Baseline, EnhancedTx, SOL_MINT, USDC_MINT } from "../src/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -267,6 +268,65 @@ describe("REGIME_SHIFT (8th deterministic anomaly rule)", () => {
     };
     assert.ok(evidence.dimensions.includes("cadence"));
     assert.ok(evidence.reasons.some((r) => r.includes("cadence")));
+  });
+
+  test("audit 3.4: sparse monthly history + burst no longer fires a false cadence REGIME_SHIFT", () => {
+    // A wallet that did ~1 tx per month for 5 months, then a 3-tx burst today.
+    // The OLD lifetime-mean baseline (medianTps = txTotal / full-span) was ~0,
+    // so the burst looked "100000x faster" and fired a false cadence shift.
+    const MONTH = 30 * 86_400;
+    const T = 1_750_000_000;
+    const history: EnhancedTx[] = [0, 1, 2, 3, 4].map((i) =>
+      makeTx(`h${i}`, T - (4 - i) * MONTH, 1.0),
+    );
+    const baseline = updateBaseline(WALLET, null, history, T, null);
+
+    // The baseline now carries a robust recent-window median interval (~1 month)
+    // and a sparse timestamp window (< REGIME_MIN_CADENCE_INTERVALS + 1).
+    assert.ok(Array.isArray(baseline.recentTimestamps));
+    assert.equal(baseline.recentTimestamps!.length, 5);
+    assert.ok(
+      (baseline.medianIntervalSec ?? 0) > MONTH / 2 && (baseline.medianIntervalSec ?? 0) < MONTH * 1.5,
+      `medianIntervalSec should be ~1 month, got ${baseline.medianIntervalSec}`,
+    );
+
+    const burst: EnhancedTx[] = [0, 1, 2].map((i) => makeTx(`b${i}`, T + 6 * MONTH + i * 60, 1.0));
+    const anomalies = detectAnomalies(WALLET, burst, baseline);
+    const regime = anomalies.find((a) => a.type === "REGIME_SHIFT");
+    assert.equal(
+      regime,
+      undefined,
+      `expected NO REGIME_SHIFT on sparse history, got: ${anomalies
+        .map((a) => a.type)
+        .join(", ")}`,
+    );
+  });
+
+  test("audit 3.4: the legacy lifetime-mean baseline on the same data still fires (documented fallback)", () => {
+    // Hand-built baseline WITHOUT a timestamp window: the cadence dimension
+    // falls back to 60 / medianTps (the old, diluted lifetime mean) for
+    // compatibility with pre-feature stored baselines.
+    const MONTH = 30 * 86_400;
+    const T = 1_750_000_000;
+    const spanMin = (4 * MONTH) / 60;
+    const legacy: Baseline = {
+      walletAddress: WALLET,
+      updatedAt: T,
+      knownVenues: ["JUPITER"],
+      knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+      medianSwapAmount: 1.0,
+      medianTps: 5 / spanMin, // lifetime mean over the 5 monthly txs
+      activeHours: [],
+      lastSeenAt: T,
+      txCount: 5,
+      recentSwapAmounts: [1, 1, 1, 1, 1],
+    };
+    const burst: EnhancedTx[] = [0, 1, 2].map((i) => makeTx(`b${i}`, T + 6 * MONTH + i * 60, 1.0));
+    const anomalies = detectAnomalies(WALLET, burst, legacy);
+    const regime = anomalies.find((a) => a.type === "REGIME_SHIFT");
+    assert.ok(regime, "legacy lifetime-mean baseline still fires the (old) cadence shift");
+    const evidence = regime.evidence as { dimensions: string[] };
+    assert.ok(evidence.dimensions.includes("cadence"));
   });
 
   test("Any rule-count text now says 8", () => {

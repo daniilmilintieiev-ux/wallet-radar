@@ -46,7 +46,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls. Returns riskScore, anomalies, per-rule reasons, summary, and digest." },
   { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
   { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once." },
-  { method: "POST", path: "/simulate", tool: "radar_simulate", description: "Pre-trade what-if simulation: 'if I send X USDC/SOL to wallet Y, what happens?' Models liquidity impact, LARGE_SWAP trigger, risk score delta, and returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing." },
+  { method: "POST", path: "/simulate", tool: "radar_simulate", description: "Pre-trade what-if simulation: 'if wallet Y pays out X USDC/SOL, what happens to Y?' The wallet under analysis is the payer. Models liquidity impact, large-payment trigger, risk score delta, and returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing." },
   { method: "GET", path: "/watch", tool: "radar_watch", description: "List the monitoring watchlist: each watched wallet with its seed status and unalerted-anomaly count. Requires the watch store (start the server with RADAR_WATCH=1)." },
   { method: "POST", path: "/watch", tool: "radar_watch", description: "Add a wallet to the monitoring watchlist so it is continuously re-checked for new anomalies (webhook/Telegram on detection). Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/unwatch", tool: "radar_unwatch", description: "Remove a wallet from the monitoring watchlist. Requires the watch store (RADAR_WATCH=1)." },
@@ -146,10 +146,12 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
   const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark.");
   const txs = ctx.fetchTxs ? await ctx.fetchTxs(wallet) : await fetchWalletTransactions(apiKey, wallet);
-  const prices = ctx.fetchPrices ? await ctx.fetchPrices(txs) : await fetchSwapPrices(txs);
-  const mintRisk = ctx.fetchMintRisk ? await ctx.fetchMintRisk(txs) : await fetchSwapMintRisk(txs, { apiKey });
-  const baseline = updateBaseline(wallet, null, txs, Date.now() / 1000, prices);
-  const anomalies = detectAnomalies(wallet, txs, null, undefined, prices, mintRisk);
+  const prices = ctx.fetchPrices ? await ctx.fetchPrices(txs) : await fetchSwapPrices(txs, { wallet });
+  const mintRisk = ctx.fetchMintRisk ? await ctx.fetchMintRisk(txs) : await fetchSwapMintRisk(txs, { apiKey, wallet });
+  const storedBaseline = ctx.store ? ctx.store.getBaseline(wallet) : null;
+  const baseline = updateBaseline(wallet, storedBaseline, txs, Date.now() / 1000, prices);
+  if (ctx.store) ctx.store.saveBaseline(baseline);
+  const anomalies = detectAnomalies(wallet, txs, storedBaseline ?? baseline, undefined, prices, mintRisk);
   const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
   const lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
   const windowStart = stamps.length > 0 ? minOf(stamps) : null;
@@ -834,6 +836,28 @@ interface RateLimiter {
   check(ip: string): { ok: boolean; retryAfterSec?: number };
 }
 
+/**
+ * Client IP for rate limiting. Behind a reverse proxy (Nginx, Caddy,
+ * Cloudflare) the socket address is the proxy's (e.g. 127.0.0.1), which
+ * would collapse the per-IP limit into one global limit (audit 1.6).
+ * CF-Connecting-IP is set by Cloudflare and unforgeable by clients, so it
+ * is always trusted. X-Forwarded-For is client-spoofable, so it is only
+ * honored when RADAR_TRUST_PROXY=1 explicitly confirms a proxy in front.
+ */
+export function clientIp(req: http.IncomingMessage): string {
+  const cfIp = req.headers["cf-connecting-ip"];
+  if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
+  if (process.env.RADAR_TRUST_PROXY === "1") {
+    const xff = req.headers["x-forwarded-for"];
+    if (typeof xff === "string") {
+      const first = xff.split(",")[0]?.trim();
+      if (first) return first;
+    }
+  }
+  const rawIp = req.socket.remoteAddress ?? "unknown";
+  return rawIp.replace(/^::ffff:/, "");
+}
+
 function createRateLimiter(limitPerMin: number): RateLimiter {
   const WINDOW_MS = 60_000;
   const buckets = new Map<string, { count: number; resetAt: number }>();
@@ -905,8 +929,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
     const reqOrigin = req.headers.origin as string | undefined;
     const isExempt = pathname === "/health" || (req.method ?? "GET") === "OPTIONS";
     if (rateLimiter && !isExempt) {
-      const rawIp = req.socket.remoteAddress ?? "unknown";
-      const ip = rawIp.replace(/^::ffff:/, "");
+      const ip = clientIp(req);
       const rl = rateLimiter.check(ip);
       if (!rl.ok) {
         res.writeHead(429, {

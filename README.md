@@ -101,7 +101,7 @@ normalizes swap sizes to USD with the Jupiter Price API (read-only, keyless):
 - The baseline tracks the **median swap size in USD over the most recent window**
   (bounded, old outliers fall out) across all mints, so `LARGE_SWAP` works for any
   token, not just the majors.
-- The baseline computes **PnL-lite** (`pnl: { realizedUsd, winRate, roundTrips }`) via FIFO over closed swap legs; unpriced or one-sided legs emit `null`.
+- The baseline computes **PnL-lite** (`pnl: { realizedUsd, winRate, roundTrips, windowDays }`) via FIFO over closed swap legs; unpriced or one-sided legs emit `null`. Prices are the **current** Jupiter spot, so realized matching is bounded to the last `windowDays` (30) days relative to the newest leg — a stale leg priced far from today's spot would otherwise distort PnL.
 - If the price feed is unavailable (or a swap can't be priced), the rule falls
   back to major-only raw quantities — a scan never fails because of prices.
 
@@ -120,7 +120,7 @@ config. Six tools:
 | `radar_trust` | Gate before you copy / pay: risk + liquidity → `safe`/`hold`/`unknown`, with verdict reasons, per-rule `reasons`, `summary`, and `freshness` (needs `HELIUS_API_KEY`) |
 | `radar_batch` | Gate a whole copy-book at once: runs `radar_trust` over up to 20 wallets and returns a deterministic shortlist — `safe` ranked by risk then liquidity, plus `hold` and `unknown` buckets (needs `HELIUS_API_KEY`) |
 | `radar_analyze` | Run the rules over a transactions fixture you already have (no network) |
-| `radar_simulate` | Pre-trade what-if: "if I send X USDC to wallet Y, what happens?" Models liquidity impact, LARGE_SWAP trigger, risk delta → actionable decision (needs `HELIUS_API_KEY`) |
+| `radar_simulate` | Pre-trade what-if: "if wallet Y pays out X USDC, what happens to Y?" The wallet under analysis is the **payer** (the outgoing payment reduces its liquidity). Models liquidity impact, large-payment trigger, risk delta → actionable decision (needs `HELIUS_API_KEY`) |
 | `radar_selftest` | Offline smoke test, no keys |
 
 ### Decision Engine
@@ -143,7 +143,7 @@ Each decision includes:
 
 ### Simulation Mode (pre-trade what-if)
 
-`POST /simulate` (or `radar_simulate` via MCP): the agent asks **before signing**:
+`POST /simulate` (or `radar_simulate` via MCP): the agent asks **before signing** — "if wallet Y pays out X USDC, what happens to Y?" The wallet under analysis is the **payer**: the proposed payment is modeled as an outgoing transfer, so it reduces the wallet's liquidity and is scored against its swap-size and liquidity profile. (A plain transfer is not a DEX swap, so the projected triggers use their own labels — `LARGE_PAYMENT` / `LIQUIDITY_DRAIN` — rather than detector anomaly types.)
 
 ```json
 {
@@ -154,8 +154,9 @@ Each decision includes:
 ```
 
 Returns:
-- Would the payment **exceed liquidity**?
-- Would it **trigger a LARGE_SWAP** anomaly for the target?
+- Would the payment **exceed the wallet's liquidity**?
+- Would it count as a **large payment** relative to the wallet's median swap size?
+- Would it **drain the wallet's liquidity**?
 - What is the **projected risk score delta**?
 - **Actionable decision** + specific recommendation
 

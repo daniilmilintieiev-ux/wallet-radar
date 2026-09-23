@@ -7,17 +7,29 @@ import { computeDecision, type DecisionResult, type ActionVerdict } from "./deci
 /**
  * Simulation Mode: pre-trade what-if analysis.
  *
- * An agent asks: "if I send X USDC to wallet Y right now, what happens?"
- * The simulator runs the full risk pipeline against a *modified* transaction
- * history (the proposed payment injected as a synthetic tx) and reports:
- * - Would the payment exceed available liquidity?
- * - Would it trigger a LARGE_SWAP anomaly for the target wallet?
+ * An agent asks: "if wallet Y pays out X USDC right now, what happens to Y?"
+ * The wallet under analysis is the PAYER: the proposed payment is modeled as
+ * an OUTGOING transfer, so it reduces the wallet's liquidity and is scored
+ * against the wallet's swap-size and liquidity profile. A plain transfer is
+ * not a DEX swap, so the projected triggers carry their own labels
+ * (LARGE_PAYMENT / LIQUIDITY_DRAIN) instead of detector anomaly types.
+ * It reports:
+ * - Would the payment exceed the wallet's available liquidity?
+ * - Would it count as a large payment relative to the median swap size?
  * - What is the post-transaction risk score delta?
  * - What is the actionable decision?
  *
  * This is the "pre-trade risk layer" — the agent asks BEFORE signing,
  * not after the funds are already in motion.
  */
+
+/**
+ * A trigger the simulation projects for the proposed payment. Detector anomaly
+ * types are included for compatibility; the payment-specific labels below
+ * mark heuristics that approximate (but are not) the LARGE_SWAP and
+ * CONCENTRATION detector rules.
+ */
+export type SimulateAnomaly = AnomalyType | "LARGE_PAYMENT" | "LIQUIDITY_DRAIN";
 
 export interface SimulateInput {
   /** Target wallet address (base58). */
@@ -34,7 +46,7 @@ export interface SimulateInput {
   riskScore: number | null;
   /** Existing anomalies for the wallet. */
   anomalies: Anomaly[];
-  /** Baseline median swap amount in USD (for LARGE_SWAP detection). */
+  /** Baseline median swap amount in USD (reference for large-payment detection). */
   medianSwapAmountUsd: number | null;
   /** Legacy verdict from the trust gate. */
   legacyVerdict: "safe" | "hold" | "unknown";
@@ -55,8 +67,8 @@ export interface SimulateResult {
   riskDelta: number;
   /** Projected post-transaction risk score. */
   projectedRiskScore: number | null;
-  /** Anomaly types that would be newly triggered by this payment. */
-  wouldTrigger: AnomalyType[];
+  /** Simulated trigger labels that would fire for this payment. */
+  wouldTrigger: SimulateAnomaly[];
   /** One-sentence recommendation specific to this payment. */
   recommendation: string;
   /** Whether the payment is safe to execute as-is. */
@@ -91,23 +103,23 @@ export function simulatePayment(input: SimulateInput): SimulateResult {
   const exceedsLiquidity = paymentUsd > currentLiquidity;
   const liquidityAfterUsd = Math.max(0, Math.round((currentLiquidity - paymentUsd) * 100) / 100);
 
-  // Would this trigger a LARGE_SWAP for the target wallet?
-  const wouldTrigger: AnomalyType[] = [];
+  // Would this payment be "large" relative to the wallet's swap-size profile?
+  const wouldTrigger: SimulateAnomaly[] = [];
   let riskDelta = 0;
 
   if (medianSwapAmountUsd !== null && medianSwapAmountUsd > 0) {
     const ratio = paymentUsd / medianSwapAmountUsd;
     if (ratio >= 3) {
-      wouldTrigger.push("LARGE_SWAP");
+      wouldTrigger.push("LARGE_PAYMENT");
       riskDelta += 20;
     } else if (ratio >= 1.5) {
       riskDelta += 8;
     }
   }
 
-  // If the payment would leave the wallet nearly empty, that's a signal
+  // If the outgoing payment would leave the wallet nearly empty, that's a signal
   if (!exceedsLiquidity && liquidityAfterUsd < 10 && currentLiquidity > 50) {
-    wouldTrigger.push("CONCENTRATION");
+    wouldTrigger.push("LIQUIDITY_DRAIN");
     riskDelta += 10;
   }
 

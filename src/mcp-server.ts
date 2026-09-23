@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { buildServer } from "./mcp.js";
+import { Store } from "./store.js";
 
 export function getVersion(): string {
   try {
@@ -94,7 +96,10 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
   }
 
   loadEnv();
-  serveStdio(() => buildServer());
+  const dbPath = process.env.RADAR_DB ?? path.join(os.homedir(), ".wallet-radar", "radar.db");
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const store = new Store(dbPath);
+  serveStdio(() => buildServer({ store }));
 }
 
 const isDirectRun = Boolean(

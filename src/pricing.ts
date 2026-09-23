@@ -33,6 +33,10 @@ const OUTBOUND_FETCH_TIMEOUT_MS = 10_000;
  * Fetch USD prices for mints from the Jupiter Price API (GET, read-only).
  * Keyless by default (lite-api); set JUPITER_API_KEY for the higher-limit
  * api.jup.ag endpoint. JUPITER_PRICE_BASE overrides the URL entirely.
+ *
+ * NOTE: these are CURRENT SPOT prices, not historical. Consumers that value
+ * past trades (e.g. PnL-lite) must bound the time window — see
+ * PNL_WINDOW_DAYS in pnl.ts (audit 3.1).
  */
 export async function fetchUsdPrices(
   mints: string[],
@@ -81,10 +85,10 @@ export function swapUsdValue(swap: SwapEvent, prices: UsdPriceMap): number | nul
 }
 
 /** Collect the mints touched by a tx batch (both swap legs). */
-export function collectSwapMints(txs: EnhancedTx[]): string[] {
+export function collectSwapMints(txs: EnhancedTx[], wallet?: string): string[] {
   const mints = new Set<string>();
   for (const tx of txs) {
-    const s = extractSwap(tx);
+    const s = extractSwap(tx, wallet);
     if (s) {
       if (s.tokenIn.mint) mints.add(s.tokenIn.mint);
       if (s.tokenOut.mint) mints.add(s.tokenOut.mint);
@@ -100,9 +104,9 @@ export function collectSwapMints(txs: EnhancedTx[]): string[] {
  */
 export async function fetchSwapPrices(
   txs: EnhancedTx[],
-  opts?: { baseUrl?: string; apiKey?: string },
+  opts?: { baseUrl?: string; apiKey?: string; wallet?: string },
 ): Promise<UsdPriceMap | null> {
-  const mints = collectSwapMints(txs);
+  const mints = collectSwapMints(txs, opts?.wallet);
   if (mints.length === 0) return null;
   try {
     return await fetchUsdPrices(mints, opts);

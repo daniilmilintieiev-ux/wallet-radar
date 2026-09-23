@@ -17,9 +17,10 @@ const CP_WALLET = new PublicKey(process.env.CP_WALLET || "2gjFkrw3BdioMKnbzf6KaK
 const decimals = 6;
 const amount = 1_000_000n;
 
+const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
 const conn = new Connection(RPC, "confirmed");
 const deployer = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync("E:/JOB/earn/solana-keys/devnet-deployer.json", "utf8"))),
+  Uint8Array.from(JSON.parse(fs.readFileSync(DEPLOYER_PATH, "utf8"))),
 );
 
 function extractCode(err) {

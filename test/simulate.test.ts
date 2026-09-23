@@ -34,21 +34,27 @@ describe("simulatePayment", () => {
     assert.ok(result.recommendation.includes("exceeds"));
   });
 
-  it("large payment triggers LARGE_SWAP", () => {
+  it("large payment triggers LARGE_PAYMENT", () => {
     const result = simulatePayment(makeInput({ amountUsd: 200, medianSwapAmountUsd: 50 }));
-    assert.ok(result.wouldTrigger.includes("LARGE_SWAP"));
+    assert.ok(result.wouldTrigger.includes("LARGE_PAYMENT"));
     assert.ok(result.riskDelta > 0);
     assert.ok(result.projectedRiskScore! > 15);
   });
 
-  it("payment draining wallet triggers CONCENTRATION", () => {
+  it("payment draining wallet triggers LIQUIDITY_DRAIN", () => {
     const result = simulatePayment(makeInput({ amountUsd: 595, balances: { sol: 0, usdc: 600, usdt: 0 } }));
-    assert.ok(result.wouldTrigger.includes("CONCENTRATION"));
+    assert.ok(result.wouldTrigger.includes("LIQUIDITY_DRAIN"));
   });
 
-  it("no median => no LARGE_SWAP detection", () => {
+  it("no median => no large-payment detection", () => {
     const result = simulatePayment(makeInput({ amountUsd: 500, medianSwapAmountUsd: null }));
+    assert.ok(!result.wouldTrigger.includes("LARGE_PAYMENT"));
+  });
+
+  it("a transfer is not labeled as a DEX swap (audit 3.3)", () => {
+    const result = simulatePayment(makeInput({ amountUsd: 200, medianSwapAmountUsd: 50 }));
     assert.ok(!result.wouldTrigger.includes("LARGE_SWAP"));
+    assert.ok(!result.wouldTrigger.includes("CONCENTRATION"));
   });
 
   it("high-risk wallet => decision is not allow", () => {

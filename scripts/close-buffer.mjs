@@ -7,8 +7,8 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } f
 
 const BPF_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 const RPC = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-const AUTHORITY_PATH = "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
-const DEPLOYER_PATH = "E:/JOB/earn/solana-keys/devnet-deployer.json";
+const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys/radar-hook-program-keypair.json";
+const DEPLOYER_PATH = process.env.DEPLOYER_KEYPAIR || "E:/JOB/earn/solana-keys/devnet-deployer.json";
 const LABEL = process.env.BUFFER_LABEL || "radar-buffer-fresh";
 
 function deriveKp(base, label) {

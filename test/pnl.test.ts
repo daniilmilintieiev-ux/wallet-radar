@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyTradeLeg, computePnlLite, mergePnl } from "../src/pnl.js";
+import { classifyTradeLeg, computePnlLite, mergePnl, PNL_WINDOW_DAYS } from "../src/pnl.js";
 import { updateBaseline } from "../src/baseline.js";
 import { EnhancedTx, SOL_MINT, USDC_MINT, USDT_MINT } from "../src/types.js";
 
@@ -209,7 +209,7 @@ test("computePnlLite edge cases: empty history, one-sided legs, missing prices e
 
   // 1. Empty history -> nulls
   const emptyRes = computePnlLite([], prices);
-  assert.deepEqual(emptyRes, { realizedUsd: null, winRate: null, roundTrips: 0, openLots: undefined });
+  assert.deepEqual(emptyRes, { realizedUsd: null, winRate: null, roundTrips: 0, openLots: undefined, windowDays: PNL_WINDOW_DAYS });
 
   // 2. One-sided buys (no sells) -> nulls
   const buysOnly = [makeSwapTx("b1", 100, USDC_MINT, 100, 6, TOKEN_A, 100, 6)];
@@ -228,7 +228,7 @@ test("computePnlLite edge cases: empty history, one-sided legs, missing prices e
 
   // 4. Missing prices (prices === null) -> nulls
   const noPricesRes = computePnlLite(buysOnly, null);
-  assert.deepEqual(noPricesRes, { realizedUsd: null, winRate: null, roundTrips: 0, openLots: undefined });
+  assert.deepEqual(noPricesRes, { realizedUsd: null, winRate: null, roundTrips: 0, openLots: undefined, windowDays: PNL_WINDOW_DAYS });
 
   // 5. Unpriced tokens (neither leg priceable) -> nulls
   const unpricedTxs = [
@@ -273,6 +273,58 @@ test("computePnlLite: cross-batch FIFO matching via initialLots", () => {
   assert.equal(res2.roundTrips, 1);
 });
 
+test("audit 3.1: legs older than the 30d window are dropped from FIFO (stale cost basis)", () => {
+  const prices = { [USDC_MINT]: 1.0 };
+  const DAY = 86_400;
+  const T = 1_700_000_000;
+  // Old buy 40 days before the newest leg -> outside the 30d window, so its
+  // cost basis is stale (priced at today's spot) and must be dropped.
+  const oldBuy = makeSwapTx("b_old", T - 40 * DAY, USDC_MINT, 100, 6, TOKEN_A, 100, 6);
+  // Recent sell at the newest timestamp -> inside the window but with no
+  // in-window cost basis to match, so realized PnL must be null (not +$50).
+  const recentSell = makeSwapTx("s_recent", T, TOKEN_A, 100, 6, USDC_MINT, 150, 6);
+
+  const res = computePnlLite([oldBuy, recentSell], prices);
+  assert.equal(res.realizedUsd, null);
+  assert.equal(res.winRate, null);
+  assert.equal(res.roundTrips, 0);
+  assert.equal(res.windowDays, PNL_WINDOW_DAYS);
+});
+
+test("audit 3.1: an in-window round-trip still realizes PnL", () => {
+  const prices = { [USDC_MINT]: 1.0 };
+  const DAY = 86_400;
+  const T = 1_700_000_000;
+  // Buy 5 days before the newest leg and sell at the newest leg -> both inside
+  // the 30d window, so the round-trip is realized as usual (+$50).
+  const inWindowBuy = makeSwapTx("b", T - 5 * DAY, USDC_MINT, 100, 6, TOKEN_A, 100, 6);
+  const inWindowSell = makeSwapTx("s", T, TOKEN_A, 100, 6, USDC_MINT, 150, 6);
+
+  const res = computePnlLite([inWindowBuy, inWindowSell], prices);
+  assert.equal(res.realizedUsd, 50);
+  assert.equal(res.winRate, 1.0);
+  assert.equal(res.roundTrips, 1);
+  assert.equal(res.windowDays, PNL_WINDOW_DAYS);
+});
+
+test("audit 3.1: carried-over initialLots remain usable as cost basis", () => {
+  const prices = { [USDC_MINT]: 1.0 };
+  const DAY = 86_400;
+  const T = 1_700_000_000;
+  // Previous scan saw a buy 100 days ago -> recorded as an open lot.
+  const oldBatch = [makeSwapTx("b_old", T - 100 * DAY, USDC_MINT, 100, 6, TOKEN_A, 100, 6)];
+  const res1 = computePnlLite(oldBatch, prices);
+  assert.ok(res1.openLots?.[`${TOKEN_A}/${USDC_MINT}`]);
+
+  // Current scan sells at the newest timestamp. The in-window sell matches the
+  // carried-over open lot (initialLots are kept as cost basis), realizing +$50.
+  const curBatch = [makeSwapTx("s_now", T, TOKEN_A, 100, 6, USDC_MINT, 150, 6)];
+  const res2 = computePnlLite(curBatch, prices, res1.openLots);
+  assert.equal(res2.realizedUsd, 50);
+  assert.equal(res2.winRate, 1.0);
+  assert.equal(res2.roundTrips, 1);
+});
+
 test("mergePnl: combines summaries and handles nulls", () => {
   // Both valid
   const p1 = { realizedUsd: 100, winRate: 1.0, roundTrips: 1 };
@@ -299,11 +351,11 @@ test("updateBaseline: populates pnl and maintains cross-batch state", () => {
   // 1. First seed with only buys -> baseline.pnl is nulls, openLots has TOKEN_A
   const batch1 = [makeSwapTx("b1", 100, USDC_MINT, 100, 6, TOKEN_A, 100, 6)];
   const b1 = updateBaseline(WALLET, null, batch1, 150, prices);
-  assert.deepEqual(b1.pnl, { realizedUsd: null, winRate: null, roundTrips: 0 });
+  assert.deepEqual(b1.pnl, { realizedUsd: null, winRate: null, roundTrips: 0, windowDays: PNL_WINDOW_DAYS });
   assert.ok(b1.openLots?.[`${TOKEN_A}/${USDC_MINT}`]);
 
   // 2. Incremental poll with sell -> matches openLots from b1, realizes profit
   const batch2 = [makeSwapTx("s1", 200, TOKEN_A, 100, 6, USDC_MINT, 180, 6)];
   const b2 = updateBaseline(WALLET, b1, batch2, 250, prices);
-  assert.deepEqual(b2.pnl, { realizedUsd: 80, winRate: 1.0, roundTrips: 1 });
+  assert.deepEqual(b2.pnl, { realizedUsd: 80, winRate: 1.0, roundTrips: 1, windowDays: PNL_WINDOW_DAYS });
 });
