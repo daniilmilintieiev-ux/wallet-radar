@@ -45,6 +45,11 @@ const AUTHORITY_PATH = process.env.AUTHORITY_KEYPAIR || "E:/JOB/earn/solana-keys
 // Deterministic label for the FRESH program identity + its buffer (distinct from
 // the existing program's "radar-buffer" so the two never interfere).
 const PROGRAM_LABEL = process.env.PROGRAM_LABEL || "radar-program-fresh";
+// Optional: deploy a KNOWN program keypair instead of deriving one from the
+// deployer (e.g. re-deploying an existing program identity on another cluster).
+const PROGRAM_KEYPAIR = process.env.PROGRAM_KEYPAIR;
+// Label used to derive the transient deploy buffer (closed again after deploy).
+const BUFFER_LABEL = process.env.BUFFER_LABEL || "radar-buffer-fresh";
 const SO_PATH = process.env.SO_PATH || "E:/JOB/earn/repos/wallet-radar/programs/radar-transfer-hook/target/deploy/radar_transfer_hook.so";
 
 function loadKp(p) {
@@ -82,9 +87,11 @@ const INSTRUCTION = {
 };
 
 const conn = new Connection(RPC, "confirmed");
-const authority = loadKp(AUTHORITY_PATH);
-const deployer = loadKp(DEPLOYER_PATH);
-const programKp = deriveKp(deployer, PROGRAM_LABEL);
+const authority = loadKp(AUTHORITY_KEYPAIR);
+const deployer = loadKp(DEPLOYER_KEYPAIR);
+// Use an explicit program keypair if provided (re-deploy an existing identity on
+// another cluster); otherwise derive a fresh one deterministically.
+const programKp = PROGRAM_KEYPAIR ? loadKp(PROGRAM_KEYPAIR) : deriveKp(deployer, PROGRAM_LABEL);
 const programdataPda = PublicKey.findProgramAddressSync([programKp.publicKey.toBuffer()], BPF_LOADER)[0];
 console.log(`[fresh] RPC: ${RPC}`);
 console.log(`[fresh] Deployer (payer): ${deployer.publicKey.toBase58()}`);
@@ -98,18 +105,21 @@ const bufferSpace = BUFFER_METADATA + elfLen;
 const maxDataLen = PROGRAMDATA_METADATA + elfLen;
 console.log(`[fresh] ELF size: ${elfLen}  -> buffer space: ${bufferSpace}, programdata max_data_len: ${maxDataLen}`);
 
-// Persist the fresh program identity keypair for reference / later tooling.
-try {
+// Persist the fresh program identity keypair for reference / later tooling
+// (only when derived, not when an explicit keypair was supplied).
+if (!PROGRAM_KEYPAIR) {
+  try {
     fs.writeFileSync(process.env.PROGRAM_KEYPAIR_PATH || "E:/JOB/earn/solana-keys/radar-hook-program-fresh.json", JSON.stringify(Array.from(programKp.secretKey)));
-} catch {
-  /* best-effort */
+  } catch {
+    /* best-effort */
+  }
 }
 
 const bal = (await conn.getBalance(deployer.publicKey)) / 1e9;
 console.log(`[fresh] Deployer balance: ${bal.toFixed(4)} SOL`);
 if (bal < 1.0) throw new Error(`Deployer has ${bal.toFixed(4)} SOL; need >= 1.0 SOL for buffer rent.`);
 
-const bufferKp = deriveKp(deployer, "radar-buffer-fresh");
+const bufferKp = deriveKp(deployer, BUFFER_LABEL);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

@@ -95,10 +95,14 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());
     // Account order must match the transfer-hook interface:
     // [meta-list PDA (w), mint (r), authority (s), system_program (r)]
+    const [expectedMetaListPda] = deriveExtraAccountMetaListPda(mint);
     assert.equal(ix.keys.length, 4);
+    assert.equal(ix.keys[0].pubkey.toBase58(), expectedMetaListPda.toBase58());
+    assert.equal(ix.keys[0].isWritable, true);
     assert.equal(ix.keys[1].pubkey.toBase58(), mint.toBase58());
     assert.equal(ix.keys[2].pubkey.toBase58(), authority.toBase58());
     assert.equal(ix.keys[2].isSigner, true);
+    assert.equal(ix.keys[3].pubkey.toBase58(), "11111111111111111111111111111111");
 
     // Verify data layout: 8 disc + 4 (u32 count) + 2 * 35 (metas) = 82 bytes
     assert.equal(ix.data.length, 8 + 4 + 2 * 35);
