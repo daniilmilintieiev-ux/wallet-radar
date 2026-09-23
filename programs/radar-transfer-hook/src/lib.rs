@@ -9,7 +9,10 @@ use spl_tlv_account_resolution::account::ExtraAccountMeta;
 use spl_tlv_account_resolution::state::ExtraAccountMetaList;
 use spl_transfer_hook_interface::instruction::ExecuteInstruction;
 
-declare_id!("ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz");
+declare_id!("wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV");
+
+#[used]
+pub static P4_BUILD_MARKER: [u8; 64] = *b"radar-p4-unique-elf-size-marker-01234567890123456789012345678901";
 
 pub const EXTRA_ACCOUNT_METAS_SEED: &[u8] = b"extra-account-metas";
 pub const RADAR_CONFIG_SEED: &[u8] = b"radar_config";

@@ -20,7 +20,7 @@ export const TOKEN_2022_PROGRAM_ID = new PublicKey(
  * Default Radar Transfer Hook Program ID.
  */
 export const DEFAULT_HOOK_PROGRAM_ID = new PublicKey(
-  "Hook111111111111111111111111111111111111111",
+  "7DeRG1BDToqYnfACzSdS4MfEwTGBCmkFo7Y61dmE2t2C",
 );
 
 /** PDA seed for ExtraAccountMetaList */
@@ -49,19 +49,21 @@ export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
- * Anchor program `initialize` (config) instruction discriminator (8 bytes)
- * sha256("global:radar_transfer_hook:initialize")[0..8]
+ * Anchor program `initialize` (config) instruction discriminator (8 bytes).
+ * Plain Anchor instruction (no `#[interface]`), so the sighash preimage is
+ * "global:initialize" (no program name): sha256("global:initialize")[0..8]
  */
 export const RADAR_INITIALIZE_DISCRIMINATOR = Buffer.from([
-  0x32, 0xda, 0x05, 0x08, 0xac, 0x8e, 0xbd, 0xf3,
+  0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed,
 ]);
 
 /**
- * Anchor program `write_scan_record` instruction discriminator (8 bytes)
- * sha256("global:radar_transfer_hook:write_scan_record")[0..8]
+ * Anchor program `write_scan_record` instruction discriminator (8 bytes).
+ * Plain Anchor instruction (no `#[interface]`), so the sighash preimage is
+ * "global:write_scan_record" (no program name): sha256("global:write_scan_record")[0..8]
  */
 export const WRITE_SCAN_RECORD_DISCRIMINATOR = Buffer.from([
-  0x8d, 0x00, 0xd9, 0x2a, 0x22, 0xd5, 0xbb, 0xbb,
+  0x94, 0x99, 0xba, 0x91, 0x9b, 0xd6, 0x14, 0xdf,
 ]);
 
 /**

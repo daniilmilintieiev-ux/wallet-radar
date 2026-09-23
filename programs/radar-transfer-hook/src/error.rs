@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-#[error_code]
+#[error_code(offset = 0)]
 pub enum RadarHookError {
     #[msg("Destination wallet risk score exceeds maximum allowed threshold")]
     RiskScoreTooHigh = 6000,

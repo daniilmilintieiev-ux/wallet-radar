@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import {
   Connection,
   Keypair,
@@ -29,8 +30,17 @@ import {
   serializeScanRecord,
 } from "../src/oracle/index.js";
 
-/** Standard SPL token account size. */
-const TOKEN_ACCOUNT_SPACE = 165;
+/**
+ * Token account size for this mint.
+ *
+ * A plain Token-22 mint needs 165 bytes, but this mint's TransferHook
+ * extension was written with the hook-first creation order (extension added
+ * before `InitializeMint`), which leaves a zero-padded region ahead of the
+ * TLV. Token-22's `InitializeAccount` then rejects the standard 165-byte
+ * account with `InvalidAccountData`; a 173-byte account succeeds (verified on
+ * devnet). We allocate 173 bytes for every token account of this mint.
+ */
+const TOKEN_ACCOUNT_SPACE = 173;
 /** Token-22 `InitializeAccount` instruction index. */
 const IX_INITIALIZE_ACCOUNT = 1;
 /** Token-22 `MintTo` instruction index. */
@@ -79,10 +89,19 @@ export function loadDeployerKeypair(keypairPath?: string): Keypair {
 
 /**
  * Derives a deterministic keypair from a base keypair + label (reproducible).
+ *
+ * Uses a full-length SHA-256 of (base secret key || label) so that distinct
+ * labels always produce distinct keys, even when they share a prefix. (The
+ * previous implementation truncated to `secretKey[0..24] + label[0..8]`, which
+ * made any two labels sharing an 8-byte prefix — e.g. "radar-cp-ta" and
+ * "radar-cp-wallet" — collide onto the same address.)
  */
 export function deriveKeypair(base: Keypair, label: string): Keypair {
-  const seed = Buffer.concat([base.secretKey.slice(0, 24), Buffer.from(label)]);
-  return Keypair.fromSeed(seed.slice(0, 32));
+  const digest = createHash("sha256")
+    .update(Buffer.from(base.secretKey))
+    .update(label)
+    .digest();
+  return Keypair.fromSeed(digest);
 }
 
 /**
@@ -244,6 +263,27 @@ async function accountExists(connection: Connection, pubkey: PublicKey): Promise
 }
 
 /**
+ * Extracts the on-chain custom error code from a transaction `meta.err`.
+ *
+ * A hook revert surfaces as `{"InstructionError":[<ixIndex>,{"Custom":<code>}]}`.
+ * Reading the code straight from the transaction (instead of the client-side enum)
+ * is what proves the deployed program actually returned the 6000-range code.
+ */
+export function extractCustomErrorCode(err: unknown): number | undefined {
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const ie = o["InstructionError"];
+    if (Array.isArray(ie) && ie.length >= 2 && ie[1] && typeof ie[1] === "object") {
+      const custom = (ie[1] as Record<string, unknown>)["Custom"];
+      if (typeof custom === "number") return custom;
+    }
+    const topCustom = o["Custom"];
+    if (typeof topCustom === "number") return topCustom;
+  }
+  return undefined;
+}
+
+/**
  * Signs, sends and inspects a transaction; returns the signature, the execution
  * error (null on success) and the program log messages.
  */
@@ -252,6 +292,7 @@ async function sendAndInspect(
   ixs: TransactionInstruction[],
   signers: Keypair[],
   feePayer: PublicKey,
+  opts?: { skipPreflight?: boolean },
 ): Promise<{ sig: string; err: unknown; logs: string[] }> {
   const blockhash = await connection.getLatestBlockhash("confirmed");
   const tx = new Transaction();
@@ -261,7 +302,14 @@ async function sendAndInspect(
   tx.feePayer = feePayer;
   tx.sign(...signers);
 
-  const sig = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 5 });
+  // `skipPreflight` is used for the FLAGGED transfer, whose preflight
+  // simulation is *expected* to fail (the hook reverts). Without it,
+  // `sendRawTransaction` throws on the simulation failure before the revert
+  // is ever recorded on-chain.
+  const sig = await connection.sendRawTransaction(tx.serialize(), {
+    maxRetries: 5,
+    skipPreflight: opts?.skipPreflight ?? false,
+  });
   const confirmation = await connection.confirmTransaction(
     {
       signature: sig,
@@ -298,7 +346,7 @@ export async function runTransferHookDevnet(options: {
   const payer = loadDeployerKeypair(options.keypairPath);
   const hookProgramId = process.env.HOOK_PROGRAM_ID
     ? new PublicKey(process.env.HOOK_PROGRAM_ID)
-    : new PublicKey("ASXvQYqhWYz82YFcqHUdcWDNotqt9atTJYp3xDHiV8Qz");
+    : new PublicKey("EutZGu9egs4uWbxphp4MDLuLmC39i4617pyRC9ALHcv9");
 
   console.log(`[transfer-hook] RPC: ${rpcUrl}`);
   console.log(`[transfer-hook] Deployer: ${payer.publicKey.toBase58()}`);
@@ -339,11 +387,15 @@ export async function runTransferHookDevnet(options: {
   const mintAmount = 10_000_000n; // 10 tokens
   const transferAmount = 1_000_000n; // 1 token
 
-  // Deterministic keypairs (idempotent re-runs).
-  const mintKp = deriveKeypair(payer, "radar-mint-1");
-  const senderTokenKp = deriveKeypair(payer, "radar-sender-ta");
-  const cpTokenKp = deriveKeypair(payer, "radar-cp-ta");
-  const cpWalletKp = deriveKeypair(payer, "radar-cp-wallet");
+  // Deterministic keypairs (idempotent re-runs). The "-3" suffix marks the FRESH
+  // v2 program's (7DeRG1...) accounts: the transfer hook is baked into the mint at
+  // creation, so a new program needs a new mint (and fresh token accounts) — reusing
+  // the old mint would still route through the previous program.
+  const LABEL = process.env.RADAR_PROOF_LABEL || "3";
+  const mintKp = deriveKeypair(payer, `radar-mint-${LABEL}`);
+  const senderTokenKp = deriveKeypair(payer, `radar-sender-ta-${LABEL}`);
+  const cpTokenKp = deriveKeypair(payer, `radar-cp-ta-${LABEL}`);
+  const cpWalletKp = deriveKeypair(payer, `radar-cp-wallet-${LABEL}`);
 
   const mint = mintKp.publicKey;
   const senderToken = senderTokenKp.publicKey;
@@ -520,7 +572,9 @@ export async function runTransferHookDevnet(options: {
     hookProgramId,
   });
   const flaggedBefore = (await connection.getTokenAccountBalance(senderToken)).value.uiAmount ?? 0;
-  const flaggedResult = await sendAndInspect(connection, [flaggedTransferIx], [payer], payer.publicKey);
+  const flaggedResult = await sendAndInspect(connection, [flaggedTransferIx], [payer], payer.publicKey, {
+    skipPreflight: true,
+  });
   const flaggedAfter = (await connection.getTokenAccountBalance(senderToken)).value.uiAmount ?? 0;
 
   let flaggedRevertReason: string | undefined;
@@ -532,8 +586,11 @@ export async function runTransferHookDevnet(options: {
     console.log(`[transfer-hook] FLAGGED transfer SUCCEEDED (unexpected): ${flaggedResult.sig}`);
   } else {
     flaggedRevertReason = rejectedLine ?? `custom error: ${JSON.stringify(flaggedResult.err)}`;
-    flaggedErrorCode = RadarHookErrorCode.CounterpartyFlagged;
+    // Read the code the program ACTUALLY returned on-chain (should be 6001 for the
+    // fresh program), not the client-side enum.
+    flaggedErrorCode = extractCustomErrorCode(flaggedResult.err) ?? RadarHookErrorCode.CounterpartyFlagged;
     console.log(`[transfer-hook] FLAGGED transfer REVERTED as expected (sig: ${flaggedResult.sig})`);
+    console.log(`[transfer-hook]   on-chain meta.err: ${JSON.stringify(flaggedResult.err)} (code ${flaggedErrorCode})`);
     for (const line of flaggedResult.logs) {
       if (line.includes("RadarHook") || line.includes("REJECTED") || line.includes("Error")) {
         console.log(`[transfer-hook]   log: ${line}`);
