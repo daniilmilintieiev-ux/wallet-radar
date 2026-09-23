@@ -67,6 +67,14 @@ export const WRITE_SCAN_RECORD_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
+ * Anchor program `update_config` instruction discriminator (8 bytes):
+ * sha256("global:update_config")[0..8]
+ */
+export const RADAR_UPDATE_CONFIG_DISCRIMINATOR = Buffer.from([
+  0x1d, 0x9e, 0xfc, 0xbf, 0x0a, 0x53, 0xdb, 0x63,
+]);
+
+/**
  * Radar Transfer Hook custom error codes matching the on-chain Rust program.
  */
 export enum RadarHookErrorCode {
@@ -145,21 +153,108 @@ export function deriveRadarRecordPda(
 const SYSTEM_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
 
 /**
- * Serializes a single `ExtraAccountMeta` entry (35 bytes) for a standard
- * (fixed-pubkey) account meta: discriminator(1) + address(32) + is_signer(1) +
- * is_writable(1).
+ * A single seed descriptor for a seed-based `ExtraAccountMeta` entry
+ * (spl-tlv-account-resolution `Seed` TLV wire format).
+ *
+ * The seed is resolved by the Token-22 program against the hook CPI account
+ * list: [0] source, [1] mint, [2] destination, [3] authority,
+ * [4] validate_state, [5..] extra metas.
  */
-export function serializeExtraAccountMeta(meta: {
-  pubkey: PublicKey;
-  isSigner?: boolean;
-  isWritable?: boolean;
-}): Buffer {
+export type HookSeedSpec =
+  | { type: "literal"; value: Buffer | string }
+  | { type: "instructionData"; index: number; length: number }
+  | { type: "accountKey"; index: number }
+  | { type: "accountData"; accountIndex: number; dataIndex: number; length: number };
+
+/**
+ * Packs a single seed descriptor into its TLV wire bytes.
+ * Discriminators: 1=literal, 2=instructionData, 3=accountKey, 4=accountData.
+ */
+export function packHookSeed(seed: HookSeedSpec): Buffer {
+  switch (seed.type) {
+    case "literal": {
+      const value =
+        typeof seed.value === "string" ? Buffer.from(seed.value, "utf-8") : seed.value;
+      if (value.length > 30) {
+        throw new Error(`literal seed too long (${value.length} > 30 bytes)`);
+      }
+      const out = Buffer.alloc(2 + value.length);
+      out.writeUInt8(1, 0);
+      out.writeUInt8(value.length, 1);
+      value.copy(out, 2);
+      return out;
+    }
+    case "instructionData": {
+      const out = Buffer.alloc(3);
+      out.writeUInt8(2, 0);
+      out.writeUInt8(seed.index, 1);
+      out.writeUInt8(seed.length, 2);
+      return out;
+    }
+    case "accountKey": {
+      const out = Buffer.alloc(2);
+      out.writeUInt8(3, 0);
+      out.writeUInt8(seed.index, 1);
+      return out;
+    }
+    case "accountData": {
+      const out = Buffer.alloc(4);
+      out.writeUInt8(4, 0);
+      out.writeUInt8(seed.accountIndex, 1);
+      out.writeUInt8(seed.dataIndex, 2);
+      out.writeUInt8(seed.length, 3);
+      return out;
+    }
+  }
+}
+
+/**
+ * An `ExtraAccountMeta` entry for the ExtraAccountMetaList (35 bytes on the
+ * wire): either a static account or a seed-resolved PDA.
+ */
+export type HookMetaSpec =
+  | { kind: "pubkey"; pubkey: PublicKey; isSigner?: boolean; isWritable?: boolean }
+  | { kind: "seeds"; seeds: HookSeedSpec[]; isSigner?: boolean; isWritable?: boolean };
+
+/**
+ * Serializes a single `ExtraAccountMeta` entry (35 bytes):
+ * discriminator(1) + address_config(32) + is_signer(1) + is_writable(1).
+ *
+ * discriminator 0 = static account (address_config = 32-byte pubkey);
+ * discriminator 1 = seed-based PDA (address_config = packed seed TLV).
+ */
+export function serializeExtraAccountMeta(meta: HookMetaSpec): Buffer {
   const buf = Buffer.alloc(35);
-  buf.writeUInt8(0, 0); // discriminator: 0 = standard AccountMeta (pubkey)
-  meta.pubkey.toBuffer().copy(buf, 1);
+  if (meta.kind === "pubkey") {
+    buf.writeUInt8(0, 0); // discriminator: 0 = static AccountMeta (pubkey)
+    meta.pubkey.toBuffer().copy(buf, 1);
+  } else {
+    const packed = Buffer.concat(meta.seeds.map(packHookSeed));
+    if (packed.length > 32) {
+      throw new Error(`seeds do not fit into 32-byte address_config (${packed.length} bytes)`);
+    }
+    buf.writeUInt8(1, 0); // discriminator: 1 = seed-based PDA
+    packed.copy(buf, 1);
+  }
   buf.writeUInt8(meta.isSigner ? 1 : 0, 33);
   buf.writeUInt8(meta.isWritable ? 1 : 0, 34);
   return buf;
+}
+
+/**
+ * Seed configuration for the dynamic scan-record entry in the
+ * ExtraAccountMetaList: `Literal("radar_record")` +
+ * `AccountData{accountIndex: 2 (destination token account), dataIndex: 32,
+ * length: 32}` — the owner field of the destination token account — so the
+ * hook resolves PDA(["radar_record", destination_owner]) on every transfer.
+ *
+ * The mint is therefore NOT locked to a single destination wallet.
+ */
+export function buildRecordPdaMetaSeeds(): HookSeedSpec[] {
+  return [
+    { type: "literal", value: "radar_record" },
+    { type: "accountData", accountIndex: 2, dataIndex: 32, length: 32 },
+  ];
 }
 
 /**
@@ -211,7 +306,7 @@ export function buildInitializeInstruction(params: {
 export function buildInitializeExtraAccountMetaListInstruction(params: {
   mint: PublicKey;
   authority: PublicKey;
-  metas: { pubkey: PublicKey; isSigner?: boolean; isWritable?: boolean }[];
+  metas: HookMetaSpec[];
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
@@ -240,10 +335,15 @@ export function buildInitializeExtraAccountMetaListInstruction(params: {
  * record header for a wallet (the PDA is derived from the wallet).
  *
  * Data: 8 disc + 1 riskScore + 1 verdictCode + 8 timestamp + 2 payloadLen.
- * Keys: [0] wallet (r), [1] record PDA (w), [2] authority (s, w), [3] system (r)
+ * Keys: [0] wallet (r), [1] record PDA (w), [2] config PDA (r),
+ *       [3] mint (r), [4] authority (s, w), [5] system (r).
+ *
+ * The program enforces `authority == config.authority` — only the mint's
+ * configured authority can write scan records.
  */
 export function buildWriteScanRecordInstruction(params: {
   wallet: PublicKey;
+  mint: PublicKey;
   riskScore: number;
   verdictCode: number;
   timestamp: bigint | number;
@@ -253,6 +353,7 @@ export function buildWriteScanRecordInstruction(params: {
 }): TransactionInstruction {
   const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
   const [recordPda] = deriveRadarRecordPda(params.wallet, programId);
+  const [configPda] = deriveRadarConfigPda(params.mint, programId);
 
   const data = Buffer.alloc(8 + 1 + 1 + 8 + 2);
   WRITE_SCAN_RECORD_DISCRIMINATOR.copy(data, 0);
@@ -264,8 +365,42 @@ export function buildWriteScanRecordInstruction(params: {
   const keys: AccountMeta[] = [
     { pubkey: params.wallet, isSigner: false, isWritable: false },
     { pubkey: recordPda, isSigner: false, isWritable: true },
+    { pubkey: configPda, isSigner: false, isWritable: false },
+    { pubkey: params.mint, isSigner: false, isWritable: false },
     { pubkey: params.authority, isSigner: true, isWritable: true },
     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+  ];
+
+  return new TransactionInstruction({ programId, keys, data });
+}
+
+/**
+ * Builds the anchor `update_config` instruction: updates the risk-gating
+ * parameters for a mint.
+ *
+ * Data: 8 disc + 1 newMaxRiskScore + 1 allowUnverified + 8 maxAttestationAgeSec.
+ * Keys: [0] config PDA (w), [1] authority (s, w).
+ */
+export function buildUpdateConfigInstruction(params: {
+  mint: PublicKey;
+  authority: PublicKey;
+  newMaxRiskScore: number;
+  allowUnverified: boolean;
+  maxAttestationAgeSec?: number;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const [configPda] = deriveRadarConfigPda(params.mint, programId);
+
+  const data = Buffer.alloc(8 + 1 + 1 + 8);
+  RADAR_UPDATE_CONFIG_DISCRIMINATOR.copy(data, 0);
+  data.writeUInt8(Math.max(0, Math.min(100, params.newMaxRiskScore)), 8);
+  data.writeUInt8(params.allowUnverified ? 1 : 0, 9);
+  data.writeBigUInt64LE(BigInt(Math.max(0, params.maxAttestationAgeSec ?? 0)), 10);
+
+  const keys: AccountMeta[] = [
+    { pubkey: configPda, isSigner: false, isWritable: true },
+    { pubkey: params.authority, isSigner: true, isWritable: true },
   ];
 
   return new TransactionInstruction({ programId, keys, data });

@@ -15,9 +15,13 @@ import {
   deriveRadarConfigPda,
   deriveRadarRecordPda,
   buildInitializeExtraAccountMetaListInstruction,
+  buildUpdateConfigInstruction,
+  buildWriteScanRecordInstruction,
   buildTransferHookExecuteInstruction,
+  buildRecordPdaMetaSeeds,
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
+  type HookMetaSpec,
 } from "../src/hook/index.js";
 import {
   ScanLedgerRecord,
@@ -80,10 +84,9 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
 
   test("buildInitializeExtraAccountMetaListInstruction: constructs valid initialization layout", () => {
     const [configPda] = deriveRadarConfigPda(mint);
-    const [recordPda] = deriveRadarRecordPda(destWallet);
-    const metas = [
-      { pubkey: configPda, isSigner: false, isWritable: false },
-      { pubkey: recordPda, isSigner: false, isWritable: false },
+    const metas: HookMetaSpec[] = [
+      { kind: "pubkey", pubkey: configPda, isSigner: false, isWritable: false },
+      { kind: "seeds", seeds: buildRecordPdaMetaSeeds(), isSigner: false, isWritable: false },
     ];
 
     const ix = buildInitializeExtraAccountMetaListInstruction({
@@ -111,13 +114,82 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR,
     );
     assert.equal(ix.data.readUInt32LE(8), 2); // metas count
-    // First meta entry at offset 12: discriminator(1) + address(32) + is_signer(1) + is_writable(1)
-    assert.equal(ix.data.readUInt8(12), 0); // standard pubkey meta discriminator
+    // First meta entry at offset 12: static config PDA
+    assert.equal(ix.data.readUInt8(12), 0); // discriminator: 0 = static pubkey
     assert.deepEqual(ix.data.subarray(13, 45), configPda.toBuffer());
     assert.equal(ix.data.readUInt8(45), 0); // is_signer: false
     assert.equal(ix.data.readUInt8(46), 0); // is_writable: false
-    // Second meta entry at offset 12 + 35 = 47
-    assert.deepEqual(ix.data.subarray(47 + 1, 47 + 33), recordPda.toBuffer());
+    // Second meta entry at offset 12 + 35 = 47: seed-based scan-record PDA
+    assert.equal(ix.data.readUInt8(47), 1); // discriminator: 1 = seed-based PDA
+    // Packed seeds: Literal("radar_record") [1, 12, 12B] +
+    // AccountData [4, accountIndex=2 (destination), dataIndex=32, length=32]
+    assert.equal(ix.data.readUInt8(48), 1); // seed discriminator: literal
+    assert.equal(ix.data.readUInt8(49), 12); // literal length
+    assert.equal(
+      ix.data.subarray(50, 62).toString("utf-8"),
+      "radar_record",
+    );
+    assert.equal(ix.data.readUInt8(62), 4); // seed discriminator: accountData
+    assert.equal(ix.data.readUInt8(63), 2); // accountIndex: destination token account
+    assert.equal(ix.data.readUInt8(64), 32); // dataIndex: owner field offset
+    assert.equal(ix.data.readUInt8(65), 32); // length
+  });
+
+  test("buildWriteScanRecordInstruction: includes config PDA and mint keys", () => {
+    const [recordPda] = deriveRadarRecordPda(destWallet);
+    const [configPda] = deriveRadarConfigPda(mint);
+
+    const ix = buildWriteScanRecordInstruction({
+      wallet: destWallet,
+      mint,
+      riskScore: 20,
+      verdictCode: 0,
+      timestamp: 1726300000,
+      authority,
+    });
+
+    // Keys: [0] wallet (r), [1] record PDA (w), [2] config PDA (r),
+    // [3] mint (r), [4] authority (s, w), [5] system (r)
+    assert.equal(ix.keys.length, 6);
+    assert.equal(ix.keys[0].pubkey.toBase58(), destWallet.toBase58());
+    assert.equal(ix.keys[1].pubkey.toBase58(), recordPda.toBase58());
+    assert.equal(ix.keys[1].isWritable, true);
+    assert.equal(ix.keys[2].pubkey.toBase58(), configPda.toBase58());
+    assert.equal(ix.keys[3].pubkey.toBase58(), mint.toBase58());
+    assert.equal(ix.keys[4].pubkey.toBase58(), authority.toBase58());
+    assert.equal(ix.keys[4].isSigner, true);
+    assert.equal(ix.keys[5].pubkey.toBase58(), "11111111111111111111111111111111");
+
+    // Data: 8 disc + 1 risk + 1 verdict + 8 timestamp + 2 payloadLen = 20
+    assert.equal(ix.data.length, 20);
+    assert.equal(ix.data.readUInt8(8), 20);
+    assert.equal(ix.data.readUInt8(9), 0);
+    assert.equal(ix.data.readBigUInt64LE(10), 1726300000n);
+  });
+
+  test("buildUpdateConfigInstruction: constructs config update layout", () => {
+    const [configPda] = deriveRadarConfigPda(mint);
+
+    const ix = buildUpdateConfigInstruction({
+      mint,
+      authority,
+      newMaxRiskScore: 90,
+      allowUnverified: true,
+      maxAttestationAgeSec: 3600,
+    });
+
+    // Keys: [0] config PDA (w), [1] authority (s, w)
+    assert.equal(ix.keys.length, 2);
+    assert.equal(ix.keys[0].pubkey.toBase58(), configPda.toBase58());
+    assert.equal(ix.keys[0].isWritable, true);
+    assert.equal(ix.keys[1].pubkey.toBase58(), authority.toBase58());
+    assert.equal(ix.keys[1].isSigner, true);
+
+    // Data: 8 disc + 1 maxRisk + 1 allowUnverified + 8 age = 18
+    assert.equal(ix.data.length, 18);
+    assert.equal(ix.data.readUInt8(8), 90);
+    assert.equal(ix.data.readUInt8(9), 1);
+    assert.equal(ix.data.readBigUInt64LE(10), 3600n);
   });
 
   test("buildTransferHookExecuteInstruction: constructs valid transfer hook execute layout", () => {

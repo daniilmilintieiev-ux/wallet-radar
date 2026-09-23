@@ -5,6 +5,7 @@ pub mod state;
 
 use error::RadarHookError;
 use state::*;
+use spl_pod::primitives::PodBool;
 use spl_tlv_account_resolution::account::ExtraAccountMeta;
 use spl_tlv_account_resolution::state::ExtraAccountMetaList;
 use spl_transfer_hook_interface::instruction::ExecuteInstruction;
@@ -12,7 +13,7 @@ use spl_transfer_hook_interface::instruction::ExecuteInstruction;
 declare_id!("wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV");
 
 #[used]
-pub static P4_BUILD_MARKER: [u8; 64] = *b"radar-p4-unique-elf-size-marker-01234567890123456789012345678901";
+pub static P4_BUILD_MARKER: [u8; 64] = *b"radar-ap1-unique-elf-size-marker-0123456789012345678901234567890";
 
 pub const EXTRA_ACCOUNT_METAS_SEED: &[u8] = b"extra-account-metas";
 pub const RADAR_CONFIG_SEED: &[u8] = b"radar_config";
@@ -23,8 +24,14 @@ pub const RADAR_RECORD_SEED: &[u8] = b"radar_record";
 ///   get_base_len() [12] + PodSlice header [4] + 2 * ExtraAccountMeta [35] = 86
 pub const EXTRA_ACCOUNT_METAS_SPACE: usize = 12 + 4 + 2 * 35;
 
-/// Borsh-serializable mirror of `ExtraAccountMeta` (35 bytes) so the meta list
-/// can be passed as an instruction argument.
+/// Borsh-serializable mirror of `ExtraAccountMeta` (35 bytes) so meta list
+/// entries can be passed as instruction arguments. Entries are passed through
+/// verbatim to the on-chain `ExtraAccountMetaList`:
+///   discriminator 0 = static account (`address_config` = 32-byte pubkey)
+///   discriminator 1 = PDA (`address_config` = packed seed TLV, resolved
+///     per transfer — e.g. `radar_record` seed + the destination token
+///     account's owner field)
+///   discriminator 2 = pubkey data (account/instruction data reference)
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct MetaArg {
     pub discriminator: u8,
@@ -121,8 +128,18 @@ pub mod radar_transfer_hook {
         }
 
         let record_data = ctx.accounts.record.try_borrow_data()?;
-        let header = ScanRecordHeader::try_parse(&record_data)
-            .ok_or(RadarHookError::InvalidScanRecordMagic)?;
+        let header = match ScanRecordHeader::try_parse(&record_data) {
+            Some(h) => h,
+            None => {
+                // No valid scan attestation on this record account.
+                if config.allow_unverified {
+                    msg!("RadarHook: allowing unverified destination (empty scan record)");
+                    return Ok(());
+                }
+                msg!("RadarHook: REJECTED - destination has no verified scan record");
+                return Err(RadarHookError::UnverifiedCounterparty.into());
+            }
+        };
 
         msg!(
             "RadarHook: evaluating destination {} (score: {}, verdict: {}, timestamp: {})",
@@ -168,8 +185,14 @@ pub mod radar_transfer_hook {
     }
 
     /// Initializes the ExtraAccountMetaList PDA for a mint, registering the
-    /// additional accounts (config + scan-record) that the hook receives on
-    /// every transfer.
+    /// additional accounts that the hook receives on every transfer.
+    ///
+    /// `metas` entries are passed through verbatim (static pubkeys, seed-based
+    /// PDAs, or account-data references), so the mint is not locked to a
+    /// single destination: a seed entry of the form
+    /// `[Literal("radar_record"), AccountData{account 2, data 32..64}]`
+    /// resolves the per-transfer scan record from the destination token
+    /// account's owner field.
     ///
     /// Account order matches the transfer-hook interface:
     ///   0 extra_account_metas (writable), 1 mint, 2 authority (signer),
@@ -179,14 +202,18 @@ pub mod radar_transfer_hook {
         ctx: Context<InitializeExtraAccountMetaList>,
         metas: Vec<MetaArg>,
     ) -> Result<()> {
-        let extra_metas = metas
+        if metas.is_empty() {
+            return Err(RadarHookError::InvalidExtraMeta.into());
+        }
+        let extra_metas: Vec<ExtraAccountMeta> = metas
             .iter()
-            .map(|m| {
-                let pubkey = Pubkey::new_from_array(m.address_config);
-                ExtraAccountMeta::new_with_pubkey(&pubkey, m.is_signer != 0, m.is_writable != 0)
+            .map(|m| ExtraAccountMeta {
+                discriminator: m.discriminator,
+                address_config: m.address_config,
+                is_signer: PodBool::from(m.is_signer != 0),
+                is_writable: PodBool::from(m.is_writable != 0),
             })
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| RadarHookError::InvalidExtraMeta)?;
+            .collect();
 
         let data = &mut ctx.accounts.extra_account_metas.try_borrow_mut_data()?;
         ExtraAccountMetaList::init::<ExecuteInstruction>(data, &extra_metas)?;
@@ -200,7 +227,8 @@ pub mod radar_transfer_hook {
     }
 
     /// Writes a 48-byte scan-record header for a wallet. The record PDA is
-    /// derived from the wallet and referenced by the mint's meta list.
+    /// derived from the wallet and resolved by the mint's meta list on every
+    /// transfer. Only the mint's configured authority may write records.
     pub fn write_scan_record(
         ctx: Context<WriteScanRecord>,
         risk_score: u8,
@@ -324,6 +352,17 @@ pub struct WriteScanRecord<'info> {
         bump
     )]
     pub record: UncheckedAccount<'info>,
+
+    /// Only the mint's configured authority may write scan records
+    #[account(
+        seeds = [RADAR_CONFIG_SEED, mint.key().as_ref()],
+        bump = config.bump,
+        has_one = authority @ RadarHookError::Unauthorized
+    )]
+    pub config: Account<'info, RadarHookConfig>,
+
+    /// CHECK: Token-22 mint (identifies the config PDA)
+    pub mint: AccountInfo<'info>,
 
     #[account(mut)]
     pub authority: Signer<'info>,

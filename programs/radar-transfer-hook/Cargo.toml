@@ -19,6 +19,7 @@ default = []
 [dependencies]
 anchor-lang = { version = "0.30.1", features = ["init-if-needed", "interface-instructions"] }
 solana-program = "1.18"
+spl-pod = "0.2"
 spl-transfer-hook-interface = "0.6.3"
 spl-tlv-account-resolution = "0.6.3"
 spl-type-length-value = "0.4.3"

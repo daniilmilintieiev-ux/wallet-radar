@@ -20,10 +20,13 @@ import {
   deriveRadarRecordPda,
   buildInitializeInstruction,
   buildInitializeExtraAccountMetaListInstruction,
+  buildUpdateConfigInstruction,
   buildWriteScanRecordInstruction,
+  buildRecordPdaMetaSeeds,
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
   RadarHookErrorCode,
+  type HookMetaSpec,
 } from "../src/hook/index.js";
 import {
   ScanLedgerRecord,
@@ -51,10 +54,12 @@ export interface TransferProofResult {
   mint: string;
   flaggedWallet: string;
   unflaggedWallet: string;
+  unverifiedWallet?: string;
   flaggedRevertReason?: string;
   flaggedErrorCode?: number;
   flaggedTxSignature?: string;
   successTxSignature?: string;
+  unverifiedTxSignature?: string;
   success: boolean;
 }
 
@@ -475,17 +480,22 @@ export async function runTransferHookDevnet(options: {
     console.log(`[transfer-hook] ${label} token account created (sig: ${sig})`);
   }
 
-  // ---- 4. Initialize ExtraAccountMetaList (config + counterparty record) ----
+  // ---- 4. Initialize ExtraAccountMetaList (config + dynamic scan record) ----
+  // The record entry is seed-based (Literal("radar_record") + the destination
+  // token account's owner field), so the hook resolves the per-transfer
+  // record PDA from the destination owner — the mint is not locked to the
+  // counterparty registered below.
   if (await accountExists(connection, metaListPda)) {
     console.log(`[transfer-hook] Meta-list already exists; skipping init.`);
   } else {
+    const hookMetas: HookMetaSpec[] = [
+      { kind: "pubkey", pubkey: configPda, isSigner: false, isWritable: false },
+      { kind: "seeds", seeds: buildRecordPdaMetaSeeds(), isSigner: false, isWritable: false },
+    ];
     const metaIx = buildInitializeExtraAccountMetaListInstruction({
       mint,
       authority: payer.publicKey,
-      metas: [
-        { pubkey: configPda, isSigner: false, isWritable: false },
-        { pubkey: cpRecordPda, isSigner: false, isWritable: false },
-      ],
+      metas: hookMetas,
       programId: hookProgramId,
     });
     const { sig, err, logs } = await sendAndInspect(connection, [metaIx], [payer], payer.publicKey);
@@ -509,6 +519,7 @@ export async function runTransferHookDevnet(options: {
   const safeNow = Math.floor(Date.now() / 1000);
   const safeRecordIx = buildWriteScanRecordInstruction({
     wallet: cpWallet,
+    mint,
     riskScore: 20,
     verdictCode: 0, // SAFE
     timestamp: safeNow,
@@ -550,6 +561,7 @@ export async function runTransferHookDevnet(options: {
   const flaggedNow = Math.floor(Date.now() / 1000);
   const flaggedRecordIx = buildWriteScanRecordInstruction({
     wallet: cpWallet,
+    mint,
     riskScore: 70,
     verdictCode: 3, // HIGH RISK
     timestamp: flaggedNow,
@@ -601,23 +613,120 @@ export async function runTransferHookDevnet(options: {
   const flaggedMoved = flaggedBefore - flaggedAfter;
   console.log(`[transfer-hook]   sender balance: ${flaggedBefore} -> ${flaggedAfter} (moved ${flaggedMoved})`);
 
-  const success = !safeResult.err && Boolean(flaggedResult.err) && flaggedMoved === 0;
+  // ---- 8. UNVERIFIED: allow_unverified=true + empty record -> transfer SUCCEEDS ----
+  // Proves the on-chain `allow_unverified` path: a destination whose record
+  // account exists but holds no valid scan header is allowed when the config
+  // flag is set (and rejected otherwise).
+  console.log(`\n[transfer-hook] === UNVERIFIED CASE ===`);
+  const cp2Wallet = deriveKeypair(payer, `radar-cp2-wallet-${LABEL}`).publicKey;
+  const cp2TokenKp = deriveKeypair(payer, `radar-cp2-ta-${LABEL}`);
+  const cp2Token = cp2TokenKp.publicKey;
+  const [cp2RecordPda] = deriveRadarRecordPda(cp2Wallet, hookProgramId);
+
+  if (await accountExists(connection, cp2Token)) {
+    console.log(`[transfer-hook] Unverified counterparty token account already exists; skipping.`);
+  } else {
+    const rentExempt = await connection.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SPACE);
+    const ixs = [
+      SystemProgram.createAccount({
+        fromPubkey: payer.publicKey,
+        newAccountPubkey: cp2Token,
+        lamports: rentExempt,
+        space: TOKEN_ACCOUNT_SPACE,
+        programId: TOKEN_2022_PROGRAM_ID,
+      }),
+      buildInitializeTokenAccountIx({ account: cp2Token, mint, owner: cp2Wallet }),
+    ];
+    const { sig, err, logs } = await sendAndInspect(connection, ixs, [payer, cp2TokenKp], payer.publicKey);
+    if (err) {
+      throw new Error(`Unverified token account creation failed: ${JSON.stringify(err)}\n${logs.join("\n")}`);
+    }
+    console.log(`[transfer-hook] Unverified counterparty token account created (sig: ${sig})`);
+  }
+
+  // Enable permissive mode (keeps max_risk 75 and the 1h attestation age).
+  const updateCfgIx = buildUpdateConfigInstruction({
+    mint,
+    authority: payer.publicKey,
+    newMaxRiskScore: 75,
+    allowUnverified: true,
+    maxAttestationAgeSec: 3600,
+    programId: hookProgramId,
+  });
+  {
+    const { sig, err, logs } = await sendAndInspect(connection, [updateCfgIx], [payer], payer.publicKey);
+    if (err) throw new Error(`Config update failed: ${JSON.stringify(err)}\n${logs.join("\n")}`);
+    console.log(`[transfer-hook] Config updated: allow_unverified=true (sig: ${sig})`);
+  }
+
+  // Create an EMPTY (zero header) scan-record account for the unverified
+  // counterparty — the hook sees a record account with no valid attestation.
+  if (await accountExists(connection, cp2RecordPda)) {
+    console.log(`[transfer-hook] Unverified record account already exists; skipping creation.`);
+  } else {
+    const rentExempt = await connection.getMinimumBalanceForRentExemption(48);
+    const createRecordIx = SystemProgram.createAccount({
+      fromPubkey: payer.publicKey,
+      newAccountPubkey: cp2RecordPda,
+      lamports: rentExempt,
+      space: 48,
+      programId: hookProgramId,
+    });
+    const { sig, err, logs } = await sendAndInspect(connection, [createRecordIx], [payer], payer.publicKey);
+    if (err) {
+      throw new Error(`Unverified record creation failed: ${JSON.stringify(err)}\n${logs.join("\n")}`);
+    }
+    console.log(`[transfer-hook] Empty scan-record account created for ${cp2Wallet.toBase58()} (sig: ${sig})`);
+  }
+
+  const unverifiedTransferIx = createRiskGatedTransferCheckedInstruction({
+    source: senderToken,
+    mint,
+    destination: cp2Token,
+    owner: payer.publicKey,
+    amount: transferAmount,
+    decimals,
+    destinationWallet: cp2Wallet,
+    hookProgramId,
+  });
+  const unverifiedBefore = (await connection.getTokenAccountBalance(senderToken)).value.uiAmount ?? 0;
+  const unverifiedResult = await sendAndInspect(connection, [unverifiedTransferIx], [payer], payer.publicKey);
+  const unverifiedAfter = (await connection.getTokenAccountBalance(senderToken)).value.uiAmount ?? 0;
+  const unverifiedMoved = unverifiedBefore - unverifiedAfter;
+  if (unverifiedResult.err) {
+    throw new Error(
+      `UNVERIFIED transfer unexpectedly FAILED: ${JSON.stringify(unverifiedResult.err)}\n${unverifiedResult.logs.join("\n")}`,
+    );
+  }
+  console.log(
+    `[transfer-hook] UNVERIFIED transfer SUCCEEDED (sig: ${unverifiedResult.sig}); moved ${unverifiedMoved} tokens.`,
+  );
+
+  const success =
+    !safeResult.err &&
+    Boolean(flaggedResult.err) &&
+    flaggedMoved === 0 &&
+    !unverifiedResult.err &&
+    unverifiedMoved > 0;
 
   const result: TransferProofResult = {
     programId: hookProgramId.toBase58(),
     mint: mint.toBase58(),
     flaggedWallet: cpWallet.toBase58(),
     unflaggedWallet: cpWallet.toBase58(),
+    unverifiedWallet: cp2Wallet.toBase58(),
     flaggedRevertReason,
     flaggedErrorCode,
     flaggedTxSignature: flaggedResult.sig,
     successTxSignature: safeResult.sig,
+    unverifiedTxSignature: unverifiedResult.sig,
     success,
   };
 
   console.log(`\n[transfer-hook] === PROOF SUMMARY ===`);
   console.log(`[transfer-hook] SAFE transfer (allowed):    ${safeResult.sig}`);
   console.log(`[transfer-hook] FLAGGED transfer (reverted): ${flaggedResult.sig}`);
+  console.log(`[transfer-hook] UNVERIFIED transfer (allowed by flag): ${unverifiedResult.sig}`);
   console.log(`[transfer-hook] FLAGGED reason: ${flaggedRevertReason}`);
   console.log(`[transfer-hook] PROOF ${success ? "PASSED" : "FAILED"}`);
 
