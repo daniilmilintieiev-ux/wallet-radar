@@ -226,6 +226,16 @@ export async function verifySolanaPaymentRpc(
     // check was never executed).
     const maxAgeSec = requirement.maxAgeSec ?? 300;
 
+    if (tx.blockTime) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec - tx.blockTime > maxAgeSec) {
+        return {
+          valid: false,
+          error: `Transaction too old (${nowSec - tx.blockTime}s ago, max allowed ${maxAgeSec}s)`,
+        };
+      }
+    }
+
     // Audit 1.1 & 1.3: Front-running and hijacking protection via cryptographic proof or on-chain memo binding
     if (requirement.targetWallet) {
       let boundToTarget = false;
@@ -293,7 +303,20 @@ export async function verifySolanaPaymentRpc(
         };
       }
       if (memoRes.matching) {
-        boundToTarget = true;
+        // Audit 11: Restrict memo-only target binding (without cryptographic proofSignature)
+        // to the Blink completion endpoint (/api/actions/radar-scan/complete).
+        // Direct API endpoints (/scan, /analyze) require X-Payment-Proof signed by payer
+        // to prevent front-running / theft of on-chain memo transactions (WR-CRIT-01).
+        if (requirement.endpoint === "/api/actions/radar-scan/complete") {
+          boundToTarget = true;
+        } else if (proof.proofSignature) {
+          boundToTarget = true;
+        } else {
+          return {
+            valid: false,
+            error: `Endpoint ${requirement.endpoint} requires cryptographic X-Payment-Proof signed by payer; on-chain memo alone is only accepted for Blink callbacks`,
+          };
+        }
       }
 
       // Audit 1.3: If neither X-Payment-Proof nor matching on-chain memo binds the payment to targetWallet,
@@ -309,36 +332,32 @@ export async function verifySolanaPaymentRpc(
     // Payer must be an actual on-chain signer of the payment transaction,
     // otherwise any third-party transfer to the recipient could be replayed
     // as a valid x402 payment (audit 1.3).
-    const accountKeys = tx.transaction?.message?.accountKeys;
-    if (Array.isArray(accountKeys) && accountKeys.length > 0) {
-      const payerIsSigner = accountKeys.some((k: any) => {
-        if (typeof k === "string") return k === proof.payer;
-        const pk =
-          typeof k?.pubkey === "string"
-            ? k.pubkey
-            : typeof k?.pubkey?.toBase58 === "function"
-              ? k.pubkey.toBase58()
-              : typeof k?.toBase58 === "function"
-                ? k.toBase58()
-                : null;
-        return pk === proof.payer && (k.signer === true || k.isSigner === true);
-      });
-      if (!payerIsSigner) {
-        return {
-          valid: false,
-          error: `X-Payment-Payer ${proof.payer} is not a signer of the payment transaction`,
-        };
-      }
+    const accountKeys =
+      tx.transaction?.message?.accountKeys || tx.transaction?.message?.staticAccountKeys;
+    if (!Array.isArray(accountKeys) || accountKeys.length === 0) {
+      return { valid: false, error: "Transaction message accountKeys are missing or malformed" };
     }
-
-    if (tx.blockTime) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (nowSec - tx.blockTime > maxAgeSec) {
-        return {
-          valid: false,
-          error: `Transaction too old (${nowSec - tx.blockTime}s ago, max allowed ${maxAgeSec}s)`,
-        };
-      }
+    const numSigners =
+      typeof tx.transaction?.message?.header?.numRequiredSignatures === "number"
+        ? tx.transaction.message.header.numRequiredSignatures
+        : 1;
+    const payerIsSigner = accountKeys.some((k: any, idx: number) => {
+      if (typeof k === "string") return k === proof.payer && idx < numSigners;
+      const pk =
+        typeof k?.pubkey === "string"
+          ? k.pubkey
+          : typeof k?.pubkey?.toBase58 === "function"
+            ? k.pubkey.toBase58()
+            : typeof k?.toBase58 === "function"
+              ? k.toBase58()
+              : null;
+      return pk === proof.payer && (k.signer === true || k.isSigner === true);
+    });
+    if (!payerIsSigner) {
+      return {
+        valid: false,
+        error: `X-Payment-Payer ${proof.payer} is not a signer of the payment transaction`,
+      };
     }
 
     let transferred = 0;
@@ -715,7 +734,6 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       throw new Error("Invalid txs: expected a JSON array of transaction objects");
     }
     const storedBaseline = isValidBase58(wallet) ? store.getBaseline(wallet) : null;
-    const baseline = updateBaseline(wallet, storedBaseline, parsed);
     const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
     const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
     return {

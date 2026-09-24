@@ -173,7 +173,6 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
         };
       }
       const storedBaseline = options.store ? options.store.getBaseline(wallet) : null;
-      const baseline = updateBaseline(wallet, storedBaseline, parsed);
       const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
       const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
       return json({ wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) });

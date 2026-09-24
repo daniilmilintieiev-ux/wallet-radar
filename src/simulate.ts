@@ -39,7 +39,7 @@ export interface SimulateInput {
   /** Optional raw token amount (e.g. 2 SOL). If set with token 'sol', converted via solPrice. */
   amount?: number;
   /** Token of the proposed payment. Default "usdc". */
-  token?: "usdc" | "sol";
+  token?: "usdc" | "sol" | "usdt";
   /** Current known liquidity of the target wallet. */
   balances: TrustBalances;
   /** SOL price (for converting SOL amount to USD). Null if unknown. */
@@ -124,6 +124,8 @@ export function simulatePayment(input: SimulateInput): SimulateResult {
   let tokenLiquidityUsd = currentLiquidity;
   if (token === "usdc") {
     tokenLiquidityUsd = balances.usdc ?? 0;
+  } else if (token === "usdt") {
+    tokenLiquidityUsd = balances.usdt ?? 0;
   } else if (token === "sol") {
     tokenLiquidityUsd = (balances.sol ?? 0) * effectiveSolPrice;
   }

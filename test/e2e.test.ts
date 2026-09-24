@@ -196,7 +196,7 @@ describe("E2E Integration & Verification (Hackathon Full Flow)", () => {
         destinationWallet: safeTargetKeypair.publicKey,
       });
       assert.equal(ix.data.length, 10);
-      assert.equal(ix.keys.length, 8);
+      assert.equal(ix.keys.length, 9); // 4 token keys + 3 hook meta keys + 2 radar record keys (destination + source)
     } finally {
       await close();
       store.close();

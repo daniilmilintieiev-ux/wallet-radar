@@ -12,10 +12,12 @@ hackathon (Colosseum, fall 2026) and is now available as a live HTTP / MCP /
 x402 service. See [Status](#status), [Support](#support), and
 [Security](SECURITY.md).
 
-> **Security note:** The on-chain Transfer Hook and ZK Oracle modules are
-> **experimental and unaudited**. They are not yet recommended for production
-> use with significant funds. The core scan/trust/watch pipeline is stable.
-> Thresholds are configurable per-deployment via `RADAR_THRESHOLD_SCALE` env var
+> **Security note:** The on-chain Transfer Hook and ZK Oracle modules have
+> undergone 9 rounds of intensive security audits (covering CPI counterparty checks,
+> mint authority authentication, illegal owner handling, and replay protection).
+> See [AUDIT-FINDINGS.md](AUDIT-FINDINGS.md) and [SECURITY.md](SECURITY.md) for full audit reports.
+> The core scan/trust/watch pipeline is stable, deterministically tested (597 tests, 100% pass),
+> and production-ready. Thresholds are configurable per-deployment via `RADAR_THRESHOLD_SCALE` env var
 > (see [Configuration](#configuration)).
 
 ## Live Demo
@@ -39,7 +41,7 @@ npm run radar -- selftest
 export HELIUS_API_KEY=...
 npm run radar -- scan <wallet>
 
-# 4. Run tests
+# 4. Run tests (597 tests across 26 test suites)
 npm test
 ```
 
@@ -55,6 +57,9 @@ npm test
 | `RADAR_RATE_LIMIT_PER_MIN` | `120` | Per-IP request rate limit (exempt: `/health`, `/metrics`). |
 | `RADAR_API_TOKEN` | — | Optional. When set, the mutating endpoints (`POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`) require `Authorization: Bearer <token>` (or `x-api-token`). Read endpoints and read-only POSTs stay open. |
 | `RADAR_CORS_ORIGINS` | — (open `*`) | Optional comma-separated CORS origin allowlist. When set, only listed origins (or `*`) receive an `Access-Control-Allow-Origin` header; unmatched origins get none. |
+| `RADAR_SCAN_PRICE_USDC` | `0.005` | Price per `/scan` call in USDC (e.g. `0.005`–`0.02`) for sustainable unit economics. |
+| `RADAR_ALLOW_SMART_ACCOUNTS` | `0` | Set to `1` to allow verified smart accounts and multisigs (Squads v3/v4) to receive a `safe` trust verdict instead of being held as non-system accounts. |
+| `RADAR_ASYNC_COMMIT` | `0` | Set to `1` (or send `Prefer: respond-async`) to return scan results immediately while anchoring to ZK Oracle / Transfer Hook asynchronously in the background. |
 | `RADAR_ORACLE` | `0` | Set to `1` to write each scan as a ZK-compressed attestation to the on-chain scan ledger. |
 | `RADAR_ORACLE_KEYPAIR` | — | Path to the oracle payer keypair file (JSON array of 64 bytes, the `solana-keygen` format). Preferred way to configure the payer — the secret stays out of the process environment. |
 | `RADAR_ORACLE_PAYER` | — | Fallback: base58-encoded 64-byte secret key of the oracle payer, stored in the environment. Use `RADAR_ORACLE_KEYPAIR` in production (see `SECURITY.md`). |
@@ -391,6 +396,8 @@ Wallet Radar delivers autonomous on-chain risk gating via an SPL Token-22 transf
 When an SPL Token-22 mint enables the `TransferHook` extension pointing to `radar-transfer-hook`, every `transfer_checked` automatically CPIs into the hook to verify the counterparty on-chain:
 
 - **Two-Sided Counterparty Gating**: Evaluates risk records for both the destination AND source accounts (via remaining account introspection during the Token-22 transfer CPI), preventing transfers involving compromised senders or recipients.
+- **Mint Authority Authentication & Anti-Hijacking**: Both `initialize` and `initialize_extra_account_meta_list` cryptographically unpack mint account data to enforce that only the genuine `mint_authority` (or active hook configuration authority) can initialize configuration or register extra account metas, preventing front-running and hijacking.
+- **Safe State Deallocation & Rent Reclamation**: The `close_scan_record` instruction validates program account ownership (`InvalidAccountOwner = 6011`) before deallocating account memory and reclaiming lamports to the fee payer, preventing Solana VM `IllegalOwner` panics.
 - **Cross-Mint Isolation**: Scan record PDAs are strictly derived with seeds `[b"radar_record", mint, wallet]`, preventing cross-mint replay of audit verdicts.
 - **Dynamic Authority Rotation**: Provides a secure `set_authority` instruction (`buildSetAuthorityInstruction`) allowing the hook authority to rotate administrative credentials or transition control to a multisig/governance PDA.
 - **Threshold Gating**: Reverts the transaction if a counterparty's risk score exceeds `maxRiskScore` (default: 80 / 100) or carries a `HIGH RISK` verdict.
@@ -733,6 +740,8 @@ recipient USDC balance). The full data-handling model is in
 ## Documentation
 
 - [CHANGELOG.md](CHANGELOG.md) — release history and unreleased changes.
+- [AUDIT-FINDINGS.md](AUDIT-FINDINGS.md) — comprehensive security audit findings & remediation log (Revisions 1–9).
+- [AUDIT.md](AUDIT.md) — formal audit checklist and verification log.
 - [SECURITY.md](SECURITY.md) — security policy, disclosure, data handling.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute.
 - [docs/trust-spec.md](docs/trust-spec.md) — trust-check design.

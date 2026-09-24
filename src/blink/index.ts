@@ -347,6 +347,13 @@ export function getBlinkRegistrationManifest(
   };
 }
 
+export class PayloadTooLargeError extends Error {
+  constructor(message = "Request payload too large") {
+    super(message);
+    this.name = "PayloadTooLargeError";
+  }
+}
+
 function readBody(req: http.IncomingMessage, maxBytes = 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -357,8 +364,8 @@ function readBody(req: http.IncomingMessage, maxBytes = 1024 * 1024): Promise<st
       size += chunk.length;
       if (size > maxBytes) {
         rejected = true;
-        req.destroy();
-        reject(new Error("Request payload too large"));
+        req.pause();
+        reject(new PayloadTooLargeError("Request payload too large"));
         return;
       }
       chunks.push(chunk);
@@ -366,7 +373,9 @@ function readBody(req: http.IncomingMessage, maxBytes = 1024 * 1024): Promise<st
     req.on("end", () => {
       if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      if (!rejected) reject(err);
+    });
   });
 }
 
@@ -469,7 +478,12 @@ export async function handleBlinkHttpRequest(
             body = parsed as Record<string, unknown>;
           }
         }
-      } catch {
+      } catch (err: any) {
+        if (err instanceof PayloadTooLargeError || err?.name === "PayloadTooLargeError") {
+          res.writeHead(413, { ...ACTIONS_CORS_HEADERS, Connection: "close" });
+          res.end(JSON.stringify({ error: "Payload Too Large" }));
+          return true;
+        }
         res.writeHead(400, ACTIONS_CORS_HEADERS);
         res.end(JSON.stringify({ error: "Invalid JSON body" }));
         return true;
@@ -531,7 +545,19 @@ export async function handleBlinkHttpRequest(
       return true;
     }
 
-    const rawBody = await readBody(req);
+    let rawBody = "";
+    try {
+      rawBody = await readBody(req);
+    } catch (err: any) {
+      if (err instanceof PayloadTooLargeError || err?.name === "PayloadTooLargeError") {
+        res.writeHead(413, { ...ACTIONS_CORS_HEADERS, Connection: "close" });
+        res.end(JSON.stringify({ error: "Payload Too Large" }));
+        return true;
+      }
+      res.writeHead(400, ACTIONS_CORS_HEADERS);
+      res.end(JSON.stringify({ error: "Error reading request body" }));
+      return true;
+    }
     let body: Record<string, unknown> = {};
     try {
       body = rawBody ? JSON.parse(rawBody) : {};

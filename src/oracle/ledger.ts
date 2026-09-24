@@ -806,18 +806,19 @@ export class LightZKOracleClient implements ZKOracleClient {
     const expectedKey = this.resolveExpectedOracleKey();
     if (expectedKey) {
       try {
-        // Audit 1.2: primary path — only attestations the oracle itself
-        // committed (and whose Ed25519 signature verifies) are accepted.
-        const res = await this.querySignedAnchors(wallet, expectedKey, limit);
-        if (res.length > 0) {
-          return res;
-        }
+        // Audit 1.2 & Revision 11 (WR-CRIT-02): primary path — only attestations
+        // the oracle itself committed (and whose Ed25519 signature verifies) are accepted.
+        // Never fall back to unverified legacy compressed accounts when oracle key is configured,
+        // otherwise any attacker can forge 1 lamport compressed accounts to fake a SAFE score.
+        return await this.querySignedAnchors(wallet, expectedKey, limit);
       } catch (err) {
         if (process.env.RADAR_DEBUG === "1") {
-          console.error("Signed-anchor query failed, falling back to legacy lamports decode:", err);
+          console.error("Signed-anchor query failed:", err);
         }
+        return [];
       }
     }
+    // Legacy fallback allowed ONLY when no expected oracle identity is configured
     return this.queryLegacyLamports(wallet, limit);
   }
 

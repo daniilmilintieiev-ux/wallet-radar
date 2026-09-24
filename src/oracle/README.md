@@ -4,19 +4,22 @@ This module provides the on-chain ZK-compressed scan ledger ("the Oracle") for W
 
 ## Architecture
 
-1. **ZK-Compressed Accounts (Light Protocol & Helius)**:
-   - Instead of expensive traditional Solana accounts (~0.002 SOL rent per scan), Wallet Radar writes compact scan attestations to ZK-compressed state trees using Light Protocol's Stateless SDK (`@lightprotocol/stateless.js`).
-   - Storage cost is reduced by orders of magnitude (~thousands of scans per cent) while maintaining cryptographic verification on Solana L1.
+1. **Dual Attestation Pipeline**:
+   - **Canonical ZK-Compressed State (Light Protocol & Helius)**: Instead of expensive traditional Solana accounts (~0.002 SOL rent per scan), Wallet Radar writes compact scan attestations to ZK-compressed state trees using Light Protocol's Stateless SDK (`@lightprotocol/stateless.js`). Storage cost is reduced by ~400× (~0.000005 SOL per attestation) while maintaining cryptographic verification on Solana L1.
+   - **Verifiable SPL Memo Anchors**: Anchors signed `RS01` payloads on-chain via the SPL Memo Program with target wallet address indexing, allowing standard Solana RPCs to retrieve and verify attestations without a compression indexer.
 
-2. **Core Components**:
-   - `ledger.ts` (Task 24):
-     - `commitScan(scanResult, options)`: serializes scan results (target wallet, risk score, verdict badge, timestamp, firing anomaly rules, recent transaction signatures) into a compressed state leaf.
-     - `readScanLedger(wallet, options)`: queries compressed accounts via Helius/Light RPC to retrieve the historical verification trail for any wallet.
-   - Scan Path Integration (Task 25):
-     - Best-effort hook (`RADAR_ORACLE=1`) triggered after `radar_scan` in the engine, MCP server, and x402 endpoints.
+2. **Compact Binary Encoding (`RS01`)**:
+   - Fixed 48-byte zero-copy header: `magic: RS01` (4B), `wallet` (32B), `risk_score` (1B), `verdict_code` (1B), `timestamp` (8B), `payload_len` (2B).
+   - JSON evidence payload: firing anomaly rules and triggering transaction signatures.
+   - 96-byte Ed25519 cryptographic signature trailer (`oraclePublicKey` + `signature`) via `@noble/curves/ed25519`, preventing spoofing and unauthenticated tampering.
 
-## Implementation Details
+3. **Core API**:
+   - `commitScan(scanResult, options)`: Commits signed scan attestation to Light Protocol ZK compression and anchors on-chain.
+   - `readScanLedger(wallet, options)`: Reads, deserializes, and cryptographically verifies historical attestation timeline for any wallet.
+   - `signAttestation(record, payer)` / `verifyAttestation(record, oraclePk)`: Cryptographic attestation signing and verification.
 
-- **SDK**: `@lightprotocol/stateless.js` + `@solana/web3.js`
-- **RPC Support**: Any Solana RPC with ZK compression methods enabled (e.g. Helius DAS / compression endpoints).
-- **Graceful Fallback**: Failure to commit to the on-chain oracle never breaks the live scan loop or off-chain consumers.
+4. **Reliability & Performance**:
+   - **Solana v0 Transaction Support**: Decodes versioned transaction responses across `staticAccountKeys`, address table lookups, `compiledInstructions`, and `Uint8Array` data buffers.
+   - **Fast-Fail Indexer Polling**: Instantly detects standard Solana RPCs lacking Light Protocol compression indexers (`Method not found`, `-32601`, `404`) and cleanly falls back to memo anchors without 15-second polling hangs.
+   - **Asynchronous Commitment**: Supports background anchoring via `Prefer: respond-async` HTTP header or `RADAR_ASYNC_COMMIT=1`.
+

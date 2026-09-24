@@ -63,6 +63,14 @@ export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
+ * spl-transfer-hook-interface:update-extra-account-metas discriminator (8 bytes)
+ * sha256("spl-transfer-hook-interface:update-extra-account-metas")[0..8]
+ */
+export const UPDATE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
+  0x9d, 0x69, 0x2a, 0x92, 0x66, 0x55, 0xf1, 0xae,
+]);
+
+/**
  * Anchor program `initialize` (config) instruction discriminator (8 bytes).
  * Plain Anchor instruction (no `#[interface]`), so the sighash preimage is
  * "global:initialize" (no program name): sha256("global:initialize")[0..8]
@@ -362,6 +370,41 @@ export function buildInitializeExtraAccountMetaListInstruction(params: {
   const count = params.metas.length;
   const data = Buffer.alloc(8 + 4 + count * 35);
   INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR.copy(data, 0);
+  data.writeUInt32LE(count, 8);
+  params.metas.forEach((meta, i) => {
+    serializeExtraAccountMeta(meta).copy(data, 12 + i * 35);
+  });
+
+  const keys: AccountMeta[] = [
+    { pubkey: extraAccountMetas, isSigner: false, isWritable: true },
+    { pubkey: params.mint, isSigner: false, isWritable: false },
+    { pubkey: params.authority, isSigner: true, isWritable: true },
+    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+  ];
+
+  return new TransactionInstruction({ programId, keys, data });
+}
+
+/**
+ * Builds the transfer-hook `update_extra_account_meta_list` instruction (Audit Revision 11 WR-HIGH-02):
+ * updates an existing ExtraAccountMetaList PDA registering the additional accounts the
+ * hook receives on every transfer.
+ *
+ * Data: 8 disc + u32 count (LE) + count * 35-byte ExtraAccountMeta entries.
+ * Keys: [0] meta-list PDA (w), [1] mint (r), [2] authority (s, w), [3] system (r)
+ */
+export function buildUpdateExtraAccountMetaListInstruction(params: {
+  mint: PublicKey;
+  authority: PublicKey;
+  metas: HookMetaSpec[];
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId || DEFAULT_HOOK_PROGRAM_ID;
+  const [extraAccountMetas] = deriveExtraAccountMetaListPda(params.mint, programId);
+
+  const count = params.metas.length;
+  const data = Buffer.alloc(8 + 4 + count * 35);
+  UPDATE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR.copy(data, 0);
   data.writeUInt32LE(count, 8);
   params.metas.forEach((meta, i) => {
     serializeExtraAccountMeta(meta).copy(data, 12 + i * 35);
@@ -697,10 +740,13 @@ export function createRiskGatedTransferCheckedInstruction(params: {
     { pubkey: oracleRecord, isSigner: false, isWritable: false },
   ];
 
-  if (params.sourceWallet) {
-    const [sourceRecord] = deriveRadarRecordPda(params.sourceWallet, params.mint, hookProgramId);
-    keys.push({ pubkey: sourceRecord, isSigner: false, isWritable: false });
-  }
+  // Audit Revision 11 (WR-HIGH-01): Always provide the 9th account (sourceRecord)
+  // to strictly match the 3-meta ExtraAccountMetaList schema and prevent Token-22
+  // NotEnoughAccountKeys reverts. If sourceWallet is omitted, the owner of the source
+  // token account is params.owner.
+  const effectiveSourceWallet = params.sourceWallet || params.owner;
+  const [sourceRecord] = deriveRadarRecordPda(effectiveSourceWallet, params.mint, hookProgramId);
+  keys.push({ pubkey: sourceRecord, isSigner: false, isWritable: false });
 
   return new TransactionInstruction({
     programId: TOKEN_2022_PROGRAM_ID,
@@ -718,8 +764,8 @@ export function evaluateTransferRisk(
   nowSec: number = Math.floor(Date.now() / 1000),
   sourceRecordInput?: ScanLedgerRecord | Buffer | Uint8Array | null,
 ): TransferRiskEvaluation {
-  // Audit 1.5: If sourceRecordInput is provided, check source counterparty risk first
-  if (sourceRecordInput) {
+  // Audit 1.5 & Audit 2.4: If sourceRecordInput is provided (including null for missing record), check source risk
+  if (sourceRecordInput !== undefined) {
     const srcEval = evaluateTransferRisk(sourceRecordInput, config, nowSec);
     if (!srcEval.allowed) {
       return {

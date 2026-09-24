@@ -623,8 +623,7 @@ describe("ZK scan ledger oracle", () => {
     assert.equal(results.length, 0);
   });
 
-  test("audit 1.2: LightZKOracleClient query: falls back to legacy lamports query on RPC error", async () => {
-    const oracleKp = Keypair.generate();
+  test("audit 1.2: LightZKOracleClient query: uses legacy lamports query in unauthenticated mode without oracle key", async () => {
     const targetWallet = Keypair.generate().publicKey.toBase58();
 
     const mockFailingConn = {
@@ -650,9 +649,9 @@ describe("ZK scan ledger oracle", () => {
       return {};
     };
 
+    // Unauthenticated client (no oraclePublicKey configured)
     const client = new LightZKOracleClient({
       rpcUrl: "https://mock-rpc.solana.com",
-      oraclePublicKey: oracleKp.publicKey.toBase58(),
       connectionFactory: () => mockFailingConn as any,
       jsonRpcFactory: mockJsonRpc as any,
     });
@@ -664,7 +663,7 @@ describe("ZK scan ledger oracle", () => {
     assert.equal(results[0].verified, false, "legacy items must be marked verified: false");
   });
 
-  test("audit 2.3: LightZKOracleClient query: falls back to legacy lamports when querySignedAnchors finds 0 records", async () => {
+  test("audit 2.3 & revision 11: LightZKOracleClient query: returns empty array when querySignedAnchors finds 0 records (WR-CRIT-02)", async () => {
     const oracleKp = Keypair.generate();
     const targetWallet = Keypair.generate().publicKey.toBase58();
 
@@ -674,8 +673,10 @@ describe("ZK scan ledger oracle", () => {
       getTransactions: async () => [],
     };
 
+    let legacyRpcCalled = false;
     const mockJsonRpc = async (method: string, _params: unknown[]) => {
       if (method === "getCompressedAccountsByOwner") {
+        legacyRpcCalled = true;
         return {
           value: {
             items: [
@@ -699,10 +700,9 @@ describe("ZK scan ledger oracle", () => {
     });
 
     const results = await client.query(targetWallet, 10);
-    assert.equal(results.length, 1);
-    assert.equal(results[0].riskScore, 15);
-    assert.equal(results[0].verdict, "SAFE");
-    assert.equal(results[0].verified, false);
+    // Audit Revision 11 (WR-CRIT-02): Must return 0 records instead of falling back to legacy lamports
+    assert.equal(results.length, 0);
+    assert.equal(legacyRpcCalled, false, "must not query legacy compressed accounts when oracle key is configured");
   });
 
   test("audit 2.4: sendMemoAnchor overlong record compacts without destroying Ed25519 signature trailer", async () => {
@@ -928,6 +928,42 @@ describe("ZK scan ledger oracle", () => {
     assert.equal(res.signature, "sig_memo_fast_fallback");
     assert.equal(jsonRpcCalls, 1, "Should have broken after first unsupported method response");
     assert.ok(elapsed < 2000, `Expected elapsed time < 2000ms, took ${elapsed}ms`);
+  });
+
+  test("audit revision 11 WR-CRIT-02: query does not degrade to unsigned legacy lamports when oracle key is configured", async () => {
+    const oracleKp = Keypair.generate();
+    const attackerWallet = Keypair.generate().publicKey.toBase58();
+
+    let legacyRpcCalled = false;
+    const client = new LightZKOracleClient({
+      rpcUrl: "https://mock-rpc.solana.com",
+      oraclePublicKey: oracleKp.publicKey.toBase58(),
+      connectionFactory: () =>
+        ({
+          getSignaturesForAddress: async () => [],
+          getTransactions: async () => [],
+        }) as any,
+      jsonRpcFactory: (async <T>(method: string): Promise<T> => {
+        if (method === "getCompressedAccountsByOwner") {
+          legacyRpcCalled = true;
+          return {
+            value: {
+              items: [
+                {
+                  lamports: 1, // unpacks to risk 0, verdict SAFE
+                  slotCreated: 100000,
+                },
+              ],
+            },
+          } as T;
+        }
+        return {} as T;
+      }) as any,
+    });
+
+    const records = await client.query(attackerWallet, 10);
+    assert.equal(records.length, 0, "must return empty array and not fall back to unsigned compressed accounts");
+    assert.equal(legacyRpcCalled, false, "must not query getCompressedAccountsByOwner when oracle key is configured");
   });
 });
 

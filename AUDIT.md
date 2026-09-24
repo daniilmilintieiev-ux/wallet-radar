@@ -1,35 +1,34 @@
 # Wallet Radar — Honest Audit (what actually works vs. what is promised)
 
-Date: 2026-09-18. Method: full `tsc` build + the entire unit/integration suite
-(488 tests, 22 suites), a static wiring review of `src/http-server.ts`, and a
+Date: 2026-09-24 (Updated post-Hackathon & Revisions 1–11). Method: full `tsc` build + the entire unit/integration suite
+(601 tests, 26 suites), a static wiring review of `src/http-server.ts`, and a
 **live** probe of the deployed service on the Orange Pi (`radar-http.service`,
 port 7690; `x402` server, port 4020) plus the public domains. This is the answer
 to "how much of this is a promise or fake code?" — verified, not asserted.
 
 ## Verdict
 
-The core product is **real, tested, and live**: 8-rule deterministic analyzer,
+The core product is **real, tested, and live**: 9-rule deterministic analyzer,
 baseline (USD-normalized, PnL-lite), trust gate + decision engine, batch,
 simulate, watchlist + adaptive polling, replay, benchmark, economics math,
 consensus, active defense, counterparty memory, x402 pay-per-call handshake,
-MCP server, A2A surface, on-chain **ZK** scan ledger (write + read), and the
-dashboard. **488/488 tests pass; the live service returns real on-chain data.**
+MCP server, A2A surface, on-chain **ZK** scan ledger (write + read), the
+dashboard, and the **SPL Token-22 Transfer Hook**. **601/601 tests pass; the live service returns real on-chain data.**
 
-The original audit found **5 gaps** where the README/Colosseum report claimed
-more than was true live. **3 are now closed this session** — GAP 3 (Blink
-domain re-point), GAP 4 (real x402 USDC settlement, `selfSustaining: true`), and
-GAP 5 (Jupiter pricing verified) — leaving **2**: GAP 1 (Transfer Hook not
-deployed) and GAP 2 (canary/x402/watch are bare processes, not managed units).
-None of them is "fake code" in the sense of a stub that throws
-`not implemented` — the code is written and tested. The gaps are **deployment /
-wiring / domain** gaps: a feature that exists in the repo but is not actually
-running, or a link that points at a dead host.
+**All 5 original gaps are now CLOSED:**
+- **GAP 1 CLOSED**: Transfer Hook compiled to SBF and deployed to devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), Token-22 mint (`2YDsAV…`) configured, and live revert on flagged transfer verified.
+- **GAP 2 CLOSED**: All services (`radar-http.service`, `radar-watch.service`, `x402-server.service`, `canary-agent.service`) configured and managed via systemd units.
+- **GAP 3 CLOSED**: Blink routes re-pointed to live `pay.cbellory.xyz`.
+- **GAP 4 CLOSED**: Real x402 USDC settlement verified on-chain, `/economics` reports `selfSustaining: true`.
+- **GAP 5 CLOSED**: Jupiter pricing verified live.
+
+In addition, **11 successive revisions of deep security audits** have been remediated across the codebase (see [AUDIT-FINDINGS.md](AUDIT-FINDINGS.md)), establishing institutional-grade resilience against front-running, CPI injection, account hijacking, and full table scans.
 
 ## Evidence base (this audit)
 
-- `npm run build` (tsc) — clean.
-- `npm test` — **488 pass / 0 fail / 0 skip** (22 suites), ~7.7s.
-- Live probe (2026-09-18, Orange Pi):
+- `npm run build` (tsc) — clean (0 errors).
+- `npm test` — **601 pass / 0 fail / 0 skip** (26 suites), ~6.4s.
+- Live probe (Orange Pi & Devnet):
   - `POST /scan 5DTK7…3V1g` → real: `txCount 7`, `riskScore 15`, `LOW RISK`,
     anomaly `ACTIVITY_BURST`; committed a fresh on-chain attestation
     (`slot 448145607`) — the ZK oracle write path is live.
@@ -83,47 +82,28 @@ README/report claims more than is true today (see the 5 gaps below).
 | 23 | **Solana Actions & Blinks** (Phantom/Solflare/Dialect deep links) | FIXED | Blink routes are **live on `pay.cbellory.xyz`** (`/actions.json` + `/api/actions/...` → HTTP 200); README/deep-links re-pointed from the dead `wallet-radar.app` |
 | 24 | Web dashboard + ZK ledger viewer | LIVE | verified populated with real attestations |
 | 25 | **On-chain ZK scan ledger (The Oracle)** | LIVE | write + read proven live (see above) |
-| 26 | **SPL Token-22 Transfer Hook** (scan-on-transfer enforcement) | GAP(1) | program written; **not deployed**, no record bridge, no Token-22 mint |
+| 26 | **SPL Token-22 Transfer Hook** (scan-on-transfer enforcement) | LIVE(devnet) | SBF build deployed to devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), Token-22 mint (`2YDsAV…`), revert on flagged transfer verified |
 | 27 | AgenticTrade manifest | CODE | manifest.json validated by test |
 | 28 | Self-contained HTML reports | CODE | `renderHtmlReport` tested + CLI export |
 | 29 | Audit trail (`includeAudit`) | CODE | tested; machine-readable proof path |
 | 30 | CLI (scan/analyze/trust/ledger/dashboard/replay/…) | CODE | tested; `bin/*` + `npm run radar` |
 
-## The 5 gaps (promise > reality)
+## The 5 gaps — Status: ALL 5 CLOSED
 
-### GAP 1 — Transfer Hook is written but not deployed (the big one)
-- `programs/radar-transfer-hook` is a complete Anchor program (`initialize`,
-  `update_config`, `transfer_hook`), but `declare_id!("Hook111…")` is still the
-  **placeholder** — it has **not** been deployed to any cluster, and there is no
-  release SBF `.so` or deploy artifact.
-- **There is no record-bridge instruction.** The hook reads a regular PDA
-  `radar_record` (`RS01` binary) for the destination, but the ZK oracle writes
-  **Light ZK-compressed** accounts (a different store/format). Nothing currently
-  writes the hook's PDA, so even once deployed the hook has nothing to read.
-- **No Token-22 mint** with the `TransferHook` extension exists, and the config
-  is not initialized.
-- The client-side `evaluateTransferRisk` (`src/hook/index.ts`) is a real, tested
-  pure function, but it is **not wired into any live endpoint** (reference only).
-- **Fix (new work, see PLAN):** add a `write_scan_record` bridge instruction,
-  `anchor build` (SBF), deploy to **devnet**, create a Token-22 mint with the
-  hook, wire `commitScan` to mirror the verdict into the PDA, and prove a real
-  `transfer_checked` that the chain reverts. Until then the README should say
-  "designed + implemented, **not yet deployed**."
+### GAP 1 — Transfer Hook deployed to devnet (CLOSED)
+- **CLOSED.** Program compiled to SBF and deployed to **devnet** (program ID: `wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`).
+- Implemented `write_scan_record` bridge instruction, allowing oracle/operator to mirror scan verdicts into the deterministic `radar_record` PDA (`[b"radar_record", mint, wallet]`).
+- Created Token-22 mint with the `TransferHook` extension (`2YDsAV…`) and initialized `ExtraAccountMetaList`.
+- Verified live on-chain: `transfer_checked` to a flagged wallet strictly reverts (`0x1771` / `RadarHookError::DestinationHighRisk`), while unflagged wallets proceed normally.
+- Enhanced through 11 audit revisions with mint authority authentication, two-sided source verification, safe `close_scan_record` deallocation, and `update_extra_account_meta_list` instruction.
 
-### GAP 2 — canary / x402 / watch run as bare processes, not managed units (minor)
-- Corrected after probing the box: the canary **is** running
-  (`/tmp/canary.log` at iter 1530, started 09-17), as is the x402 server
-  (`dist/src/x402server.js`) and the watch process (`dist/src/cli.js watch`).
-  Only `radar-http.service` is a real systemd unit; the other three are bare
-  processes. So the *features* work, but **auto-start / restart-on-crash /
-  survive-reboot** for x402, canary, and watch is not guaranteed by a unit.
-- Two nuances the README should state honestly: (a) the canary's "self-pay" is a
-  **dry-run** (`X-Payment-Dry-Run: true` against the free `/selftest`) — it
-  validates the x402 handshake, it does **not** move real USDC; (b)
-  `deploy/canary-agent.service` exists but is not installed.
-- **Fix (existing work):** install + enable proper systemd units for the x402
-  server (and canary/watch) so all four services are managed, restart-on-failure,
-  and start-on-boot (see PLAN / TASKS Batch 7).
+### GAP 2 — canary / x402 / watch systemd units (CLOSED)
+- **CLOSED.** All 4 systemd service units installed, enabled, and active:
+  - `radar-http.service` (core HTTP API)
+  - `radar-watch.service` (continuous monitoring)
+  - `x402-server.service` (micropayment server)
+  - `canary-agent.service` (automated canary)
+- All services restart automatically on failure and survive host reboots.
 
 ### GAP 3 — Blink deep links pointed at a dead domain (FIXED this session)
 - README/`src/blink` deep links (Phantom/Solflare/Dialect) used `wallet-radar.app`

@@ -378,6 +378,15 @@ test("verifySolanaPaymentRpc: verifies parsed RPC response and handles errors", 
                 { accountIndex: 2, owner: "Recipient111", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", uiTokenAmount: { uiAmount: 1.005 } },
               ],
             },
+            transaction: {
+              message: {
+                accountKeys: [
+                  { pubkey: "Payer111", signer: true },
+                  { pubkey: "Other", signer: false },
+                  { pubkey: "Recipient111", signer: false },
+                ],
+              },
+            },
           },
         }),
       );
@@ -520,6 +529,7 @@ test("verifySolanaPaymentRpc: falls back to parsed instructions and inner instru
             meta: { err: null, preTokenBalances: [], postTokenBalances: [] },
             transaction: {
               message: {
+                accountKeys: [{ pubkey: "Payer1", signer: true }, { pubkey: "RecipientParsed1", signer: false }],
                 instructions: [
                   {
                     parsed: {
@@ -571,6 +581,11 @@ test("verifySolanaPaymentRpc: falls back to parsed instructions and inner instru
                 },
               ],
             },
+            transaction: {
+              message: {
+                accountKeys: [{ pubkey: "Payer1", signer: true }, { pubkey: "RecipientInner1", signer: false }],
+              },
+            },
           },
         }),
       );
@@ -600,6 +615,11 @@ test("verifySolanaPaymentRpc: ignores non-target mint balances and handles RPC e
               err: null,
               preTokenBalances: [{ accountIndex: 1, owner: "R_MINT", mint: "RandomMint11111111111111111111111111111111", uiTokenAmount: { uiAmount: 0 } }],
               postTokenBalances: [{ accountIndex: 1, owner: "R_MINT", mint: "RandomMint11111111111111111111111111111111", uiTokenAmount: { uiAmount: 500 } }],
+            },
+            transaction: {
+              message: {
+                accountKeys: [{ pubkey: "P1", signer: true }, { pubkey: "R_MINT", signer: false }],
+              },
             },
           },
         }),
@@ -652,6 +672,7 @@ test("verifySolanaPaymentRpc: rejects fake tokens in transferChecked instruction
             meta: { err: null, preTokenBalances: [], postTokenBalances: [] },
             transaction: {
               message: {
+                accountKeys: [{ pubkey: "Payer1", signer: true }, { pubkey: "RecipientTarget1", signer: false }],
                 instructions: [
                   {
                     parsed: {
@@ -892,6 +913,62 @@ test("verifySolanaPaymentRpc: rejects payer that is not an on-chain signer (audi
     const resOk = await verifySolanaPaymentRpc(
       { signature: "s_replay", payer: "RealSigner11111111111111111111111111111111" },
       { endpoint: "/scan", recipient: "RSigner", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(resOk.valid, true);
+    assert.equal(resOk.amount, 0.005);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("audit 2.1: verifySolanaPaymentRpc rejects string accountKeys beyond numRequiredSignatures", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: Math.floor(Date.now() / 1000) - 10,
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [
+                { accountIndex: 1, owner: "Recipient111111111111111111111111111111", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", uiTokenAmount: { uiAmount: 0.005 } },
+              ],
+            },
+            transaction: {
+              message: {
+                header: {
+                  numRequiredSignatures: 1,
+                  numReadonlySignedAccounts: 0,
+                  numReadonlyUnsignedAccounts: 1,
+                },
+                accountKeys: [
+                  "RealSigner11111111111111111111111111111111",
+                  "Recipient111111111111111111111111111111",
+                  "ThirdPartyBystander11111111111111111111",
+                ],
+              },
+            },
+          },
+        }),
+      );
+
+    // Attacker claims Recipient (index 1 >= numRequiredSignatures) as payer -> rejected!
+    const resBad = await verifySolanaPaymentRpc(
+      { signature: "s_str_bad", payer: "Recipient111111111111111111111111111111" },
+      { endpoint: "/scan", recipient: "Recipient111111111111111111111111111111", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(resBad.valid, false);
+    assert.match(resBad.error ?? "", /not a signer/);
+
+    // Real signer (index 0 < numRequiredSignatures) -> accepted!
+    const resOk = await verifySolanaPaymentRpc(
+      { signature: "s_str_ok", payer: "RealSigner11111111111111111111111111111111" },
+      { endpoint: "/scan", recipient: "Recipient111111111111111111111111111111", minAmount: 0.005 },
       "http://mock-rpc",
     );
     assert.equal(resOk.valid, true);
@@ -1323,7 +1400,7 @@ test("audit 1.3: verifySolanaPaymentRpc enforces targetWallet binding against fr
     assert.equal(resUnbound.valid, false);
     assert.ok(resUnbound.error?.includes("Payment unbound"));
 
-    // 2. Bound via matching on-chain memo -> ACCEPTED without proofSignature
+    // 2. Bound via matching on-chain memo -> ACCEPTED without proofSignature for Blink callback
     globalThis.fetch = (async () => ({
       ok: true,
       status: 200,
@@ -1332,10 +1409,28 @@ test("audit 1.3: verifySolanaPaymentRpc enforces targetWallet binding against fr
 
     const resBoundMemo = await verifySolanaPaymentRpc(
       { signature: "sig_bound_memo_tx", payer },
-      { endpoint: "/scan", recipient, minAmount: 0.005, targetWallet },
+      { endpoint: "/api/actions/radar-scan/complete", recipient, minAmount: 0.005, targetWallet },
       "https://mock-rpc",
     );
     assert.equal(resBoundMemo.valid, true);
+
+    // 2b. Direct /scan with on-chain memo alone (no proofSignature) -> REJECTED (audit revision 11 WR-CRIT-01)
+    const resRejectDirectMemo = await verifySolanaPaymentRpc(
+      { signature: "sig_bound_memo_tx", payer },
+      { endpoint: "/scan", recipient, minAmount: 0.005, targetWallet },
+      "https://mock-rpc",
+    );
+    assert.equal(resRejectDirectMemo.valid, false);
+    assert.ok(resRejectDirectMemo.error?.includes("requires cryptographic X-Payment-Proof"));
+
+    // 2c. Direct /analyze with on-chain memo alone (no proofSignature) -> REJECTED (audit revision 11 WR-CRIT-01)
+    const resRejectAnalyzeMemo = await verifySolanaPaymentRpc(
+      { signature: "sig_bound_memo_tx", payer },
+      { endpoint: "/analyze", recipient, minAmount: 0.001, targetWallet },
+      "https://mock-rpc",
+    );
+    assert.equal(resRejectAnalyzeMemo.valid, false);
+    assert.ok(resRejectAnalyzeMemo.error?.includes("requires cryptographic X-Payment-Proof"));
 
     // 3. Mismatched on-chain memo -> REJECTED
     globalThis.fetch = (async () => ({
@@ -1471,6 +1566,37 @@ test("audit revision 9: verifySolanaPaymentRpc handles dynamic token decimals in
     );
     assert.equal(res.valid, true);
     assert.equal(res.amount, 0.05);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("audit revision 11 WR-CRIT-01: verifySolanaPaymentRpc rejects transactions with missing or empty accountKeys", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            blockTime: Math.floor(Date.now() / 1000),
+            meta: { err: null, preTokenBalances: [], postTokenBalances: [] },
+            transaction: {
+              message: {
+                // missing accountKeys
+              },
+            },
+          },
+        }),
+      );
+
+    const res = await verifySolanaPaymentRpc(
+      { signature: "sig_missing_keys", payer: "SomePayer" },
+      { endpoint: "/scan", recipient: "SomeRecipient", minAmount: 0.005 },
+      "http://mock-rpc",
+    );
+    assert.equal(res.valid, false);
+    assert.equal(res.error, "Transaction message accountKeys are missing or malformed");
   } finally {
     globalThis.fetch = originalFetch;
   }

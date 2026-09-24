@@ -413,6 +413,72 @@ pub mod radar_transfer_hook {
         Ok(())
     }
 
+    /// Updates an existing ExtraAccountMetaList PDA for a mint (Audit Revision 11 WR-HIGH-02).
+    /// Required by the spl-transfer-hook-interface specification.
+    #[interface(spl_transfer_hook_interface::update_extra_account_meta_list)]
+    pub fn update_extra_account_meta_list(
+        ctx: Context<InitializeExtraAccountMetaList>,
+        metas: Vec<MetaArg>,
+    ) -> Result<()> {
+        if metas.is_empty() {
+            return Err(RadarHookError::InvalidExtraMeta.into());
+        }
+
+        // Verify authority to prevent unauthorized updates.
+        // The authority must match either the mint's mint_authority or the RadarHookConfig authority.
+        let mut is_authorized = false;
+        let mint_info = &ctx.accounts.mint;
+        if mint_info.data_len() >= 36 {
+            let mint_data = mint_info.try_borrow_data()?;
+            let coption_tag = u32::from_le_bytes(mint_data[0..4].try_into().unwrap());
+            if coption_tag == 1 {
+                let mint_auth = Pubkey::new_from_array(mint_data[4..36].try_into().unwrap());
+                if mint_auth == ctx.accounts.authority.key() {
+                    is_authorized = true;
+                }
+            }
+        }
+        if !is_authorized {
+            let (expected_config, _) = Pubkey::find_program_address(
+                &[RADAR_CONFIG_SEED, ctx.accounts.mint.key().as_ref()],
+                &crate::ID,
+            );
+            for account in ctx.remaining_accounts.iter() {
+                if account.key() == expected_config {
+                    let mut data: &[u8] = &account.try_borrow_data()?;
+                    if let Ok(config) = RadarHookConfig::try_deserialize(&mut data) {
+                        if config.authority == ctx.accounts.authority.key() {
+                            is_authorized = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        require!(is_authorized, RadarHookError::Unauthorized);
+
+        let extra_metas: Vec<ExtraAccountMeta> = metas
+            .iter()
+            .map(|m| ExtraAccountMeta {
+                discriminator: m.discriminator,
+                address_config: m.address_config,
+                is_signer: PodBool::from(m.is_signer != 0),
+                is_writable: PodBool::from(m.is_writable != 0),
+            })
+            .collect();
+
+        let meta_info = ctx.accounts.extra_account_metas.to_account_info();
+        let mut data = meta_info.try_borrow_mut_data()?;
+        ExtraAccountMetaList::update::<ExecuteInstruction>(&mut data, &extra_metas)?;
+
+        msg!(
+            "RadarHook: updated extra-account-metas for mint {} ({} entries)",
+            ctx.accounts.mint.key(),
+            extra_metas.len()
+        );
+        Ok(())
+    }
+
     /// Writes a 48-byte scan-record header for a wallet. The record PDA is
     /// derived from the wallet and resolved by the mint's meta list on every
     /// transfer. Only the mint's configured authority may write records.

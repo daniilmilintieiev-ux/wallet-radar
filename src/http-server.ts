@@ -266,7 +266,6 @@ async function toolAnalyze(body: Record<string, unknown>, ctx: RequestContext = 
     throw new HttpError(400, "body.txs: at most 1000 transactions allowed.");
   }
   const storedBaseline = ctx?.store && isBase58Address(wallet) ? ctx.store.getBaseline(wallet) : null;
-  const baseline = updateBaseline(wallet, storedBaseline, parsed);
   const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
   const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
   return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) };

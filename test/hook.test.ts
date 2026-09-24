@@ -13,11 +13,13 @@ import {
   RADAR_RECORD_SEED,
   TRANSFER_HOOK_EXECUTE_DISCRIMINATOR,
   INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR,
+  UPDATE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR,
   RadarHookErrorCode,
   deriveExtraAccountMetaListPda,
   deriveRadarConfigPda,
   deriveRadarRecordPda,
   buildInitializeExtraAccountMetaListInstruction,
+  buildUpdateExtraAccountMetaListInstruction,
   buildUpdateConfigInstruction,
   buildSetAuthorityInstruction,
   RADAR_SET_AUTHORITY_DISCRIMINATOR,
@@ -148,6 +150,37 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     assert.equal(ix.data.readUInt8(67), 32); // length
   });
 
+  test("buildUpdateExtraAccountMetaListInstruction: constructs valid update extra metas layout (WR-HIGH-02)", () => {
+    const [configPda] = deriveRadarConfigPda(mint);
+    const metas: HookMetaSpec[] = [
+      { kind: "pubkey", pubkey: configPda, isSigner: false, isWritable: false },
+      { kind: "seeds", seeds: buildRecordPdaMetaSeeds(), isSigner: false, isWritable: false },
+    ];
+
+    const ix = buildUpdateExtraAccountMetaListInstruction({
+      mint,
+      authority,
+      metas,
+    });
+
+    assert.equal(ix.programId.toBase58(), DEFAULT_HOOK_PROGRAM_ID.toBase58());
+    const [expectedMetaListPda] = deriveExtraAccountMetaListPda(mint);
+    assert.equal(ix.keys.length, 4);
+    assert.equal(ix.keys[0].pubkey.toBase58(), expectedMetaListPda.toBase58());
+    assert.equal(ix.keys[0].isWritable, true);
+    assert.equal(ix.keys[1].pubkey.toBase58(), mint.toBase58());
+    assert.equal(ix.keys[2].pubkey.toBase58(), authority.toBase58());
+    assert.equal(ix.keys[2].isSigner, true);
+    assert.equal(ix.keys[3].pubkey.toBase58(), "11111111111111111111111111111111");
+
+    assert.equal(ix.data.length, 8 + 4 + 2 * 35);
+    assert.deepEqual(
+      ix.data.subarray(0, 8),
+      UPDATE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR,
+    );
+    assert.equal(ix.data.readUInt32LE(8), 2);
+  });
+
   test("buildWriteScanRecordInstruction: includes config PDA and mint keys", () => {
     const [recordPda] = deriveRadarRecordPda(destWallet, mint);
     const [configPda] = deriveRadarConfigPda(mint);
@@ -250,7 +283,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
     });
 
     assert.equal(ix.programId.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58());
-    assert.equal(ix.keys.length, 8); // 4 token keys + 3 hook keys + 1 oracle key
+    assert.equal(ix.keys.length, 9); // 4 token keys + 3 hook keys + 1 dest oracle key + 1 source oracle key (defaulted to owner)
     assert.equal(ix.keys[0].pubkey.toBase58(), source.toBase58());
     assert.equal(ix.keys[0].isWritable, true);
     assert.equal(ix.keys[3].isSigner, true);
@@ -582,7 +615,7 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
       const dstWalletPk = Keypair.generate().publicKey;
       const srcWalletPk = Keypair.generate().publicKey;
 
-      // Without sourceWallet
+      // Without explicit sourceWallet: defaults to ownerPk (WR-HIGH-01)
       const ixStandard = createRiskGatedTransferCheckedInstruction({
         source: srcAta,
         mint: mintPk,
@@ -592,7 +625,9 @@ describe("SPL Token-22 Transfer Hook (src/hook)", () => {
         decimals: 6,
         destinationWallet: dstWalletPk,
       });
-      assert.equal(ixStandard.keys.length, 8);
+      assert.equal(ixStandard.keys.length, 9);
+      const [expectedDefaultSrcRecord] = deriveRadarRecordPda(ownerPk, mintPk);
+      assert.equal(ixStandard.keys[8].pubkey.toBase58(), expectedDefaultSrcRecord.toBase58());
 
       // With sourceWallet (Audit 2.2)
       const ixTwoSided = createRiskGatedTransferCheckedInstruction({

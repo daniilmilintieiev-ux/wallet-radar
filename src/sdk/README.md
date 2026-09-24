@@ -63,7 +63,22 @@ for (const attestation of attestations) {
 }
 ```
 
-### 4. Offline Analysis Fixtures
+### 4. Fetch Independently Verifiable Trust Proofs
+
+Retrieve an independently verifiable attestation bundle combining the on-chain ZK attestation, slot, Ed25519 signature, and commercial payment receipt:
+
+```typescript
+const proof = await client.trustProof("TargetWalletAddress1111111111111111111111111111");
+
+console.log(`Verified: ${proof.verified}`);
+console.log(`Risk Score: ${proof.riskScore} (${proof.verdict})`);
+console.log(`On-Chain Slot: ${proof.attestation?.slot}, Sig: ${proof.attestation?.signature}`);
+if (proof.payment) {
+  console.log(`Payment: ${proof.payment.amountUsdc} USDC from ${proof.payment.payer}`);
+}
+```
+
+### 5. Offline Analysis Fixtures
 
 Analyze raw transaction fixtures without querying external RPCs:
 
@@ -72,7 +87,7 @@ const result = await client.analyze("TargetWalletAddress...", txFixtureArray);
 console.log(`Score: ${result.riskScore}, Anomalies: ${result.anomalies.length}`);
 ```
 
-### 5. Free Service Smoke Test
+### 6. Free Service Smoke Test
 
 ```typescript
 const health = await client.selftest();
