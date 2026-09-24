@@ -14,6 +14,9 @@ dist.bak*
 # scratch / debug scripts
 _*.mjs
 
+# local SBF build artifacts (built on OrangePi, copied to repo root)
+_*.so
+
 # Rust (programs/radar-transfer-hook)
 target/
 
