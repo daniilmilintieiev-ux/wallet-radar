@@ -63,11 +63,13 @@ export const INITIALIZE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
 ]);
 
 /**
- * spl-transfer-hook-interface:update-extra-account-metas discriminator (8 bytes)
- * sha256("spl-transfer-hook-interface:update-extra-account-metas")[0..8]
+ * `update_extra_account_meta_list` instruction discriminator (8 bytes).
+ * Plain Anchor instruction (the anchor 0.30.1 `#[interface]` macro does not
+ * support this interface instruction), so the sighash preimage is
+ * "global:update_extra_account_meta_list": sha256(...)[0..8]
  */
 export const UPDATE_EXTRA_ACCOUNT_METAS_DISCRIMINATOR = Buffer.from([
-  0x9d, 0x69, 0x2a, 0x92, 0x66, 0x55, 0xf1, 0xae,
+  0x2c, 0x7d, 0x8d, 0xe2, 0x61, 0xb3, 0xa6, 0x60,
 ]);
 
 /**

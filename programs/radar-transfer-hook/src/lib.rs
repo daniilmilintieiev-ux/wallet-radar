@@ -414,8 +414,9 @@ pub mod radar_transfer_hook {
     }
 
     /// Updates an existing ExtraAccountMetaList PDA for a mint (Audit Revision 11 WR-HIGH-02).
-    /// Required by the spl-transfer-hook-interface specification.
-    #[interface(spl_transfer_hook_interface::update_extra_account_meta_list)]
+    /// Plain Anchor discriminator: anchor 0.30.1's `#[interface]` macro only knows
+    /// `execute` and `initialize_extra_account_meta_list`, so the sighash is
+    /// sha256("global:update_extra_account_meta_list")[0..8].
     pub fn update_extra_account_meta_list(
         ctx: Context<InitializeExtraAccountMetaList>,
         metas: Vec<MetaArg>,
