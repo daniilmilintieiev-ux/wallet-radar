@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wallet Radar // Design System Prototypes Gallery</title>
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --panel: #101013;
+      --ink: #f1f1ee;
+      --ink2: #9c9c97;
+      --ink3: #63635f;
+      --line: #26262b;
+      --line2: #3a3a41;
+      --accent: #ffb000;
+      --accent-ink: #1a1400;
+      --green: #00e599;
+      --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "JetBrains Mono", "Consolas", monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--mono);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: var(--panel);
+      border-bottom: 3px solid var(--ink);
+      padding: 12px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .brand {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: .04em;
+    }
+    .brand b { color: var(--accent); }
+    .brand .sub {
+      display: block;
+      font-size: 8.5px;
+      letter-spacing: .18em;
+      color: var(--ink3);
+      font-weight: 600;
+      margin-top: 3px;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      background: var(--bg);
+      border: 2px solid var(--line2);
+      color: var(--ink2);
+      font-family: inherit;
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 7px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover {
+      color: var(--ink);
+      border-color: var(--ink2);
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      color: var(--accent-ink);
+      border-color: var(--accent);
+      font-weight: 800;
+    }
+    .tab-btn.scale-tab {
+      border-color: var(--green);
+      background: rgba(0, 229, 153, 0.08);
+      color: var(--green);
+    }
+    .tab-btn.scale-tab.active {
+      background: var(--green);
+      color: #000;
+      border-color: var(--green);
+      box-shadow: 0 0 20px rgba(0, 229, 153, 0.4);
+    }
+
+    .open-ext {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 11px;
+      border: 1px solid var(--line2);
+      padding: 6px 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    .open-ext:hover {
+      border-color: var(--accent);
+      background: rgba(255, 176, 0, 0.1);
+    }
+
+    .banner {
+      background: #0d0d10;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+    }
+    .banner-title {
+      color: var(--green);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    .banner-desc {
+      color: var(--ink2);
+      margin-left: 12px;
+    }
+
+    .preview-box {
+      flex: 1;
+      width: 100%;
+      height: calc(100vh - 110px);
+      position: relative;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: var(--bg);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">WALLET<b>_</b>RADAR // PROTOTYPES GALLERY
+      <span class="sub">WEEK 1 PALETTE // COMPUTATIONAL SUPREMACY & SCALE</span>
+    </div>
+
+    <div class="nav-tabs">
+      <button class="tab-btn scale-tab active" id="tab5" onclick="switchTab('variant-5-hilbert-scale.html', 5)">
+        <span>⚡ 05</span> Hilbert Grid (4,096 Scale)
+      </button>
+      <button class="tab-btn" id="tab4" onclick="switchTab('variant-4-titan-command.html', 4)">
+        <span>04</span> Titan Command
+      </button>
+      <button class="tab-btn" id="tab1" onclick="switchTab('variant-1-polar-radar.html', 1)">
+        <span>01</span> Polar Radar
+      </button>
+      <button class="tab-btn" id="tab2" onclick="switchTab('variant-2-vector-matrix.html', 2)">
+        <span>02</span> Vector Spider
+      </button>
+      <button class="tab-btn" id="tab3" onclick="switchTab('variant-3-antigravity-kinetic.html', 3)">
+        <span>03</span> CRT Oscilloscope
+      </button>
+    </div>
+
+    <div>
+      <a id="extLink" class="open-ext" href="variant-5-hilbert-scale.html" target="_blank">
+        &nearr; OPEN FULLSCREEN
+      </a>
+    </div>
+  </header>
+
+  <div class="banner">
+    <div>
+      <span class="banner-title" id="bannerTitle">Variant 05: Hilbert Space-Filling Defense Grid</span>
+      <span class="banner-desc" id="bannerDesc">4,096 On-Chain Telemetry Nodes, Bitwise Gray-Code O(1) Spatial Lookups, Zero DOM Bloat, 60-120 FPS on any potato!</span>
+    </div>
+    <div style="color:var(--green);font-size:10px;letter-spacing:0.1em;" id="badgeTag">
+      MASSIVE SCALE + PURE ARITHMETIC PERFORMANCE
+    </div>
+  </div>
+
+  <div class="preview-box">
+    <iframe id="mainFrame" src="variant-5-hilbert-scale.html"></iframe>
+  </div>
+
+  <script>
+    const META = {
+      5: {
+        file: "variant-5-hilbert-scale.html",
+        title: "Variant 05: Hilbert Space-Filling Defense Grid (4,096 Nodes)",
+        desc: "4,096 On-Chain Telemetry Nodes, Bitwise Gray-Code O(1) Spatial Lookups, Zero DOM Bloat, 60-120 FPS on any potato!",
+        badge: "MASSIVE SCALE + PURE ARITHMETIC PERFORMANCE",
+        color: "var(--green)"
+      },
+      4: {
+        file: "variant-4-titan-command.html",
+        title: "Variant 04: Titan Cyber Command & Live Interceptor",
+        desc: "Cinematic Bento Grid, Live Force-Field Shield, Web Audio and 'Simulate Live Attack' Interception Demo!",
+        badge: "CINEMATIC SHOWSTOPPER FOR JUDGES",
+        color: "var(--accent)"
+      },
+      1: {
+        file: "variant-1-polar-radar.html",
+        title: "Variant 01: Polar Threat Radar & Telemetry Sparklines",
+        desc: "Canvas Polar Sweep, Anomaly Vectors, and inline sparkline telemetry in original retro-terminal frame.",
+        badge: "ORIGINAL RETRO-TERMINAL DNA",
+        color: "var(--accent)"
+      },
+      2: {
+        file: "variant-2-vector-matrix.html",
+        title: "Variant 02: Mathematical Vector Spider & Proof Drawer",
+        desc: "6-Axis Threat Tensor Spider (SVG), Catmull-Rom Risk Spline, and expandable cryptographic Merkle proof drawer.",
+        badge: "MATHEMATICAL TENSOR MATRIX",
+        color: "var(--accent)"
+      },
+      3: {
+        file: "variant-3-antigravity-kinetic.html",
+        title: "Variant 03: Terminal Harmonic Oscilloscope & ZK Economics",
+        desc: "Amber CRT Mempool Oscilloscope f(t)=Σ A_k sin(ω_k t), ZK rent reduction calculation (408x), and high-density stream.",
+        badge: "CRT WAVEFORM & ECONOMICS",
+        color: "var(--accent)"
+      }
+    };
+
+    function switchTab(file, idx) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(`tab${idx}`).classList.add('active');
+      
+      const frame = document.getElementById('mainFrame');
+      frame.src = file;
+      document.getElementById('extLink').href = file;
+
+      const m = META[idx];
+      document.getElementById('bannerTitle').textContent = m.title;
+      document.getElementById('bannerTitle').style.color = m.color;
+      document.getElementById('bannerDesc').textContent = m.desc;
+      document.getElementById('badgeTag').textContent = m.badge;
+      document.getElementById('badgeTag').style.color = m.color;
+    }
+  </script>
+</body>
+</html>
