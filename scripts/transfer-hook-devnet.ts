@@ -24,7 +24,6 @@ import {
   buildWriteScanRecordInstruction,
   buildRecordPdaMetaSeeds,
   buildSourceRecordPdaMetaSeeds,
-  RADAR_RECORD_SEED,
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
   RadarHookErrorCode,
@@ -626,15 +625,16 @@ export async function runTransferHookDevnet(options: {
   const flaggedMoved = flaggedBefore - flaggedAfter;
   console.log(`[transfer-hook]   sender balance: ${flaggedBefore} -> ${flaggedAfter} (moved ${flaggedMoved})`);
 
-  // ---- 8. UNVERIFIED: allow_unverified=true + empty record -> transfer SUCCEEDS ----
-  // Proves the on-chain `allow_unverified` path: a destination whose record
-  // account exists but holds no valid scan header is allowed when the config
-  // flag is set (and rejected otherwise).
+  // ---- 8. UNVERIFIED: allow_unverified=true + NO record account -> transfer SUCCEEDS ----
+  // Proves the on-chain `allow_unverified` path: a destination with no valid scan
+  // record is allowed when the config flag is set (and rejected otherwise).
+  // The record PDA is derived the same way the transfer instruction does it
+  // (mint + destination wallet), but the account itself is NOT created on-chain.
   console.log(`\n[transfer-hook] === UNVERIFIED CASE ===`);
   const cp2Wallet = deriveKeypair(payer, `radar-cp2-wallet-${LABEL}`).publicKey;
   const cp2TokenKp = deriveKeypair(payer, `radar-cp2-ta-${LABEL}`);
   const cp2Token = cp2TokenKp.publicKey;
-  const [cp2RecordPda, cp2RecordBump] = deriveRadarRecordPda(cp2Wallet, hookProgramId);
+  const [cp2RecordPda] = deriveRadarRecordPda(cp2Wallet, mint, hookProgramId);
 
   if (await accountExists(connection, cp2Token)) {
     console.log(`[transfer-hook] Unverified counterparty token account already exists; skipping.`);
@@ -672,42 +672,16 @@ export async function runTransferHookDevnet(options: {
     console.log(`[transfer-hook] Config updated: allow_unverified=true (sig: ${sig})`);
   }
 
-  // Create an EMPTY (zero header) scan-record account for the unverified
-  // counterparty — the hook sees a record account with no valid attestation.
-  if (await accountExists(connection, cp2RecordPda)) {
-    console.log(`[transfer-hook] Unverified record account already exists; skipping creation.`);
-  } else {
-    const rentExempt = await connection.getMinimumBalanceForRentExemption(48);
-    const createRecordIx = SystemProgram.createAccount({
-      fromPubkey: payer.publicKey,
-      newAccountPubkey: cp2RecordPda,
-      lamports: rentExempt,
-      space: 48,
-      programId: hookProgramId,
-    });
-    // createAccount requires the NEW account to sign. The record PDA's keypair
-    // is derivable from its seeds + bump + program id (see solana PDA derivation).
-    const pdaSeed = createHash("sha256")
-      .update(Buffer.concat([
-        Buffer.from("ProgramDerivedAddress"),
-        RADAR_RECORD_SEED,
-        cp2Wallet.toBuffer(),
-        Buffer.from([cp2RecordBump]),
-        hookProgramId.toBuffer(),
-      ]))
-      .digest();
-    const recordKp = Keypair.fromSeed(pdaSeed);
-    const { sig, err, logs } = await sendAndInspect(
-      connection,
-      [createRecordIx],
-      [payer, recordKp],
-      payer.publicKey,
-    );
-    if (err) {
-      throw new Error(`Unverified record creation failed: ${JSON.stringify(err)}\n${logs.join("\n")}`);
-    }
-    console.log(`[transfer-hook] Empty scan-record account created for ${cp2Wallet.toBase58()} (sig: ${sig})`);
-  }
+  // The destination record PDA is intentionally NOT created. The transfer
+  // instruction always includes the record PDA account (see
+  // createRiskGatedTransferCheckedInstruction); because the account does not
+  // exist on-chain, the hook's `ScanRecordHeader::try_parse` sees empty data and
+  // returns None, and with `allow_unverified=true` the hook returns Ok — no PDA
+  // signing required.
+  const cp2RecordExists = await accountExists(connection, cp2RecordPda);
+  console.log(
+    `[transfer-hook] Destination record PDA ${cp2RecordPda.toBase58()} exists on-chain: ${cp2RecordExists} (expecting false)`,
+  );
 
   const unverifiedTransferIx = createRiskGatedTransferCheckedInstruction({
     source: senderToken,
