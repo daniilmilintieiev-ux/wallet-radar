@@ -183,6 +183,29 @@ test("ACTIVITY_BURST does not fire when txs are spread out", () => {
   assert.equal(anomalies.some((a) => a.type === "ACTIVITY_BURST"), false);
 });
 
+test("ACTIVITY_BURST: does NOT fire on high-throughput baseline when rate is below baseline", () => {
+  const base = 1_700_000_000;
+  const highThroughputBaseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: base,
+    knownVenues: [],
+    knownPrograms: [],
+    medianSwapAmount: 0,
+    medianTps: 200, // 200 tx/min (validator or HFT bot)
+    activeHours: [],
+    lastSeenAt: base,
+    txCount: 300,
+  };
+  // 50 transactions in 10 minutes (5 tx/min, which is 40x slower than baseline 200 tx/min)
+  const txs: EnhancedTx[] = Array.from({ length: 50 }, (_, i) => ({
+    signature: "sig_" + i,
+    timestamp: base + i * 10,
+    source: "SOLANA",
+  }));
+  const anomalies = detectAnomalies(WALLET, txs, highThroughputBaseline);
+  assert.equal(anomalies.some((a) => a.type === "ACTIVITY_BURST"), false);
+});
+
 test("DORMANT_ACTIVE fires even if batch contains an already-seen old tx", () => {
   const baseline: Baseline = {
     walletAddress: WALLET,

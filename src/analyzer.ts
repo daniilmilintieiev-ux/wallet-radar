@@ -244,7 +244,19 @@ export function detectAnomalies(
     const newest = maxOf(txs.map(ts));
     const windowSec = config.burstWindowMin * 60;
     const inWindow = txs.filter((t) => newest - ts(t) <= windowSec).length;
-    if (inWindow >= config.burstThreshold) {
+
+    // A burst indicates a sudden acceleration relative to normal behavior.
+    // If the wallet has an established high-throughput baseline (>= 50 txs, medianTps > 2/min,
+    // e.g. validator vote account or high-frequency DEX bot) and the current rate in the window
+    // is actually lower than its baseline rate, this is not an activity burst.
+    const isBelowBaselineRate = Boolean(
+      baseline &&
+        baseline.txCount >= 50 &&
+        baseline.medianTps > 2.0 &&
+        inWindow / config.burstWindowMin < baseline.medianTps,
+    );
+
+    if (inWindow >= config.burstThreshold && !isBelowBaselineRate) {
       anomalies.push({
         type: "ACTIVITY_BURST",
         wallet,
