@@ -9,7 +9,9 @@ Autonomous on-chain risk gating for Solana SPL Token-22 transfers.
 - **Mint Authority Authentication**: Instructions `initialize` and `initialize_extra_account_meta_list` cryptographically unpack mint data and verify caller matches `mint_authority`, preventing configuration front-running.
 - **Safe Memory Deallocation**: `close_scan_record` validates program ownership (`InvalidAccountOwner = 6011`) prior to zeroing memory and reclaiming lamports.
 - **Authority Rotation**: `set_authority` instruction enables rotating admin rights or delegating to a multisig/governance PDA.
+- **Dynamic Meta Updates**: `update_extra_account_meta_list` instruction (`buildUpdateExtraAccountMetaListInstruction`, discriminator `2c7d8de261b3a660`) allows updating extra account schemas on existing mints without re-initialization.
 - **Deterministic Evaluation**: Replicates the exact on-chain Anchor hook rule in TypeScript via `evaluateTransferRisk`.
+- **Live Devnet Program**: Deployed at [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet) with verified Anchor error `0x1771` (`DestinationHighRisk`).
 
 ## Usage
 
@@ -17,6 +19,8 @@ Autonomous on-chain risk gating for Solana SPL Token-22 transfers.
 import {
   createRiskGatedTransferCheckedInstruction,
   evaluateTransferRisk,
+  buildInitializeExtraAccountMetaListInstruction,
+  buildUpdateExtraAccountMetaListInstruction,
   deriveRadarConfigPda,
   deriveRadarRecordPda,
 } from "wallet-radar/hook";
@@ -39,4 +43,5 @@ const ix = createRiskGatedTransferCheckedInstruction({
   sourceWallet: senderWallet.publicKey, // Audit 2.2: passes sender record for two-sided gating
 });
 ```
+
 

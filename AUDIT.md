@@ -1,7 +1,7 @@
 # Wallet Radar — Honest Audit (what actually works vs. what is promised)
 
 Date: 2026-09-24 (Updated post-Hackathon & Revisions 1–11). Method: full `tsc` build + the entire unit/integration suite
-(601 tests, 26 suites), a static wiring review of `src/http-server.ts`, and a
+(608 tests, 26 suites), a static wiring review of `src/http-server.ts`, and a
 **live** probe of the deployed service on the Orange Pi (`radar-http.service`,
 port 7690; `x402` server, port 4020) plus the public domains. This is the answer
 to "how much of this is a promise or fake code?" — verified, not asserted.
@@ -13,7 +13,7 @@ baseline (USD-normalized, PnL-lite), trust gate + decision engine, batch,
 simulate, watchlist + adaptive polling, replay, benchmark, economics math,
 consensus, active defense, counterparty memory, x402 pay-per-call handshake,
 MCP server, A2A surface, on-chain **ZK** scan ledger (write + read), the
-dashboard, and the **SPL Token-22 Transfer Hook**. **601/601 tests pass; the live service returns real on-chain data.**
+dashboard, and the **SPL Token-22 Transfer Hook**. **608/608 tests pass; the live service returns real on-chain data.**
 
 **All 5 original gaps are now CLOSED:**
 - **GAP 1 CLOSED**: Transfer Hook compiled to SBF and deployed to devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), Token-22 mint (`2YDsAV…`) configured, and live revert on flagged transfer verified.
@@ -22,12 +22,12 @@ dashboard, and the **SPL Token-22 Transfer Hook**. **601/601 tests pass; the liv
 - **GAP 4 CLOSED**: Real x402 USDC settlement verified on-chain, `/economics` reports `selfSustaining: true`.
 - **GAP 5 CLOSED**: Jupiter pricing verified live.
 
-In addition, **11 successive revisions of deep security audits** have been remediated across the codebase (see [AUDIT-FINDINGS.md](AUDIT-FINDINGS.md)), establishing institutional-grade resilience against front-running, CPI injection, account hijacking, and full table scans.
+In addition, **11 successive revisions of deep security audits** have been remediated across the codebase (see [SECURITY.md](SECURITY.md)), establishing institutional-grade resilience against front-running, CPI injection, account hijacking, and full table scans.
 
 ## Evidence base (this audit)
 
 - `npm run build` (tsc) — clean (0 errors).
-- `npm test` — **601 pass / 0 fail / 0 skip** (26 suites), ~6.4s.
+- `npm test` — **608 pass / 0 fail / 0 skip** (26 suites), ~6.5s.
 - Live probe (Orange Pi & Devnet):
   - `POST /scan 5DTK7…3V1g` → real: `txCount 7`, `riskScore 15`, `LOW RISK`,
     anomaly `ACTIVITY_BURST`; committed a fresh on-chain attestation
@@ -149,7 +149,7 @@ README/report claims more than is true today (see the 5 gaps below).
 - **Acting (advisory):** the radar escalates a defense stance and tightens the
   actionable verdict. *(live, decision-layer.)*
 - **Enforced on-chain:** the chain reverts a Token-22 transfer to a flagged
-  wallet. *(NOT yet live — GAP 1; target state via PLAN.)*
+  wallet. *(LIVE on devnet — GAP 1 CLOSED: deployed to devnet `wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`, verified revert on flagged transfer with Anchor error 0x1771.)*
 
 ## Housekeeping found
 - Stray scratch file at repo root: `_recover_nested.mjs` — remove.
@@ -157,4 +157,4 @@ README/report claims more than is true today (see the 5 gaps below).
   `ATokenGPvbdGVxr1b2hvZbsiqW5Pvf9z3579PJgND1R` — a **non-existent** mainnet
   program, which broke any ATA derivation / x402 ATA-payer path. Corrected to the
   canonical `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` (verified
-  `executable: true` on mainnet; source `@solana/spl-token`). Build + 488/488 tests green.
+  `executable: true` on mainnet; source `@solana/spl-token`). Build + 601/601 tests across 26 suites green.

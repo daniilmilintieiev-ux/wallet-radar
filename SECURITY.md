@@ -110,21 +110,23 @@ chain after restart (or verify only after a durable pre-record).
 
 ## x402 anti-frontrunning & caller proof protection
 
-Public Solana transactions are visible in the mempool and on-chain blocks. To prevent third parties from eavesdropping on a client's payment transaction and submitting it to claim free scans, Wallet Radar enforces two complementary cryptographic bindings (audits 1.1, 1.3, revision 9):
+Public Solana transactions are visible in the mempool and on-chain blocks. To prevent third parties from eavesdropping on a client's payment transaction and submitting it to claim free scans, Wallet Radar enforces two complementary cryptographic bindings (audits 1.1, 1.3, revision 9, revision 11):
 
 1. **Cryptographic caller proof (`X-Payment-Proof`).** The caller signs an Ed25519 signature over `<timestamp>:<targetWallet>` with their payer private key. The server validates that the signature matches `X-Payment-Payer` and falls within the freshness window (`maxAgeSec`, default 300s).
 2. **On-chain memo binding (`RadarScan:<targetWallet>`).** Alternatively, the payment transaction includes an SPL Memo instruction formatted as `RadarScan:<targetWallet>`. The server verifies that the memo target matches the requested scan target. Unbound transactions without a matching memo or proof signature are rejected.
-3. **Payer on-chain signer verification.** The server inspects `accountKeys` in the transaction message to verify that `X-Payment-Payer` is an actual signer of the transaction (`signer === true`), preventing arbitrary third-party transfers from being presented as payment.
+3. **Payer on-chain signer verification.** The server inspects `accountKeys` in the transaction message to verify that `X-Payment-Payer` is an actual signer of the transaction (`signer === true`), rejecting transactions with missing or empty accountKeys (Revision 11 WR-CRIT-01).
 4. **Dynamic token decimals.** Token amounts are parsed dynamically according to mint decimals (6 for USDC, 9 for SOL) to prevent decimal scaling bypasses.
 
 ## On-chain Token-22 Transfer Hook & ZK Oracle security
 
-The smart contract components have undergone 9 revisions of security auditing ([AUDIT-FINDINGS.md](AUDIT-FINDINGS.md)):
+The smart contract components have undergone 11 revisions of security auditing (see [AUDIT.md](AUDIT.md)):
 
 - **Mint authority authentication.** Both `initialize` and `initialize_extra_account_meta_list` cryptographically unpack mint account data (`COption<Pubkey>`) and verify that the signer is the genuine `mint_authority` or designated hook config authority, preventing unauthorized configuration hijacking.
 - **Two-sided counterparty gating.** Transfer Hook evaluates risk records for both the sender (`source`) and recipient (`destination`) accounts via Token-22 CPI remaining accounts, preventing compromised entities from sending or receiving tokens.
 - **Account ownership validation (`InvalidAccountOwner = 6011`).** The `close_scan_record` instruction explicitly validates `record_info.owner == &crate::ID` prior to memory deallocation (`realloc(0, false)`) and lamport reclamation, preventing Solana VM `IllegalOwner` panics.
 - **Cross-mint isolation.** Scan records are deterministically derived using `seeds = [b"radar_record", mint.key().as_ref(), wallet.as_ref()]`, ensuring attestations cannot be replayed across different token mints.
+- **Update Extra Account Meta List.** Implemented Anchor discriminator `2c7d8de261b3a660` for `update_extra_account_meta_list` and expanded account capacity to eliminate byte truncation and instruction panics (Revision 11).
+- **Strict Signer Halting.** Oracle signing pipeline strictly halts on missing or misconfigured keypairs, preventing silent downgrade to unsigned attestations (Revision 11 WR-CRIT-02).
 - **Fast-fail oracle indexer polling.** Oracle polling in `commit` catches unsupported RPC methods immediately, preventing 15-second hangs on standard Solana RPCs and falling back directly to verifiable SPL Memo attestations.
 
 ## Autonomous Active Defense & sync

@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - **x402 Server Security & Reliability**: Ed25519 caller proof headers (`X-Payment-Proof`) with strict signature authentication (unauthenticated memo binding restricted strictly to Blink callbacks), fail-fast transaction freshness, non-empty `accountKeys` enforcement, safe `accountKeys` deconstruction, dynamic token decimals scaling, and asynchronous background commitments (`Prefer: respond-async` / `RADAR_ASYNC_COMMIT`).
   - **ZK Oracle & Light Protocol Integration**: Full support for Solana v0 versioned transactions, strict unsigned compressed account rejection (`expectedKey` enforcement preventing 1-lamport forgery), and instant fast-fail polling without 15-second hang when querying standard Solana RPCs.
   - **Database High-Performance & Concurrency**: Added compound index `idx_seen_txs_wallet_ts` on SQLite `seen_txs(wallet, ts DESC)` eliminating full table scans, and configured `PRAGMA synchronous = NORMAL` for high-throughput WAL mode.
-  - **Expanded Test Suite**: Reached **601 automated tests** (26 suites, 0 failures, 100% green) across all components.
+  - **Expanded Test Suite**: Reached **608 automated tests** (26 suites, 0 failures, 100% green) across all components.
 - Per-IP rate limiting on the HTTP service (default `120` requests/minute,
   configurable via `RADAR_RATE_LIMIT_PER_MIN`; `429` + `Retry-After` when exceeded,
   `/health` and `OPTIONS` exempt).

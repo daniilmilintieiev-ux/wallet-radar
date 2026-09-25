@@ -1,49 +1,41 @@
-# `radar trust <wallet> | --watchlist` — spec
+# `radar trust <wallet> | --watchlist` — Specification
 
-**Статус: v1 — verdict + watchlist shortlist готовы, сеть (RPC/Jupiter) — best-effort, всё покрыто тестами (70/70).**
+**Status: v1 — verdict + watchlist shortlist production-ready; network (RPC/Jupiter) is best-effort; fully covered by tests (70/70).**
 
-## Зачем
+## Purpose
 
-Wallet Radar сегодня отвечает «что изменилось в кошельке». `radar trust` добавляет
-вопрос, который агент задаёт перед сделкой: **«можно ли доверять этому контрагенту
-прямо сейчас?»** — pre-flight check для x402-платежей и любых agent-to-agent
-платежей. Агент получает один детерминированный вердикт и может действовать по нему
-без LLM.
+Wallet Radar answers "what changed in this wallet." `radar trust` answers the essential pre-trade question an autonomous agent asks: **"Can I trust this counterparty right now?"** — a pre-flight firewall check for x402 payments and any agent-to-agent transactions. The agent receives a single deterministic verdict and can act upon it without an LLM in the critical path.
 
-## Формула вердикта
+## Verdict Formula
 
 ```
 verdict = f(behavioral risk, payment capacity)
 ```
 
-1. **Behavioral risk** — risk score (0-100) по правилам v1 за окно (по умолчанию 7 дней):
-   - если wallet в watchlist — аномалии из store за окно;
-   - если нет — one-shot: история → in-memory baseline → правила (семантика `scan`).
-2. **Payment capacity** — ликвидность в USD: `USDC + USDT` (1:1) + `SOL × Jupiter price`.
-   Stablecoins считаются точно даже если ценовой фид не доступен; SOL без цены
-   не считается (флаг `solPriced: false`), вердикт не ломается.
-3. **Verdict**:
-   | verdict | условие |
+1. **Behavioral Risk**: Risk score (0-100) evaluated across the time window (default: 7 days):
+   - If wallet is in watchlist: anomalies retrieved from persistent store across the window.
+   - If not: one-shot evaluation (history → in-memory baseline → anomaly detector; same semantics as `scan`).
+2. **Payment Capacity**: USD-denominated liquidity: `USDC + USDT` (1:1 parity) + `SOL × Jupiter spot price`.
+   - Stablecoins are computed precisely even if external price feeds are unavailable.
+   - SOL without an active price feed is omitted from liquidity (`solPriced: false`), preserving deterministic verdict stability without crashing.
+3. **Verdict Matrix**:
+   | Verdict | Condition |
    | --- | --- |
-   | `safe` | riskScore <= maxRisk И liquidityUsd >= minLiquidityUsd |
-   | `hold` | данные есть, но хотя бы один порог не пройден |
-   | `unknown` | нет данных для оценки (нет истории для risk; RPC-ошибка балансов) |
+   | `safe` | `riskScore <= maxRisk` AND `liquidityUsd >= minLiquidityUsd` |
+   | `hold` | Data available, but at least one risk or liquidity threshold failed |
+   | `unknown` | Insufficient data (no history to score risk, or RPC balance query failed) |
 
-Пороги по умолчанию: `maxRisk = 30`, `minLiquidityUsd = 50`. Флаги:
+Default thresholds: `maxRisk = 30`, `minLiquidityUsd = 50`. Configurable via flags:
 `--max-risk N`, `--min-liquidity N`, `--window-days N`, `--json`.
 
-## Философия (последовательно с проектом)
+## Core Philosophy
 
-- **Детерминированно, без LLM в verdict-пути.** Любой агент может воспроизвести
-  вердикт по тем же входным данным (risk score + балансы + пороги).
-- **Структурированный evidence.** JSON содержит точные числа (riskScore, балансы,
-  liquidityUsd, reasons[]) — человек и агент читают одно и то же.
-- **Conservative по неопределённости.** Нет данных → `unknown`, а не `safe`.
-  Ложный `safe` дороже ложного `hold`.
-- **Best-effort сеть.** Падение ценового фида не делает чек failed: stablecoins
-  считаются точно, SOL помечается `solPriced: false`.
+- **Deterministic, Zero LLM in the Verdict Path**: Any agent or process can independently reproduce the exact same verdict from identical inputs (risk score + on-chain balances + thresholds).
+- **Structured Evidence**: JSON output contains exact numerical fields (`riskScore`, `balances`, `liquidityUsd`, `reasons[]`) — human traders and AI agents consume identical schemas.
+- **Conservative on Uncertainty**: Missing data yields `unknown`, never `safe`. A false `safe` (losing capital to an exploit) is far more dangerous than a false `hold`.
+- **Best-Effort Network Resilience**: External price feed degradation does not fail the verification: stablecoin balances remain exact, and SOL is marked `solPriced: false`.
 
-## Формат вывода
+## Output Format
 
 ```json
 {
@@ -64,25 +56,23 @@ verdict = f(behavioral risk, payment capacity)
 }
 ```
 
-Человеческая строка (stdout без `--json`):
+Human-readable CLI string (stdout without `--json`):
 `wallet-radar: <wallet> — HOLD — risk 75/100, liquidity $16.50 (risk 75 > 30; liquidity $16.50 < $50.00)`
 
-## Данные и источники
+## Data Sources & Fallbacks
 
-| данные | источник | fallback |
+| Data | Primary Source | Fallback |
 | --- | --- | --- |
-| история/аномалии | Helius Enhanced Transactions + store | one-shot (как `scan`) |
-| SOL-баланс | JSON-RPC `getBalance` (`RADAR_RPC_URL` или Helius RPC) | `unknown` |
-| USDC/USDT | JSON-RPC `getTokenAccountsByOwner` (jsonParsed, uiAmount) | `unknown` |
-| цена SOL | Jupiter Price API (keyless lite-api) | `solPriced: false` |
+| History / Anomalies | Helius Enhanced Transactions + Store | One-shot (`scan` mode) |
+| SOL Balance | JSON-RPC `getBalance` (`RADAR_RPC_URL` or Helius RPC) | `unknown` |
+| USDC / USDT Balances | JSON-RPC `getTokenAccountsByOwner` (jsonParsed, uiAmount) | `unknown` |
+| SOL Price | Jupiter Price API (keyless lite-api) | `solPriced: false` |
 
-## Мульти-кошелёк: `radar trust --watchlist` → shortlist (v1)
+## Multi-Wallet: `radar trust --watchlist` → Ranked Shortlist (v1)
 
-`trust --watchlist` прогоняет тот же pre-flight check по **всему watchlist**
-и собирает ранжированный shortlist — ответ на вопрос агента «кого из этих
-кошельков я могу оплатить прямо сейчас, и в каком порядке?».
+`trust --watchlist` runs the pre-flight verification across the **entire watchlist** and outputs a deterministic, ranked shortlist — answering the agent's question: *"Which of these wallets can I safely interact with right now, and in what order?"*
 
-```
+```text
 wallet-radar: trust shortlist — 3 wallet(s): 1 safe, 1 hold, 1 unknown
 SAFE (ranked by risk, then liquidity):
   1. <walletA> — risk 8/100, liquidity $1,204.55
@@ -92,31 +82,14 @@ UNKNOWN:
   1. <walletC> — risk n/a, liquidity n/a (balance data unavailable)
 ```
 
-- Ранжирование детерминированное и **чистое** над per-wallet результатами
-  (`buildShortlist`): сначала verdict (safe→hold→unknown), внутри — risk
-  score по возрастанию, затем liquidity по убыванию. Любой агент
-  воспроизводит тот же shortlist из тех же результатов.
-- `--json` отдаёт `{ shortlist, results }`: shortlist — ранжированные
-  группы, results — полные per-wallet evidence.
-- Ошибка одного кошелька не роняет батч: он попадает в `unknown`
-  с причиной `check failed: …`.
-- Проверка последовательная (короткий список, pre-flight — секунды);
-  конкурентности специально не добавлено.
+- Ranking is pure and deterministic over per-wallet results (`buildShortlist`): primary sort by verdict (`safe` → `hold` → `unknown`), secondary sort by `riskScore` ascending, tertiary sort by `liquidity` descending.
+- `--json` provides `{ shortlist, results }`: `shortlist` provides ranked groupings; `results` provides full per-wallet evidence.
+- Error isolation: failure querying one wallet isolates cleanly into `unknown` with reason `check failed: …` without failing the batch.
+- Sequential execution ensures predictable latency for pre-flight screening without overwhelming RPC rate limits.
 
-## Ограничения (честно)
+## Known Boundaries
 
-- Ликвидность — только SOL + 2 стейбла; остальные активы не считаются
-  (консервативно: оцениваем меньше, чем есть).
-- Risk-окно — 7 дней; длинные хвосты аномалий старше окна не влияют на вердикт.
-- One-shot семантика: baseline строится из того же окна, что и правила,
-  поэтому «свой» крупный своп в окне не триггерит LARGE_SWAP на себя.
-- `trust` — моментальный срез; непрерывный trust-score в watch loop — следующий шаг.
-- Нет кэша балансов: каждый вызов — 3 RPC + 1 цена. Для pre-flight это OK (секунды).
-
-## Roadmap (следующие шаги)
-
-- [x] Watchlist shortlist: `radar trust --watchlist` (v1, этот релиз).
-- Trust-score в watch loop: вердикт обновляется на каждом poll, alert при смене safe→hold.
-- Webhook: `POST {verdict, evidence}` в callback агента.
-- Пороги по классам сделок (`--profile micropayment|standard|large`).
-- Хвост: risk-score из всего окна наблюдения, а не 7 дней.
+- Liquidity considers SOL + 2 major stablecoins (USDC/USDT); non-standard assets are excluded (conservative underestimation of capacity).
+- Risk scoring bounds history to the defined evaluation window (default: 7 days).
+- In one-shot execution, baseline is derived within the window.
+- Balances are queried in real time without caching (3 RPC queries + 1 price query per wallet).

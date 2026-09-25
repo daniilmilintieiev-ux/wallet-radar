@@ -18,10 +18,10 @@
 const BASE = process.env.RADAR_BASE_URL ?? "https://radar.cbellory.xyz";
 const X402_BASE = process.env.RADAR_X402_URL ?? "https://pay.cbellory.xyz";
 
-// Default copy-book: a historically high-risk whale + a quiet trader.
+// Default copy-book: a historically high-risk whale (HOLD) + active validator/counterparty (COPY).
 const DEFAULT_TARGETS = [
   "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j",
-  "2pcVVJtijz7o1GzJrq3o13CWdMe2iyHj8wDc22tnBC99",
+  "scs1NCSTafrUX6RBx113B9YDCepo1QdEzU8WwEkf25i",
 ];
 
 function parseArgs(argv) {
@@ -52,6 +52,10 @@ async function gateA2A(wallet, { maxRisk, minLiquidity }) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`A2A HTTP ${res.status}: ${text.slice(0, 120)}`);
+  }
   const json = await res.json();
   if (json.error) throw new Error(`A2A error: ${json.error.message}`);
   const parts = json.result?.parts ?? [];

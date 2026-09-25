@@ -65,7 +65,10 @@ spl-token --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb \
 
 2. Initialize the transfer hook configuration and extra account metas:
 ```typescript
-import { buildInitializeExtraAccountMetaListInstruction } from "wallet-radar/hook";
+import {
+  buildInitializeExtraAccountMetaListInstruction,
+  buildUpdateExtraAccountMetaListInstruction,
+} from "wallet-radar/hook";
 
 const ix = buildInitializeExtraAccountMetaListInstruction({
   mint,
@@ -74,4 +77,12 @@ const ix = buildInitializeExtraAccountMetaListInstruction({
   allowUnverified: true,
 });
 await sendAndConfirmTransaction(connection, new Transaction().add(ix), [wallet]);
+
+// 3. Update extra account metas on an existing mint (Anchor discriminator: 2c7d8de261b3a660)
+const updateIx = buildUpdateExtraAccountMetaListInstruction({
+  mint,
+  authority: wallet.publicKey,
+});
+await sendAndConfirmTransaction(connection, new Transaction().add(updateIx), [wallet]);
 ```
+
