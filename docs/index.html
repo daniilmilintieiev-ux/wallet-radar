@@ -51,10 +51,10 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
   <div class="tag">Builds each Solana wallet's behavioral baseline — then flags the exact moment the behavior breaks.</div>
   <div class="chips">
     <span class="chip"><b>100%</b> TypeScript</span>
-    <span class="chip"><b>0-dep</b> core engine</span>
+    <span class="chip"><b>Built-in</b> SQLite · Zero External DB</span>
     <span class="chip"><b>ZK</b> on-chain oracle</span>
-    <span class="chip"><b>7</b> deterministic rules</span>
-    <span class="chip"><b>24/7</b> live monitoring</span>
+    <span class="chip"><b>9</b> deterministic rules</span>
+    <span class="chip"><b>608/608</b> tests passing</span>
     <span class="chip"><b>MCP</b> server</span>
   </div>
 </header>
@@ -78,15 +78,15 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <div class="step"><div class="k">ACT</div><b>Score + alert</b><span>Risk 0–100 → Telegram, optional LLM digest, MCP call.</span></div>
   </div>
   <div class="rules">
+    <div class="row"><span class="n">TOXIC_MINT</span><span class="d">unrenounced mint / freeze authority, or top-10 holders controlling &ge;60% supply</span></div>
+    <div class="row"><span class="n">REGIME_SHIFT</span><span class="d">sustained structural break across venue, protocol, or cadence baseline</span></div>
+    <div class="row"><span class="n">WARMING</span><span class="d">thin historical baseline (&lt;5 txs) followed by high-severity transactions</span></div>
+    <div class="row"><span class="n">LARGE_SWAP</span><span class="d">swap &gt; N× the wallet's bounded USD median</span></div>
+    <div class="row"><span class="n">ACTIVITY_BURST</span><span class="d">K+ tx in a short window vs. established normal rate</span></div>
     <div class="row"><span class="n">DORMANT_ACTIVE</span><span class="d">reactivated after N days of silence</span></div>
-    <div class="row"><span class="n">ACTIVITY_BURST</span><span class="d">K+ tx in a short window vs. normal rate</span></div>
+    <div class="row"><span class="n">CONCENTRATION</span><span class="d">repeated swaps into the same illiquid token</span></div>
     <div class="row"><span class="n">NEW_VENUE</span><span class="d">first swap on an unseen DEX / protocol</span></div>
-    <div class="row"><span class="n">LARGE_SWAP</span><span class="d">swap &gt; N× the wallet's own USD median</span></div>
-    <div class="row"><span class="n">CONCENTRATION</span><span class="d">repeated swaps into the same token</span></div>
-    <div class="row"><span class="n">NEW_PROTOCOL</span><span class="d">first interaction with an unseen program</span></div>
-    <div class="row"><span class="n">TOXIC_MINT</span><span class="d">unrenounced mint / freeze authority, or top-10 holders controlling ≥60% of supply</span></div>
-    <div class="row"><span class="n">OFF_HOURS</span><span class="d">activity in UTC hours with no historical activity in the baseline profile</span></div>
-    <div class="row"><span class="n">REGIME_SHIFT</span><span class="d">sustained structural break from baseline in swap size, venue diversity, protocol mix, or cadence</span></div>
+    <div class="row"><span class="n">OFF_HOURS</span><span class="d">activity in UTC hours with zero historical baseline activity</span></div>
   </div>
 </section>
 

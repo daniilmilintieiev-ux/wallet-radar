@@ -6,6 +6,9 @@ Date: 2026-09-24 (Updated post-Hackathon & Revisions 1–11). Method: full `tsc`
 port 7690; `x402` server, port 4020) plus the public domains. This is the answer
 to "how much of this is a promise or fake code?" — verified, not asserted.
 
+> [!NOTE]
+> **Audit Classification:** This document records our rigorous internal security audit, automated test verification (608/608 tests), and 11 successive hardening revisions. It does not replace a formal 3rd-party institutional audit (e.g. OtterSec, Neodyme). The on-chain Transfer Hook is active on Solana Devnet for battle-testing; 3rd-party audit is scheduled prior to Mainnet launch.
+
 ## Verdict
 
 The core product is **real, tested, and live**: 9-rule deterministic analyzer,

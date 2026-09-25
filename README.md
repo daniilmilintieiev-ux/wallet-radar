@@ -3,7 +3,7 @@
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
 [![Tests](https://img.shields.io/badge/tests-608%20passing%20%7C%2026%20suites-3fb950.svg)](file:///test)
-[![Security Audit](https://img.shields.io/badge/security%20audit-11%20revisions%20%7C%20institutional%20grade-blue.svg)](file:///AUDIT.md)
+[![Security Hardening](https://img.shields.io/badge/security%20audit-11%20revisions%20%7C%20internal%20hardening-blue.svg)](file:///AUDIT.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
 [![ZK Compression](https://img.shields.io/badge/light%20protocol-408.2x%20rent%20savings-ffb000.svg)](file:///src/oracle)
 [![License](https://img.shields.io/badge/license-MIT-informational.svg)](file:///LICENSE)

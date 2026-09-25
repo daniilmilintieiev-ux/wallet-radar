@@ -1,7 +1,7 @@
 {
   "name": "wallet-radar",
   "version": "0.1.0",
-  "description": "Continuous wallet monitoring for Solana: baseline, diff, anomaly detection, LLM digest, alerts.",
+  "description": "Autonomous pre-trade firewall for Solana AI agents: behavioral baseline, 9 deterministic rules, simulation, and on-chain enforcement.",
   "type": "module",
   "main": "./dist/src/sdk/index.js",
   "types": "./dist/src/sdk/index.d.ts",
