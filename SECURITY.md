@@ -119,7 +119,7 @@ Public Solana transactions are visible in the mempool and on-chain blocks. To pr
 
 ## On-chain Token-22 Transfer Hook & ZK Oracle security
 
-The smart contract components have undergone 11 revisions of security auditing (see [AUDIT.md](AUDIT.md)):
+The smart contract components have undergone 11 successive revisions of security hardening:
 
 - **Mint authority authentication.** Both `initialize` and `initialize_extra_account_meta_list` cryptographically unpack mint account data (`COption<Pubkey>`) and verify that the signer is the genuine `mint_authority` or designated hook config authority, preventing unauthorized configuration hijacking.
 - **Two-sided counterparty gating.** Transfer Hook evaluates risk records for both the sender (`source`) and recipient (`destination`) accounts via Token-22 CPI remaining accounts, preventing compromised entities from sending or receiving tokens.

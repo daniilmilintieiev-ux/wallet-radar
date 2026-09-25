@@ -3,7 +3,7 @@
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
 [![Tests](https://img.shields.io/badge/tests-608%20passing%20%7C%2026%20suites-3fb950.svg)](file:///test)
-[![Security Hardening](https://img.shields.io/badge/security%20audit-11%20revisions%20%7C%20internal%20hardening-blue.svg)](file:///AUDIT.md)
+[![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20revisions%20verified-blue.svg)](file:///SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
 [![ZK Compression](https://img.shields.io/badge/light%20protocol-408.2x%20rent%20savings-ffb000.svg)](file:///src/oracle)
 [![License](https://img.shields.io/badge/license-MIT-informational.svg)](file:///LICENSE)
@@ -407,9 +407,9 @@ curl "https://radar.cbellory.xyz/trust-proof?wallet=7xKXtg2CW87d97TXJSDpbD5jBkhe
 
 ---
 
-## Security Engineering & Audit History
+## Security Engineering & Hardening History
 
-Wallet Radar has undergone **11 consecutive security audit revisions** documented in [AUDIT.md](AUDIT.md):
+Wallet Radar has undergone **11 consecutive security hardening revisions** (detailed security model and vulnerability policy in [SECURITY.md](SECURITY.md)):
 
 - **Revision 11 (Latest Hardening)**:
   - `WR-CRIT-01`: Enforced non-empty `accountKeys` validation in RPC payment verifiers.
@@ -487,7 +487,6 @@ Wallet Radar is read-only and custody-free: it reads public on-chain data via He
 ## Documentation
 
 - [CHANGELOG.md](CHANGELOG.md) — release history and leap entries.
-- [AUDIT.md](AUDIT.md) — formal audit checklist and verification log across 11 revisions.
 - [SECURITY.md](SECURITY.md) — security policy, disclosure, data handling.
 - [docs/trust-spec.md](docs/trust-spec.md) — trust-check architecture and decision boundaries.
 

@@ -25,6 +25,7 @@ target/
 
 # Audit findings doc lives outside the repo (never commit)
 AUDIT-FINDINGS.md
+AUDIT.md
 
 # Local benchmarks, datasets, and history machine replays
 benchmarks/
