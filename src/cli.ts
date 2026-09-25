@@ -16,6 +16,7 @@ import { buildShortlist, formatShortlist, formatTrustLine, runTrustCheck, runTru
 import { renderHtmlReport, formatHistoryText, computeVerdict, HtmlReportData } from "./htmlreport.js";
 import { renderDashboardHtml, formatLedgerTerminalTable } from "./dashboard.js";
 import { readScanLedger } from "./oracle/index.js";
+import { buildDailyDigestData, formatDailyDigestHtml, sendDailyDigest } from "./daily-digest.js";
 import { Anomaly, Baseline, EnhancedTx, DEFAULT_CONFIG } from "./types.js";
 
 function usage(): void {
@@ -25,6 +26,8 @@ usage:
   radar add <wallet>              add a wallet to the watchlist (SQLite: ~/.wallet-radar/radar.db)
   radar remove <wallet>           remove a wallet from the watchlist
   radar watch [--once]            poll the watchlist (needs HELIUS_API_KEY; TG alerts if TG_BOT_TOKEN+TG_CHAT_ID)
+  radar digest [--send] [--hours N]
+                                  daily monitoring summary (send to Telegram with --send, or preview HTML)
   radar report <wallet>           baseline + recent anomalies for one wallet
   radar history <wallet> [--export [out.html]] [--live] [--json]
                                   historical profile + anomalies (HTML report with --export [file], or stdout with --export -)
@@ -476,6 +479,26 @@ async function main(): Promise<void> {
       ];
       const anomalies = detectAnomalies(wallet, txs, null);
       console.log(JSON.stringify({ riskScore: computeRiskScore(anomalies), anomalies, digest: digestAnomalies(anomalies) }, null, 2));
+      return;
+    }
+    case "digest": {
+      const send = args.includes("--send");
+      const hoursIdx = args.indexOf("--hours");
+      const windowHours = hoursIdx !== -1 && args[hoursIdx + 1] ? Number(args[hoursIdx + 1]) : 24;
+      const store = openStore();
+      if (send) {
+        const res = await sendDailyDigest(store, { windowHours, markAlerted: true });
+        if (res.ok) {
+          console.log(`[digest] ${res.message}`);
+        } else {
+          console.error(`[digest error] ${res.message}`);
+        }
+      } else {
+        const data = buildDailyDigestData(store, { windowHours });
+        const html = formatDailyDigestHtml(data);
+        console.log(html);
+      }
+      store.close();
       return;
     }
     default:

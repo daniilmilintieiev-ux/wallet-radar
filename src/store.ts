@@ -235,6 +235,73 @@ export class Store {
     }
   }
 
+  getAnomaliesSince(
+    sinceSec: number,
+    limit = 500,
+  ): Array<{
+    id: number;
+    wallet: string;
+    type: Anomaly["type"];
+    severity: Anomaly["severity"];
+    timestamp: number;
+    detectedAt: number;
+    text: string;
+    evidence: Record<string, unknown>;
+    alerted: boolean;
+  }> {
+    const rows = this.db
+      .prepare(
+        "SELECT id, wallet, type, severity, tx_ts, detected_at, text, evidence_json, alerted " +
+          "FROM anomalies WHERE detected_at >= ? ORDER BY detected_at DESC, id DESC LIMIT ?",
+      )
+      .all(sinceSec, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      wallet: String(r.wallet),
+      type: r.type as Anomaly["type"],
+      severity: r.severity as Anomaly["severity"],
+      timestamp: (r.tx_ts as number) ?? 0,
+      detectedAt: Number(r.detected_at),
+      text: String(r.text),
+      evidence: JSON.parse((r.evidence_json as string) || "{}"),
+      alerted: Boolean(r.alerted),
+    }));
+  }
+
+  getSeenTxCountSince(sinceSec: number): { total: number; byWallet: Record<string, number> } {
+    const rows = this.db
+      .prepare("SELECT wallet, COUNT(*) as c FROM seen_txs WHERE ts >= ? GROUP BY wallet")
+      .all(sinceSec) as Array<{ wallet: string; c: number }>;
+    const byWallet: Record<string, number> = {};
+    let total = 0;
+    for (const r of rows) {
+      const cnt = Number(r.c);
+      byWallet[r.wallet] = cnt;
+      total += cnt;
+    }
+    return { total, byWallet };
+  }
+
+  getCostSummarySince(sinceSec: number): { totalUsd: number; events: number } {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS c, COALESCE(SUM(total_usd), 0) AS total FROM cost_events WHERE ts >= ?")
+      .get(sinceSec) as { c: number; total: number } | undefined;
+    return {
+      events: Number(row?.c ?? 0),
+      totalUsd: Math.round(Number(row?.total ?? 0) * 1e6) / 1e6,
+    };
+  }
+
+  getRevenueSummarySince(sinceSec: number): { totalUsdc: number; payments: number } {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS c, COALESCE(SUM(amount), 0) AS total FROM settled_payments WHERE settled_at >= ?")
+      .get(sinceSec) as { c: number; total: number } | undefined;
+    return {
+      payments: Number(row?.c ?? 0),
+      totalUsdc: Math.round(Number(row?.total ?? 0) * 1e6) / 1e6,
+    };
+  }
+
   getBackoff(address: string): { backoffUntil: number; attempt: number } | null {
     const row = this.db
       .prepare("SELECT backoff_until, attempt FROM wallet_backoff WHERE address = ?")
