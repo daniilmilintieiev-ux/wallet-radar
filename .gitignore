@@ -23,8 +23,19 @@ target/
 # Serena semantic index (local tool state)
 .serena/
 
-# Audit findings doc lives outside the repo (E:/JOB/earn/AUDIT-FINDINGS.md) — never commit
+# Audit findings doc lives outside the repo (never commit)
 AUDIT-FINDINGS.md
 
-# Audit findings doc (lives outside the repo, never commit)
-AUDIT-FINDINGS.md
+# Local benchmarks, datasets, and history machine replays
+benchmarks/
+data/
+*.bench.json
+replay-*.json
+
+# Prototypes & temporary investigation scripts
+dashboard-prototypes/
+p3-scan-buffers.mjs
+
+# Internal QA and scratch reports
+OVERNIGHT-VERIFICATION-REPORT.md
+*-REPORT.md
