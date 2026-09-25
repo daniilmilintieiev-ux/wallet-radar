@@ -47,6 +47,12 @@ export const RADAR_CONFIG_SEED = Buffer.from("radar_config", "utf-8");
 export const RADAR_RECORD_SEED = Buffer.from("radar_record", "utf-8");
 
 /**
+ * Maximum allowable clock drift into the future for attestation timestamps (60 seconds).
+ * Accounts for Solana Clock sysvar slot calculation lag relative to real-world UTC.
+ */
+export const MAX_FUTURE_DRIFT_SEC = 60;
+
+/**
  * spl-transfer-hook-interface:execute instruction discriminator (8 bytes)
  * sha256("spl-transfer-hook-interface:execute")[0..8]
  */
@@ -841,6 +847,16 @@ export function evaluateTransferRisk(
 
   // 4. Freshness check
   if (maxAge > 0 && timestamp > 0) {
+    if (timestamp > nowSec + MAX_FUTURE_DRIFT_SEC) {
+      return {
+        allowed: false,
+        reason: `Destination wallet oracle attestation has future timestamp (${timestamp} > ${nowSec} + ${MAX_FUTURE_DRIFT_SEC}s drift)`,
+        errorCode: RadarHookErrorCode.StaleOracleAttestation,
+        riskScore: score,
+        verdict,
+        attestationTimestamp: timestamp,
+      };
+    }
     const age = nowSec - timestamp;
     if (age > maxAge) {
       return {

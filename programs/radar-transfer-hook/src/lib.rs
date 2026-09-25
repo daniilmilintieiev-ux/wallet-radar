@@ -19,6 +19,10 @@ pub const EXTRA_ACCOUNT_METAS_SEED: &[u8] = b"extra-account-metas";
 pub const RADAR_CONFIG_SEED: &[u8] = b"radar_config";
 pub const RADAR_RECORD_SEED: &[u8] = b"radar_record";
 
+/// Maximum allowable clock drift into the future for attestation timestamps (60 seconds).
+/// Accounts for Solana Clock sysvar slot calculation lag relative to real-world UTC.
+pub const MAX_FUTURE_DRIFT_SEC: u64 = 60;
+
 /// Account size for the ExtraAccountMetaList PDA holding extra
 /// `ExtraAccountMeta` entries (config + scan-record + source scan-record):
 ///   get_base_len() [12] + PodSlice header [4] + 3 * ExtraAccountMeta [35] = 121
@@ -179,12 +183,12 @@ pub mod radar_transfer_hook {
                             if config.max_attestation_age_sec > 0 {
                                 let clock = Clock::get()?;
                                 let current_ts = clock.unix_timestamp as u64;
-                                if current_ts > src_header.timestamp
-                                    && (current_ts - src_header.timestamp) > config.max_attestation_age_sec
+                                if src_header.timestamp > current_ts.saturating_add(MAX_FUTURE_DRIFT_SEC)
+                                    || (current_ts > src_header.timestamp
+                                        && (current_ts - src_header.timestamp) > config.max_attestation_age_sec)
                                 {
                                     msg!(
-                                        "RadarHook: REJECTED - source attestation expired (age > {}s)",
-                                        config.max_attestation_age_sec
+                                        "RadarHook: REJECTED - source attestation expired or future timestamp",
                                     );
                                     return Err(RadarHookError::StaleOracleAttestation.into());
                                 }
@@ -266,12 +270,12 @@ pub mod radar_transfer_hook {
         if config.max_attestation_age_sec > 0 {
             let clock = Clock::get()?;
             let current_ts = clock.unix_timestamp as u64;
-            if current_ts > header.timestamp
-                && (current_ts - header.timestamp) > config.max_attestation_age_sec
+            if header.timestamp > current_ts.saturating_add(MAX_FUTURE_DRIFT_SEC)
+                || (current_ts > header.timestamp
+                    && (current_ts - header.timestamp) > config.max_attestation_age_sec)
             {
                 msg!(
-                    "RadarHook: REJECTED - attestation expired (age > {}s)",
-                    config.max_attestation_age_sec
+                    "RadarHook: REJECTED - attestation expired or future timestamp",
                 );
                 return Err(RadarHookError::StaleOracleAttestation.into());
             }
