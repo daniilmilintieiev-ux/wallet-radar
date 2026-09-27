@@ -11,7 +11,7 @@ export type TrustStance = "VERIFIED_SAFE" | "LOW_TRUST_WARMING" | "BLOCKED";
 
 export interface HistoryReplayWallet {
   address: string;
-  category: "scam_exploit" | "rekt_drawdown" | "clean_retail" | "high_frequency_bot" | "rare_low_history";
+  category: "scam_exploit" | "rekt_drawdown" | "clean_retail" | "high_frequency_bot" | "rare_low_history" | "whale_defi" | "institutional_vault";
   description: string;
   expectedVerdict: TrustStance;
 }
@@ -342,17 +342,45 @@ async function main() {
   loadEnv();
   const apiKey = process.env.HELIUS_API_KEY || "cached-replay";
 
+  const datasetArg = process.argv.find((a) => a.startsWith("--dataset="))?.split("=")[1];
+  const limitArg = parseInt(process.argv.find((a) => a.startsWith("--limit="))?.split("=")[1] || "0", 10);
+  const categoryArg = process.argv.find((a) => a.startsWith("--category="))?.split("=")[1];
+
+  let walletsToTest: HistoryReplayWallet[] = TARGET_WALLETS;
+
+  if (datasetArg === "large" || datasetArg === "all") {
+    const largePath = path.resolve(process.cwd(), "benchmarks/large-wallets.json");
+    if (fs.existsSync(largePath)) {
+      const raw = fs.readFileSync(largePath, "utf8");
+      const parsed = JSON.parse(raw) as any[];
+      walletsToTest = parsed.map((p) => ({
+        address: p.address,
+        category: p.category,
+        description: p.name || p.description || p.category,
+        expectedVerdict: p.expectedVerdict,
+      }));
+    }
+  }
+
+  if (categoryArg) {
+    walletsToTest = walletsToTest.filter((w) => w.category === categoryArg);
+  }
+
+  if (limitArg > 0) {
+    walletsToTest = walletsToTest.slice(0, limitArg);
+  }
+
   console.log("================================================================================");
   console.log("  WALLET RADAR: HISTORY MACHINE (Walk-Forward Replay Simulation)");
   console.log("  3-Tier Risk Model: VERIFIED_SAFE | LOW_TRUST_WARMING | BLOCKED");
-  console.log(`  Zero Lookahead Bias | Step-by-Step Blockchain Time Replay (${TARGET_WALLETS.length} Wallets)`);
+  console.log(`  Zero Lookahead Bias | Step-by-Step Blockchain Time Replay (${walletsToTest.length} Wallets)`);
   console.log("================================================================================\n");
 
   const results: WalletReplayResult[] = [];
 
-  for (let idx = 0; idx < TARGET_WALLETS.length; idx++) {
-    const w = TARGET_WALLETS[idx];
-    console.log(`\n[${idx + 1}/${TARGET_WALLETS.length}] Testing: ${w.address}`);
+  for (let idx = 0; idx < walletsToTest.length; idx++) {
+    const w = walletsToTest[idx];
+    console.log(`\n[${idx + 1}/${walletsToTest.length}] Testing: ${w.address}`);
     console.log(`  Category: ${w.category.toUpperCase()} | Expected: ${w.expectedVerdict}`);
     console.log(`  Profile:  ${w.description}`);
 

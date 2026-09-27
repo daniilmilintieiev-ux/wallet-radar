@@ -36,7 +36,9 @@
     "canary": "node dist/scripts/canary-agent.js",
     "hook:devnet": "node dist/scripts/transfer-hook-devnet.js",
     "digest": "node dist/scripts/daily-digest.js",
-    "history-machine": "node dist/scripts/history-machine.js"
+    "history-machine": "node dist/scripts/history-machine.js",
+    "history-machine:large": "node dist/scripts/history-machine.js --dataset=large",
+    "harvest:wallets": "node dist/scripts/harvest-large-dataset.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
