@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { maxOf, minOf } from "./stats.js";
@@ -113,7 +113,43 @@ function printReplay(r: ReplayResult): void {
   if (r.digest) console.log(`\n${r.digest}`);
 }
 
+function loadEnv(): void {
+  const candidates = [
+    process.env.RADAR_ENV,
+    join(process.cwd(), "radar.env"),
+    join(process.cwd(), ".env"),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      try {
+        const fileContent = readFileSync(candidate, "utf8");
+        for (const line of fileContent.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx > 0) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            let val = trimmed.slice(eqIdx + 1).trim();
+            if (
+              (val.startsWith('"') && val.endsWith('"')) ||
+              (val.startsWith("'") && val.endsWith("'"))
+            ) {
+              val = val.slice(1, -1);
+            }
+            if (!(key in process.env)) {
+              process.env[key] = val;
+            }
+          }
+        }
+      } catch {}
+      break;
+    }
+  }
+}
+
 async function main(): Promise<void> {
+  loadEnv();
   const [cmd, ...args] = process.argv.slice(2);
   switch (cmd) {
     case "add": {

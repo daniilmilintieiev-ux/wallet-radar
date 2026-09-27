@@ -15,12 +15,48 @@
  */
 
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { Store } from "../src/store.js";
 import { buildDailyDigestData, formatDailyDigestHtml, sendDailyDigest } from "../src/daily-digest.js";
 
+function loadEnv(): void {
+  const candidates = [
+    process.env.RADAR_ENV,
+    resolve(process.cwd(), "radar.env"),
+    resolve(process.cwd(), ".env"),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      try {
+        const fileContent = readFileSync(candidate, "utf8");
+        for (const line of fileContent.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx > 0) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            let val = trimmed.slice(eqIdx + 1).trim();
+            if (
+              (val.startsWith('"') && val.endsWith('"')) ||
+              (val.startsWith("'") && val.endsWith("'"))
+            ) {
+              val = val.slice(1, -1);
+            }
+            if (!(key in process.env)) {
+              process.env[key] = val;
+            }
+          }
+        }
+      } catch {}
+      break;
+    }
+  }
+}
+
 async function main(): Promise<void> {
+  loadEnv();
   const isPreview = process.argv.includes("--preview");
   const dbPath = process.env.RADAR_DB ?? join(homedir(), ".wallet-radar", "radar.db");
   mkdirSync(dirname(dbPath), { recursive: true });
