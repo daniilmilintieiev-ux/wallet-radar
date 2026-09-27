@@ -319,11 +319,13 @@ export async function watchOnce(
         // does not relax while it keeps moving money).
         defense = evaluateDefense(store, wallet, nowSec, true, riskScore, anomalies, 0);
         if (anomalies.length > 0) {
+          const isDailyOnly = process.env.RADAR_ALERT_MODE === "daily" || process.env.RADAR_INSTANT_ALERTS === "0";
+          const llmCfg = isDailyOnly ? null : llmConfigFromEnv();
           const { digest, source } = await bestEffortDigest(
             wallet,
             riskScore,
             anomalies,
-            llmConfigFromEnv(),
+            llmCfg,
           );
           if (sink) {
             const defenseLine = defense?.changed ? `\nDEFENSE: ${defense.reason}` : "";
