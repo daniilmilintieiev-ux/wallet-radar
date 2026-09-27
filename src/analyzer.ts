@@ -36,12 +36,17 @@ export const MAJOR_MINTS = [SOL_MINT, USDC_MINT, USDT_MINT];
  * trades are not misclassified as peer-to-peer wash trading or counterparty hubs.
  */
 export const KNOWN_PROTOCOL_INFRASTRUCTURE = new Set<string>([
-  // Jupiter routers & programs
+  // Jupiter routers & programs & route authorities / fee vaults
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
   "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
   "JUP3c2Uh3WA4Ng34tw6kPd2G4C5BB21Xo36Je1s32Ph",
   "jupoNjAxXgZ4rjYHZZTutACfMNo2961S1DCnG6M9P1A",
   "DCA265Vj8a9CEuX1eb1LWRnDT7uK6qNaBpafLeGGtDc8",
+  "8FnX3xo2yYw3EUE6w3nQA4GfXGS9wpK6oj3veJpbFzLo",
+  "DSN3j1ykL3obAVNv7ZX49VsFCPe4LqzxHnmtLiPwY6xg",
+  "GMCJvYGf5Ex2ARiMquaBDqU6iKM8uiEQkB8jCnoNfHpC",
+  "FJnaiidSLXFweWkgbinxEHRykVHsnkzDcYbNDR3RF5LN",
+  "B7FHz1mszZEXddi2fRx4MAaBpUV8hqvq2HQgRT66eN4P",
 
   // Raydium pools, authorities & routers
   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
@@ -55,21 +60,125 @@ export const KNOWN_PROTOCOL_INFRASTRUCTURE = new Set<string>([
   "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP",
   "DjVE6JNiYqPL2QXyCUUh8rNjHrbz9hXHNYt99MQ59qw1",
 
-  // Meteora DLMM, Dynamic AMM, Multi-token
+  // Meteora DLMM, Dynamic AMM, Multi-token & vaults
   "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
   "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
   "24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHm2Yoj356W9rKqL",
+  "3dcwhqJp6JBTJPq8ga335HWgSQVS7uQmdmeX7iGjMNpj",
+  "2gXV31km1F58FVFrwvjVKkLisWPnoGP6MNAiNWbp3MZn",
 
-  // Pump.fun & Moonshot bonding curves / fee accounts
+  // OKX DEX Aggregator router & authority vault
+  "proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u",
+  "ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn",
+
+  // DFlow Segment / DEX router & authorities
+  "DF1owvTndqTtEZv5xsmEMEPzWbqu5unLu6dLscdrpSmV",
+  "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH",
+  "8ekCy2jHHUbW2yeNGFWYJT9Hm9FW7SvZcZK66dSZCDiF",
+  "zxTpi4BtaWX3mgdAPoezkMD1hxx8CdeCfrqXMWvSCLX",
+  "EgB1PqsGFbj3u7jGfwwx5V9CVoc4BGjyfgnag7BJcQjB",
+  "AfrddTGYwCVEQB1gxCAhR8i48o6qtxYqksdVkeLudEhg",
+  "GuPbekwP9MqB23CghhiMQZTaigPdUJooovo1neCErhM8",
+  "J6nHiirmZrDS6XRH6uWXHiNYeKyT5zMfkjHXa4GC4vAj",
+  "CwgFLQSjC48Cim3qm8g5WdKuNHX8ouUG1Kx8MpR3GiTV",
+  "7a8xxAJBELDo6P9dikSYctdw6ce8F4mWr3ahcAD8Ao49",
+  "4pCZCVEiYyT4efNdXUdL2tJF8VGMgiMXrZWq6FiNXhRw",
+
+  // Titan DEX Aggregator router & authorities
+  "T1tAnBXhhvN5P9kGfS1P9p5uGf9XkZ9mP9p5uGf9XkZ",
+  "T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT",
+  "D5YqVMoSxnqeZAKAUUE1Dm3bmjtdxQ5DCF356ozqN9cM",
+
+  // LI.FI cross-chain DEX router
+  "LiFiEDFjz5x1jJe9gSXNDHQW4dWt4yLXdp2VN4EiQUt",
+  "LiFiRp8RM7nJUZyUYC9FPPpDr7sAy5XPfBN6ABzBgT7",
+
+  // Phantom Swapper & Relayer authorities
+  "DeJBGdMFa1uynnnKiwrVioatTuHmNLpyFKnmB5kaFdzQ",
+  "4C62hiUpWtijqPGiJzZvTJ1mmA9KSHdUzbStEiVnvARM",
+  "4C6HDxeMYYCAqiqJV8qa1ozpRLj3bpgy8k1zWqkEvARM",
+  "8N4JdTapeL7bTgR6GsiayXhp48hbAE7HyH9XNwJgnoBJ",
+  "HB7nYCQC2QACi5QwXE8Pp5h4feqiRXW2wixAWeGhbe2R",
+
+  // Sanctum LST Staking
+  "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95",
+
+  // Metaplex Bubblegum (Compressed NFTs)
+  "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY",
+
+  // Pump.fun & Moonshot bonding curves / fee accounts / AMM
   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
   "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
   "CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM",
   "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+  "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
 
   // OpenBook & Phoenix orderbooks
   "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
   "opnb2NxiRRrqadHjvggXJbtETe9bvo4Mm95BpM7MoVu",
   "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY",
+
+  // Jito MEV Tip accounts (official tip recipients)
+  "jitodontfront11111111111JustUseJupiterU1tra",
+  "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+  "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+  "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+  "Cw8CFyM9FkoMi7K7CrnxHyPfYJyTV4dePnWC57EDeqT8",
+  "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+  "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+  "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+  "ADuUkR4vqLUMWXxW9gh6D6L8pWaw9bqfd2GLLwNdWA2o",
+  "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+  "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+
+  // Verified DEX Liquidity Pools, Bonding Curves & Intermediate Route Vaults
+  "fAeDy2q7ZjZZZFt6Q1FtbHaCU5dtLEPmYcwcwfAexNA",
+  "AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY",
+  "GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL",
+  "3LoAYHuSd7Gh8d7RTFnhvYtiTiefdZ5ByamU42vkzd76",
+  "CZt61djgJ6ggjA1aCfYskFViBQxcprA9HT3nE7PZdE1X",
+  "3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR",
+  "7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX",
+  "7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ",
+  "CcG3fyDZn6uXTV5p2TV9cceCA2YhE3bUMLeXGn6vZSNr",
+  "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U",
+  "HMzvsEEmtzHhvZNw9uwbaG85HCTmFnkbhzUx16cy7ca3",
+  "9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz",
+  "A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW",
+  "GP8StUXNYSZjPikyRsvkTbvRV1GBxMErb59cpeCJnDf1",
+  "7iWnBRRhBCiNXXPhqiGzvvBkKrvFSWqqmxRyu9VyYBxE",
+  "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD",
+  "GF8SKKobum6UJnhX2mLHePU38htg5vdr9zcY4jH8Pqs2",
+  "F2KCaXcp7AoQtxTDvNEDCyMyWjSCAMWNzcyN9dsPfPs5",
+  "6b5LxeDVxqCGAhZjjjgieGP71c5GBt2cBwiafCFX6NMU",
+  "CQUfYBxF2KFVjYyCPyGa7JCFX9zw2PwmNnECzY3merGA",
+  "3C6qVymTAwWNKCSspmd1qbUH9avaqhsjgW2yntvEYBXt",
+  "G4G5SzkbLFMhoSgHiQNeyJFt75sSDsL1rD8LVyT5xZbU",
+  "FGQoLafigpyVb7mLa6pvsDDpDaEE3JetrzQoAggTo3n7",
+  "CNRQ2Q5YURFcQrATzYeKUWgKUoBDfqzkDrRWf21UXCVo",
+  "AvGeFw71N5sNfV97mZ1uNrHg4yfufRicCJUrS9j2ehTX",
+  "FksffEqnBRixYGR791Qw2MgdU7zNCpHVFYBL4Fa4qVuH",
+  "CjmRBrkTSCzjKoGUbWbkfiZ2bNc8pf23MBS7S9LSKwDe",
+  "BkMELX2YkvCR9KLT8DkEQo5eEJgyErMvyF36AdWSiKy4",
+  "4NQS7eFuATFFUst2uMr7Dm63GbnQ4ULhUhcmuoVrGnxS",
+  "UUUXQdoC85FmgUgDMfYj3UsBWMLSjU7gVj4QmYGdMRx",
+  "EPUHjseXG3izk3MVUJ1PcyWT9xeBhtAnq8gUpq3j8Uni",
+  "BMxytuHwkLE6g6vRi947BB3iT56vGkbQcNKr25UkhwBL",
+  "9KXsVQJPsv51eUPBiTeD5BFgnCX5uuF1xzM1QQoVxo2n",
+  "5KXDF6QnqhBj72hDtJNkkpFaQVUfbFXNybMsp3DiK6tD",
+  "3oUEaNt7uL7pjZ6gdiAiEVRp9ZCcGRec7B5aSvXcjbWS",
+  "7uTT8Xi5RWXzy7h9XL244GRgEycDYDhLjr3ZyNdXi8pZ",
+  "5Z3kSpejM1wP6bGGjm7zoKCrf2LZ6r8C8q78C4t13Ni4",
+  "5Z3knbcDvzS6dNKo3u9v2p4tHkHiJJhbNzxH8ir9Ni4",
+  "5Z3kXNbF3kjzigdQynoqemV3Tq6cHGuEs8hJKzzs3Ni4",
+  "FvULawNPGBbuwYus74ECaQoV1oH9Tk6XPN7VPN51NYds",
+  "9V6oHG6mpNPq1b7Sivz3NiW3Q5673Sya5gkayzj7EC3E",
+  "F5kDvfgJVFeSu34yd51NsXcu7tui66mMZCz23nynern6",
+  "6Zya3ofSrKewgdthY7844U8Gg3d5EgW7S9WnPyZBddnF",
+  "2uKQ1GhvcBf87vHBjSNjVnFUY4h7ewpMwDJxTqQUuFKt",
+  "F1eCZebsjuaLXkF1Kwzxaq53t1Bn7uge8x412CCqGx8P",
+  "AoGRUnV1UGhHN3P8hMKZX1gsNn2Rc1Po41gFms6xCqus",
 
   // Core System & Token Programs
   "11111111111111111111111111111111",
@@ -204,7 +313,7 @@ export function extractSwap(
       inMint = t.mint;
       inAmount = Number(t.tokenAmount ?? 0);
     }
-    if (t.toUserAccount === me && !outMint) {
+    if (t.toUserAccount === me && (!outMint || (outMint === inMint && t.mint !== inMint))) {
       outMint = t.mint;
       outAmount = Number(t.tokenAmount ?? 0);
     }
@@ -214,7 +323,7 @@ export function extractSwap(
       inMint = SOL_MINT;
       inAmount = Number(t.amount ?? 0) / 1e9;
     }
-    if (t.toUserAccount === me && !outMint) {
+    if (t.toUserAccount === me && (!outMint || (outMint === inMint && SOL_MINT !== inMint))) {
       outMint = SOL_MINT;
       outAmount = Number(t.amount ?? 0) / 1e9;
     }
@@ -251,13 +360,24 @@ export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
   if (tx.counterparties && tx.counterparties.length > 0) {
     raw = me ? tx.counterparties.filter((cp) => cp !== me) : tx.counterparties;
   } else {
-    const from = (u?: string) => (u && u !== me ? u : undefined);
+    // Gather any token accounts known to belong to `me` in this transaction so
+    // rent-funding transfers to the wallet's own ATAs are not misclassified as counterparties.
+    const myTokenAccounts = new Set<string>();
+    if (me) {
+      for (const t of tx.tokenTransfers ?? []) {
+        if (t.fromUserAccount === me && t.fromTokenAccount) myTokenAccounts.add(t.fromTokenAccount);
+        if (t.toUserAccount === me && t.toTokenAccount) myTokenAccounts.add(t.toTokenAccount);
+      }
+    }
+    const from = (u?: string) => (u && u !== me && !myTokenAccounts.has(u) ? u : undefined);
     for (const t of tx.tokenTransfers ?? []) {
+      if (wallet && t.fromUserAccount !== wallet && t.toUserAccount !== wallet) continue;
       const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
       const o = from(other);
       if (o) raw.push(o);
     }
     for (const t of tx.nativeTransfers ?? []) {
+      if (wallet && t.fromUserAccount !== wallet && t.toUserAccount !== wallet) continue;
       const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
       const o = from(other);
       if (o) raw.push(o);

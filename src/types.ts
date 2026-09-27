@@ -31,6 +31,8 @@ export interface EnhancedTx {
   tokenTransfers?: Array<{
     fromUserAccount?: string;
     toUserAccount?: string;
+    fromTokenAccount?: string;
+    toTokenAccount?: string;
     tokenAmount?: number;
     mint?: string;
   }>;
