@@ -1,4 +1,19 @@
 import type { ActionVerdict } from "./decision.js";
+import type { Anomaly } from "./types.js";
+
+/**
+ * Determines if an anomaly represents an immediate existential threat requiring
+ * zero-tolerance blocking (bypassing the risk ladder).
+ *
+ * - Predatory freeze authority (attacker can freeze/confiscate tokens in user's wallet): BLOCKED.
+ * - Non-existential anomalies (large swaps, dormant wakeups, meme-coin holder concentrations,
+ *   activity bursts) escalate through the risk ladder (alerting -> gated -> blocked) via riskScore.
+ */
+export function isExistentialThreat(a: Anomaly): boolean {
+  if (a.severity !== "high") return false;
+  if (a.type === "TOXIC_MINT" && Boolean(a.evidence?.freezeAuthority)) return true;
+  return false;
+}
 
 /**
  * Active defense (Pillar 3): the radar does not just report risk, it acts.

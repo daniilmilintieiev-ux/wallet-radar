@@ -6,7 +6,7 @@ import { fetchSwapMintRisk, MintRiskMap } from "./mint.js";
 import { Store } from "./store.js";
 import { AlertSink, formatAlert } from "./alerts.js";
 import { bestEffortDigest, llmConfigFromEnv } from "./llmdigest.js";
-import { computeDefenseAction, DefenseAction, DefenseStateInfo, DEFENSE_THRESHOLDS } from "./defense.js";
+import { computeDefenseAction, DefenseAction, DefenseStateInfo, DEFENSE_THRESHOLDS, isExistentialThreat } from "./defense.js";
 import { Anomaly, DEFAULT_CONFIG, EnhancedTx, PnlSummary } from "./types.js";
 
 export function defaultSeedPages(): number {
@@ -123,7 +123,7 @@ function evaluateDefense(
   quietStreak: number,
 ): DefenseAction | null {
   const current = store.getDefenseState(wallet);
-  const hasHighSeverity = anomalies.some((a) => a.severity === "high");
+  const hasHighSeverity = anomalies.some(isExistentialThreat);
   const stateQuietStreak = active ? 0 : (current ? (current.quietStreak ?? 0) + 1 : quietStreak);
   const effectiveQuietStreak = quietStreak >= DEFENSE_THRESHOLDS.clearQuietPolls ? quietStreak : stateQuietStreak;
   const action = computeDefenseAction({ riskScore, hasHighSeverity, active, current, quietStreak: effectiveQuietStreak, nowSec });

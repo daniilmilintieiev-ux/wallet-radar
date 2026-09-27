@@ -256,15 +256,52 @@ async function fetchTop10Pct(
   }
 }
 
+/**
+ * Established Solana ecosystem tokens, institutional assets, LSTs, and LP vaults.
+ * These are exempt from TOXIC_MINT pump.fun rug checks (e.g. JLP's protocol freeze authority).
+ */
+export const KNOWN_SAFE_MINTS = new Set<string>([
+  ...MAJOR_MINTS,
+  "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4", // Jupiter Perps LP (JLP)
+  "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", // JitoSOL
+  "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", // Marinade Staked SOL (mSOL)
+  "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1", // BlazeStake Staked SOL (bSOL)
+  "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", // Wormhole Wrapped BTC (WBTC)
+  "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", // Wormhole Wrapped ETH (WETH)
+  "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", // Pyth Network (PYTH)
+  "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", // Jupiter (JUP)
+  "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R", // Raydium (RAY)
+  "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", // Bonk (BONK)
+  "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", // dogwifhat (WIF)
+  "KMNo3nJsBXfcpJTVhZnvmsiejvBxsYNxwBvtLRUhsVz", // Kamino (KMNO)
+  "DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7", // Drift (DRIFT)
+  "hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux", // Helium (HNT)
+  "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", // Popcat (POPCAT)
+  "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5", // MEW
+  "jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v", // Jupiter Staked SOL (jupSOL)
+  "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A", // Helius Staked SOL (hSOL)
+  "LSTxxxnJzKDFSLr4dUkPcmCf5VyryEqzPLz5j4bpxFp", // Sanctum LST (LST)
+  "pSo1f9nQXWgXibFtKf7NWYxb5enAM4qfP6UJSiXRQfL", // Phase Staked SOL (pSOL)
+  "BPSoLzmLQn47EP5aa7jmFngRL8KC3TWAeAwXwZD8ip3P", // Blockworks Staked SOL (bpSOL)
+  "picobAEvs6w7QEknPce34wAE4gknZA9v5tTonnmHYdX", // Pico Staked SOL (picoSOL)
+  "WensoLXxZJnev2YvihHFchn1dVVFnFLYvgomXWvvwRu", // wenSOL
+  "cPQPBN7WubB3zyQDpzTK2ormx1BMdAym9xkrYUJsctm", // curoSOL
+  "xSoL18r4U1k2ALa4yF857VDZJqCKecLtty92nscre3o", // xSOL
+  "jucy5XJ76pHVvtPZb5TKRcGQExkwit2P5s4vY8UzmpC", // juicySOL
+  "rkubjTrZYioRSeXwDnhwGQzvW3qkcin72JSxUt3WMVp", // rkSOL
+  "Gekfj7SL2fVpTDxJZmeC46cTYxinjB6gkAnb6EGT6mnn", // gekSOL
+  "L33mHftsNpaj39z1omnGbGbuA5eKqSsbmr91rjTod48", // leemSOL
+]);
+
 export function collectCandidateMints(txs: EnhancedTx[], wallet?: string): string[] {
   const mints = new Set<string>();
   for (const tx of txs) {
     const s = extractSwap(tx, wallet);
     if (s) {
-      if (s.tokenIn.mint && !MAJOR_MINTS.includes(s.tokenIn.mint)) {
+      if (s.tokenIn.mint && !KNOWN_SAFE_MINTS.has(s.tokenIn.mint)) {
         mints.add(s.tokenIn.mint);
       }
-      if (s.tokenOut.mint && !MAJOR_MINTS.includes(s.tokenOut.mint)) {
+      if (s.tokenOut.mint && !KNOWN_SAFE_MINTS.has(s.tokenOut.mint)) {
         mints.add(s.tokenOut.mint);
       }
     }
@@ -289,8 +326,8 @@ export async function fetchMintMetadata(
     return null;
   }
 
-  if (MAJOR_MINTS.includes(mint)) {
-    return { mint, mintAuthority: null, freezeAuthority: null };
+  if (KNOWN_SAFE_MINTS.has(mint)) {
+    return { mint, mintAuthority: null, freezeAuthority: null, top10Pct: 0 };
   }
 
   const nowSec = opts.nowSec ?? Math.floor(Date.now() / 1000);

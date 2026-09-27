@@ -496,7 +496,7 @@ export function detectAnomalies(
       for (const s of swaps) {
         const usd = swapUsdValue(s, prices);
         if (usd === null) continue;
-        if (usd >= usdMedian * config.largeSwapMultiplier) {
+        if (usd >= usdMedian * config.largeSwapMultiplier && usd >= 50) {
           anomalies.push({
             type: "LARGE_SWAP",
             wallet,
@@ -516,7 +516,7 @@ export function detectAnomalies(
       for (const s of swaps) {
         if (!MAJOR_MINTS.includes(s.tokenIn.mint)) continue;
         const size = s.tokenIn.amount;
-        if (size >= rawMedian * config.largeSwapMultiplier) {
+        if (size >= rawMedian * config.largeSwapMultiplier && size >= 0.5) {
           anomalies.push({
             type: "LARGE_SWAP",
             wallet,
@@ -859,7 +859,10 @@ export function detectAnomalies(
     }
   }
   const distinctTypes = new Set(anomalies.map((a) => a.type));
-  const multiAnomalyShift = distinctCategories.size >= 3;
+  const hasSubstantive = anomalies.some((a) =>
+    ["LARGE_SWAP", "ACTIVITY_BURST", "TOXIC_MINT", "CONCENTRATION", "OFF_HOURS"].includes(a.type),
+  );
+  const multiAnomalyShift = (distinctCategories.size >= 3 && hasSubstantive) || distinctCategories.size >= 4;
 
   if (shiftedDimensions.size > 0 || multiAnomalyShift) {
     if (multiAnomalyShift && shiftReasons.length === 0) {
