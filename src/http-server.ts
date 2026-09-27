@@ -239,6 +239,31 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
       }
     }
   }
+  // Operational Enforcement Status (discloses on-chain synchronization state)
+  if (result.hookBridge) {
+    const hb = result.hookBridge as { success?: boolean; error?: string; signature?: string; slot?: number };
+    result.enforcement = {
+      status: hb.success ? "synchronized" : "failed",
+      channel: "token22_transfer_hook",
+      signature: hb.signature ?? null,
+      slot: hb.slot ?? null,
+      error: hb.error ?? null,
+    };
+  } else if (result.oracle) {
+    const ora = result.oracle as { success?: boolean; error?: string; signature?: string; slot?: number };
+    result.enforcement = {
+      status: ora.success ? "synchronized" : "failed",
+      channel: "zk_ledger",
+      signature: ora.signature ?? null,
+      slot: ora.slot ?? null,
+    };
+  } else {
+    result.enforcement = {
+      status: "disabled",
+      channel: "none",
+      note: "On-chain hook bridge not configured in this runtime",
+    };
+  }
 
   return result;
 }

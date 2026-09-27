@@ -255,10 +255,10 @@ export interface TrustCheckOptions extends TrustOptions {
   /** Include the full audit trail in the response. */
   includeAudit?: boolean;
   /**
-   * Optional advisory LLM verdict for the consensus panel (Pillar 2). When set,
-   * an LLM agent joins the panel as a conservative fourth voter — it can cast a
-   * hold-veto but can never override a deterministic hold. Omit to run the
-   * three deterministic agents only.
+   * Optional advisory LLM verdict for the consensus panel. When set,
+   * an LLM agent joins the consensus panel as advisory metadata.
+   * It is strictly advisory: recorded in the consensus object, but can NEVER
+   * alter the authoritative deterministic verdict.
    */
   llmVerdict?: "safe" | "hold" | "unknown";
   /** Free-text note attached to the LLM vote (for transparency). */
@@ -390,14 +390,16 @@ export async function runTrustCheck(
   if (llm) votes.push(llm);
   const consensus = aggregateConsensus(votes);
 
-  // The consensus drives the verdict. It equals the legacy verdict unless the
-  // LLM voter cast a hold-veto, in which case the LLM reason is surfaced.
-  const finalVerdict = consensus.verdict;
+  // Authoritative verdict is strictly deterministic from computeTrustVerdict.
+  // The multi-agent consensus panel is advisory metadata; the LLM voter
+  // (when provided) is strictly advisory and CANNOT override the deterministic verdict.
+  const finalVerdict = verdict;
   const finalReasons = [...reasons];
-  if (finalVerdict !== verdict) {
+  if (consensus.verdict !== finalVerdict) {
     const llmHold = consensus.votes.find((v) => v.agent === "llm" && v.verdict === "hold");
     for (const r of llmHold?.reasons ?? []) {
-      if (!finalReasons.includes(r)) finalReasons.push(r);
+      const advisoryReason = `advisory: ${r}`;
+      if (!finalReasons.includes(advisoryReason)) finalReasons.push(advisoryReason);
     }
   }
 

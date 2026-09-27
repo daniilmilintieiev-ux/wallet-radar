@@ -45,6 +45,7 @@ usage:
    radar trust <wallet> [--max-risk N] [--min-liquidity N] [--window-days N] [--no-prices] [--json]
                                     pre-flight check for agent payments: risk + liquidity -> safe/hold/unknown
    radar trust --watchlist          run the trust check over the whole watchlist -> ranked shortlist
+  radar benchmark [--json]        run the deterministic eval suite (24 cases)
   radar selftest                  run the built-in offline fixture
 
 env:
@@ -467,6 +468,22 @@ async function main(): Promise<void> {
         console.log(formatTrustLine(result));
         for (const a of result.anomalies) {
           console.log(`- [${a.severity.toUpperCase()}] ${a.type}: ${a.text}`);
+        }
+      }
+      return;
+    }
+    case "benchmark": {
+      const { runBenchmark } = await import("./benchmark.js");
+      const summary = runBenchmark();
+      if (args.includes("--json")) {
+        console.log(JSON.stringify(summary, null, 2));
+      } else {
+        console.log(`\n=== Wallet Radar Deterministic Benchmark (Eval v${summary.version}) ===`);
+        console.log(`Total Cases: ${summary.total} | Accuracy: ${(summary.accuracy * 100).toFixed(1)}% | Precision: ${(summary.precision * 100).toFixed(1)}% | Recall: ${(summary.recall * 100).toFixed(1)}%`);
+        console.log(`True Positives: ${summary.truePositives} | True Negatives: ${summary.trueNegatives} | False Positives: ${summary.falsePositives} | False Negatives: ${summary.falseNegatives}\n`);
+        for (const r of summary.results) {
+          const mark = r.correct ? "✔ PASS" : "✖ FAIL";
+          console.log(`[${mark}] ${r.caseId.padEnd(28)} exp: ${r.expected.padEnd(5)} got: ${r.actual.padEnd(5)} risk: ${String(r.riskScore).padStart(3)} | ${r.description}`);
         }
       }
       return;

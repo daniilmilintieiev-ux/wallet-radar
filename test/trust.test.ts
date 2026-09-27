@@ -450,13 +450,14 @@ test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async ()
     assert.ok(res.liquidityUsd >= 200); // 1 SOL ($150) + 50 USDC + 50 USDT = 250
     assert.ok(res.audit, "audit trail should be populated when includeAudit: true");
 
-    // 2. LLM hold-veto option overrides deterministic safe
+    // 2. LLM advisory veto records in consensus, but does NOT override authoritative deterministic safe
     const resLlm = await runTrustCheck("test_api_key", targetWallet, {
       llmVerdict: "hold",
       llmVerdictNote: "Conservative LLM veto",
     });
-    assert.equal(resLlm.verdict, "hold");
-    assert.ok(resLlm.reasons.includes("Conservative LLM veto"));
+    assert.equal(resLlm.verdict, "safe"); // Authoritative deterministic verdict remains safe
+    assert.equal(resLlm.consensus?.verdict, "hold"); // Advisory consensus reflects panel
+    assert.ok(resLlm.reasons.includes("advisory: Conservative LLM veto"));
   } finally {
     globalThis.fetch = originalFetch;
   }

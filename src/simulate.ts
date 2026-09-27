@@ -29,6 +29,11 @@ import { computeDecision, type DecisionResult, type ActionVerdict } from "./deci
  * mark heuristics that approximate (but are not) the LARGE_SWAP and
  * CONCENTRATION detector rules.
  */
+/** Threshold multiplier relative to historical median swap for LARGE_PAYMENT trigger. */
+export const SIMULATE_LARGE_PAYMENT_RATIO = 3;
+/** Threshold multiplier relative to historical median swap for moderate size escalation. */
+export const SIMULATE_MODERATE_PAYMENT_RATIO = 1.5;
+
 export type SimulateAnomaly = AnomalyType | "LARGE_PAYMENT" | "LIQUIDITY_DRAIN";
 
 export interface SimulateInput {
@@ -140,10 +145,10 @@ export function simulatePayment(input: SimulateInput): SimulateResult {
 
   if (medianSwapAmountUsd !== null && medianSwapAmountUsd > 0) {
     const ratio = paymentUsd / medianSwapAmountUsd;
-    if (ratio >= 3) {
+    if (ratio >= SIMULATE_LARGE_PAYMENT_RATIO) {
       wouldTrigger.push("LARGE_PAYMENT");
       riskDelta += 20;
-    } else if (ratio >= 1.5) {
+    } else if (ratio >= SIMULATE_MODERATE_PAYMENT_RATIO) {
       riskDelta += 8;
     }
   }
