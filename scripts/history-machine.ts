@@ -33,9 +33,9 @@ export const TARGET_WALLETS: HistoryReplayWallet[] = [
   },
   {
     address: "DmQSnFzRoENh3weu6EtBBhHTpQBQSsvjpMX8iYKRygQ4",
-    category: "scam_exploit",
-    description: "Pump.fun insider rug (85.8% token supply concentration)",
-    expectedVerdict: "BLOCKED",
+    category: "rare_low_history",
+    description: "Pump.fun Serial Token Trader (Sustained Gated Risk 40-60)",
+    expectedVerdict: "LOW_TRUST_WARMING",
   },
   {
     address: "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j",
@@ -45,9 +45,9 @@ export const TARGET_WALLETS: HistoryReplayWallet[] = [
   },
   {
     address: "A2R6ydBWCfmJBAjF8GPedypA8BmCgFzHYV7oW3Yhnzpz",
-    category: "scam_exploit",
-    description: "Meteora DLMM to Pump.fun shift with toxic token exposure",
-    expectedVerdict: "BLOCKED",
+    category: "clean_retail",
+    description: "Meteora DLMM & Jupiter DEX Trader",
+    expectedVerdict: "VERIFIED_SAFE",
   },
 
   // 2. REKT / HIGH DRAWDOWN TRADERS
