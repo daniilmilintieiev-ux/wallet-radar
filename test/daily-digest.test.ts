@@ -190,3 +190,45 @@ test("makeSink: honors RADAR_ALERT_MODE=daily to silence instant watch spam", ()
     delete process.env.RADAR_INSTANT_ALERTS;
   }
 });
+
+test("buildDailyDigestData: soft anomalies spread over 24h do not flag healthy active wallets as key threats", () => {
+  withTempStore((store) => {
+    const now = 1_700_000_000;
+    const walletJup = "DmQSnFzRoENh3weu6EtBBhHTpQBQSsvjpMX8iYKRygQ4";
+    store.addWallet(walletJup);
+
+    // 10 soft anomalies spread across 10 distinct batches over 24h (e.g. 5 points each = low severity)
+    // Previously, 10 * 5 = 50 -> flagged! 20 * 5 = 100 -> blocked!
+    for (let i = 0; i < 10; i++) {
+      store.recordAnomalies(
+        [
+          {
+            type: "NEW_COUNTERPARTY",
+            wallet: walletJup,
+            severity: "low",
+            timestamp: now - 3600 * (i + 1),
+            evidence: { count: 1 },
+            text: "New counterparty",
+          },
+        ],
+        now - 3600 * (i + 1),
+      );
+    }
+
+    // Wallet is in normal ARMED defense stance with low current risk
+    store.setDefenseState(walletJup, {
+      state: "armed",
+      riskAt: 5,
+      setAt: now - 3600,
+      quietStreak: 0,
+      actions: 0,
+    });
+
+    const data = buildDailyDigestData(store, { nowSec: now, windowHours: 24 });
+    // Total anomalies count is 10
+    assert.equal(data.totalAnomaliesCount, 10);
+    // But wallet is NOT flagged as a key threat because peakBatchRisk (5) and currentRisk (5) < 30 and state is armed!
+    assert.equal(data.flaggedWallets.length, 0);
+    assert.equal(data.safeWalletsCount, 1);
+  });
+});

@@ -146,6 +146,74 @@ describe("defense state machine (pure)", () => {
     assert.equal(step4.state, "armed");
     assert.equal(step4.action, "hold");
   });
+
+  test("active tick de-escalates blocked -> gated after clean activity exceeding cooldownSec", () => {
+    const blockedStance: DefenseStateInfo = {
+      state: "blocked",
+      riskAt: 100,
+      setAt: NOW - DEFENSE_THRESHOLDS.cooldownSec - 10,
+      quietStreak: 0,
+      actions: 1,
+    };
+
+    // Clean active tick (risk < 30 and no high severity) after cooldown
+    const a = computeDefenseAction({
+      riskScore: 10,
+      hasHighSeverity: false,
+      active: true,
+      current: blockedStance,
+      quietStreak: 0,
+      nowSec: NOW,
+    });
+    assert.equal(a.state, "gated");
+    assert.equal(a.action, "de-escalate");
+    assert.equal(a.changed, true);
+    assert.ok(a.reason.includes("clean active period"));
+  });
+
+  test("active tick holds blocked state if cooldownSec has not yet elapsed", () => {
+    const blockedStance: DefenseStateInfo = {
+      state: "blocked",
+      riskAt: 100,
+      setAt: NOW - 600, // only 10 minutes ago (< 30 min cooldown)
+      quietStreak: 0,
+      actions: 1,
+    };
+
+    const a = computeDefenseAction({
+      riskScore: 0,
+      hasHighSeverity: false,
+      active: true,
+      current: blockedStance,
+      quietStreak: 0,
+      nowSec: NOW,
+    });
+    assert.equal(a.state, "blocked");
+    assert.equal(a.action, "hold");
+    assert.equal(a.changed, false);
+  });
+
+  test("active tick does NOT de-escalate if current tick has risk >= alerting", () => {
+    const blockedStance: DefenseStateInfo = {
+      state: "blocked",
+      riskAt: 100,
+      setAt: NOW - DEFENSE_THRESHOLDS.cooldownSec - 100,
+      quietStreak: 0,
+      actions: 1,
+    };
+
+    const a = computeDefenseAction({
+      riskScore: 40, // >= alerting (30)
+      hasHighSeverity: false,
+      active: true,
+      current: blockedStance,
+      quietStreak: 0,
+      nowSec: NOW,
+    });
+    assert.equal(a.state, "blocked");
+    assert.equal(a.action, "hold");
+    assert.equal(a.changed, false);
+  });
 });
 
 // ---------------------------------------------------------------------------

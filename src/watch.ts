@@ -132,7 +132,7 @@ function evaluateDefense(
   const next: DefenseStateInfo = {
     state: action.state,
     riskAt: active ? riskScore : current?.riskAt ?? 0,
-    setAt: nowSec,
+    setAt: action.changed ? nowSec : (current?.setAt ?? nowSec),
     quietStreak: active ? 0 : (action.changed ? 0 : stateQuietStreak),
     actions: (current?.actions ?? 0) + (action.changed ? 1 : 0),
   };

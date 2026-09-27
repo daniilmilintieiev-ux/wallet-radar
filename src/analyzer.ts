@@ -31,6 +31,64 @@ export { SOL_MINT, USDC_MINT, USDT_MINT };
 export const MAJOR_MINTS = [SOL_MINT, USDC_MINT, USDT_MINT];
 
 /**
+ * Well-known DEX routers, AMM program vaults, fee collectors, and system programs.
+ * Excluded from counterparty profiling and relationship tracking so normal DEX
+ * trades are not misclassified as peer-to-peer wash trading or counterparty hubs.
+ */
+export const KNOWN_PROTOCOL_INFRASTRUCTURE = new Set<string>([
+  // Jupiter routers & programs
+  "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+  "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
+  "JUP3c2Uh3WA4Ng34tw6kPd2G4C5BB21Xo36Je1s32Ph",
+  "jupoNjAxXgZ4rjYHZZTutACfMNo2961S1DCnG6M9P1A",
+  "DCA265Vj8a9CEuX1eb1LWRnDT7uK6qNaBpafLeGGtDc8",
+
+  // Raydium pools, authorities & routers
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaWNZDFZTF4ik",
+  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+  "routeUGWgMrbtstMwAcRbKaadXRRNC7kDtfwgzdZgpd",
+
+  // Orca Whirlpools & legacy
+  "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+  "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP",
+  "DjVE6JNiYqPL2QXyCUUh8rNjHrbz9hXHNYt99MQ59qw1",
+
+  // Meteora DLMM, Dynamic AMM, Multi-token
+  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
+  "24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHm2Yoj356W9rKqL",
+
+  // Pump.fun & Moonshot bonding curves / fee accounts
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+  "CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM",
+  "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+
+  // OpenBook & Phoenix orderbooks
+  "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+  "opnb2NxiRRrqadHjvggXJbtETe9bvo4Mm95BpM7MoVu",
+  "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY",
+
+  // Core System & Token Programs
+  "11111111111111111111111111111111",
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+  "ComputeBudget111111111111111111111111111111",
+  "SysvarRent111111111111111111111111111111111",
+  "SysvarC1ock11111111111111111111111111111111",
+  "Sysvar1nstructions1111111111111111111111111",
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+  "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo",
+]);
+
+export function isProtocolInfrastructure(address: string): boolean {
+  return KNOWN_PROTOCOL_INFRASTRUCTURE.has(address);
+}
+
+/**
  * Baseline-poisoning defense: a swap-size reference built from fewer than this
  * many samples is too thin to be trusted for LARGE_SWAP (a wallet that makes
  * one or two trades then a big one would otherwise set its own "normal").
@@ -188,21 +246,24 @@ export function txPrograms(tx: EnhancedTx): string[] {
  * no wallet is supplied; self is excluded).
  */
 export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
-  if (tx.counterparties && tx.counterparties.length > 0) return tx.counterparties;
   const me = wallet ?? tx.feePayer;
-  const out: string[] = [];
-  const from = (u?: string) => (u && u !== me ? u : undefined);
-  for (const t of tx.tokenTransfers ?? []) {
-    const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
-    const o = from(other);
-    if (o) out.push(o);
+  let raw: string[] = [];
+  if (tx.counterparties && tx.counterparties.length > 0) {
+    raw = me ? tx.counterparties.filter((cp) => cp !== me) : tx.counterparties;
+  } else {
+    const from = (u?: string) => (u && u !== me ? u : undefined);
+    for (const t of tx.tokenTransfers ?? []) {
+      const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
+      const o = from(other);
+      if (o) raw.push(o);
+    }
+    for (const t of tx.nativeTransfers ?? []) {
+      const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
+      const o = from(other);
+      if (o) raw.push(o);
+    }
   }
-  for (const t of tx.nativeTransfers ?? []) {
-    const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
-    const o = from(other);
-    if (o) out.push(o);
-  }
-  return out;
+  return raw.filter((cp) => !isProtocolInfrastructure(cp));
 }
 
 /**
@@ -660,10 +721,19 @@ export function detectAnomalies(
   // Multi-anomaly correlation (anti-evasion): 3+ distinct anomaly types firing in the batch.
   // Overlapping venue/protocol anomalies from the same event are grouped into a single dimension
   // so a single trade on a new DEX does not double-count and trigger a false-positive REGIME_SHIFT (Audit 5.1).
+  // Counterparty signals (new counterparty, hub, cluster, escalation) are similarly grouped under
+  // a single relationship dimension.
   const distinctCategories = new Set<string>();
   for (const a of anomalies) {
     if (a.type === "NEW_VENUE" || a.type === "NEW_PROTOCOL") {
       distinctCategories.add("NEW_VENUE_OR_PROTOCOL");
+    } else if (
+      a.type === "NEW_COUNTERPARTY" ||
+      a.type === "COUNTERPARTY_HUB" ||
+      a.type === "COUNTERPARTY_CLUSTER" ||
+      a.type === "COUNTERPARTY_ESCALATION"
+    ) {
+      distinctCategories.add("COUNTERPARTY_RELATIONSHIP");
     } else {
       distinctCategories.add(a.type);
     }

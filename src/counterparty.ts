@@ -1,6 +1,13 @@
 import { Anomaly, CounterpartyMemory, CounterpartyStat, EnhancedTx, SOL_MINT } from "./types.js";
-import { extractSwap, txCounterparties } from "./analyzer.js";
+import {
+  extractSwap,
+  txCounterparties,
+  KNOWN_PROTOCOL_INFRASTRUCTURE,
+  isProtocolInfrastructure,
+} from "./analyzer.js";
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
+
+export { KNOWN_PROTOCOL_INFRASTRUCTURE, isProtocolInfrastructure };
 
 /** Max distinct counterparties retained in memory (top-N by interaction count). */
 export const COUNTERPARTY_MEMORY_CAP = 64;
@@ -57,7 +64,7 @@ export function foldCounterparties(
           // (string | undefined annotation: a later `cp === me` check in this
           // scope makes TS infer a circular type for cp without it -> TS7022)
           const cp: string | undefined = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
-          if (!cp || cp === me) continue;
+          if (!cp || cp === me || isProtocolInfrastructure(cp)) continue;
           const amount = Number(t.tokenAmount ?? 0);
           const price = prices[t.mint];
           if (amount > 0 && price) directUsd.set(cp, (directUsd.get(cp) ?? 0) + amount * price);
@@ -65,7 +72,7 @@ export function foldCounterparties(
         for (const n of tx.nativeTransfers ?? []) {
           if (n.fromUserAccount !== me && n.toUserAccount !== me) continue;
           const cp: string | undefined = n.fromUserAccount === me ? n.toUserAccount : n.fromUserAccount;
-          if (!cp || cp === me) continue;
+          if (!cp || cp === me || isProtocolInfrastructure(cp)) continue;
           const amount = Number(n.amount ?? 0) / 1e9;
           const price = prices[SOL_MINT];
           if (amount > 0 && price) directUsd.set(cp, (directUsd.get(cp) ?? 0) + amount * price);

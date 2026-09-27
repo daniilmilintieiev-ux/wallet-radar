@@ -954,4 +954,88 @@ test("audit 5.1: single swap triggering NEW_VENUE and NEW_PROTOCOL with LARGE_SW
   assert.equal(score, 65);
 });
 
+test("counterparty category grouping: multiple soft counterparty anomalies alone do not trigger multiAnomalyShift", () => {
+  const base: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 10,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 20,
+    counterparties: {
+      total: 20,
+      entries: [
+        { address: "peerA", count: 8, volumeUsd: 0, firstSeen: 1, lastSeen: 1 },
+        { address: "peerB", count: 6, volumeUsd: 0, firstSeen: 1, lastSeen: 1 },
+        { address: "peerC", count: 6, volumeUsd: 0, firstSeen: 1, lastSeen: 1 },
+      ],
+    },
+  };
+
+  // Batch that triggers NEW_COUNTERPARTY, COUNTERPARTY_HUB, and COUNTERPARTY_CLUSTER
+  const txs: EnhancedTx[] = [
+    {
+      signature: "s1",
+      timestamp: 1_700_000_100,
+      source: "JUPITER",
+      programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+      counterparties: ["peerFresh"],
+      swap: {
+        tokenInputs: [{ mint: SOL_MINT, rawTokenAmount: { tokenAmount: "10000000000", decimals: 9 } }],
+        tokenOutputs: [{ mint: USDC_MINT, rawTokenAmount: { tokenAmount: "1000000", decimals: 6 } }],
+      },
+    },
+    { signature: "s2", timestamp: 1_700_000_101, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s3", timestamp: 1_700_000_102, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s4", timestamp: 1_700_000_103, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s5", timestamp: 1_700_000_104, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s6", timestamp: 1_700_000_105, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s7", timestamp: 1_700_000_106, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s8", timestamp: 1_700_000_107, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s9", timestamp: 1_700_000_108, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s10", timestamp: 1_700_000_109, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s11", timestamp: 1_700_000_110, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s12", timestamp: 1_700_000_111, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s13", timestamp: 1_700_000_112, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s14", timestamp: 1_700_000_113, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s15", timestamp: 1_700_000_114, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s16", timestamp: 1_700_000_115, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s17", timestamp: 1_700_000_116, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s18", timestamp: 1_700_000_117, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s19", timestamp: 1_700_000_118, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s20", timestamp: 1_700_000_119, source: "JUPITER", counterparties: ["peerFresh"] },
+    { signature: "s21", timestamp: 1_700_000_120, source: "JUPITER", counterparties: ["peerFresh"] },
+  ];
+
+  const anomalies = detectAnomalies(WALLET, txs, base);
+  const types = anomalies.map((a) => a.type);
+
+  // Counterparty signals fire
+  assert.ok(types.includes("NEW_COUNTERPARTY"));
+  assert.ok(types.includes("COUNTERPARTY_HUB"));
+  assert.ok(types.includes("COUNTERPARTY_CLUSTER"));
+
+  // But REGIME_SHIFT with multi_anomaly reason does NOT fire because counterparty signals are grouped!
+  const regimeShift = anomalies.find((a) => a.type === "REGIME_SHIFT");
+  const isMultiAnomaly = (regimeShift?.evidence as any)?.reasons?.some((r: string) => r.includes("multi-anomaly shift"));
+  assert.equal(Boolean(isMultiAnomaly), false, "multi-anomaly shift must not trigger from counterparty signals alone");
+});
+
+test("txCounterparties: strips protocol infrastructure accounts from counterparty lists", () => {
+  const jupRouter = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+  const sysProg = "11111111111111111111111111111111";
+  const tx: EnhancedTx = {
+    signature: "txWithRouter",
+    timestamp: 1_700_000_000,
+    feePayer: WALLET,
+    counterparties: [jupRouter, "PeerWallet1111111111111111111111111111111", sysProg],
+  };
+
+  const cps = txCounterparties(tx, WALLET);
+  assert.deepEqual(cps, ["PeerWallet1111111111111111111111111111111"]);
+});
+
 

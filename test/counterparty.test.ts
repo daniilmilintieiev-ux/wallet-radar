@@ -6,6 +6,8 @@ import {
   foldCounterparties,
   detectCounterpartyAnomalies,
   COUNTERPARTY_MEMORY_CAP,
+  isProtocolInfrastructure,
+  KNOWN_PROTOCOL_INFRASTRUCTURE,
 } from "../src/counterparty.js";
 import { EnhancedTx, Baseline, CounterpartyMemory, USDC_MINT, SOL_MINT } from "../src/types.js";
 
@@ -299,3 +301,60 @@ test("computeRiskScore rises when counterparty signals fire", () => {
   const scoreWithout = computeRiskScore(detectAnomalies(WALLET, txs, base));
   assert.ok(scoreWith > scoreWithout);
 });
+
+test("isProtocolInfrastructure: identifies major DEX routers and system accounts", () => {
+  // Jupiter v6 router
+  assert.equal(isProtocolInfrastructure("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"), true);
+  // Raydium AMM Auth
+  assert.equal(isProtocolInfrastructure("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"), true);
+  // Meteora DLMM
+  assert.equal(isProtocolInfrastructure("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"), true);
+  // Orca Whirlpools
+  assert.equal(isProtocolInfrastructure("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"), true);
+  // Pump.fun
+  assert.equal(isProtocolInfrastructure("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"), true);
+  // System Program
+  assert.equal(isProtocolInfrastructure("11111111111111111111111111111111"), true);
+  // Normal user wallet is NOT infrastructure
+  assert.equal(isProtocolInfrastructure(WALLET), false);
+  assert.equal(isProtocolInfrastructure("cpUser1111111111111111111111111111111111"), false);
+});
+
+test("foldCounterparties & detectCounterpartyAnomalies: filters out protocol infrastructure", () => {
+  const jupRouter = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+  const raydiumAuth = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+
+  // Batch with both router interactions and real peer interaction
+  const txs: EnhancedTx[] = [
+    cpTx("t1", 100, [jupRouter, "realPeer111"]),
+    cpTx("t2", 101, [raydiumAuth]),
+    cpTx("t3", 102, [jupRouter]),
+  ];
+
+  const m = foldCounterparties(null, txs, 200);
+  // Only realPeer111 should be recorded, router and AMM auth are ignored
+  assert.equal(m.entries.length, 1);
+  assert.equal(m.entries[0].address, "realPeer111");
+  assert.equal(m.entries[0].count, 1);
+
+  // Established memory with 3 known peers
+  const establishedMem: CounterpartyMemory = {
+    total: 30,
+    entries: [
+      { address: "peer1", count: 10, volumeUsd: 0, firstSeen: 1, lastSeen: 1 },
+      { address: "peer2", count: 10, volumeUsd: 0, firstSeen: 1, lastSeen: 1 },
+      { address: "peer3", count: 10, volumeUsd: 0, firstSeen: 1, lastSeen: 1 },
+    ],
+  };
+
+  // User trades on Jupiter and Raydium — should NOT emit NEW_COUNTERPARTY or COUNTERPARTY_HUB
+  const dexTxs: EnhancedTx[] = [
+    cpTx("d1", 200, [jupRouter]),
+    cpTx("d2", 201, [raydiumAuth]),
+    cpTx("d3", 202, [jupRouter]),
+  ];
+  const anomalies = detectCounterpartyAnomalies(WALLET, dexTxs, establishedMem);
+  assert.equal(anomalies.some((a) => a.type === "NEW_COUNTERPARTY"), false);
+  assert.equal(anomalies.some((a) => a.type === "COUNTERPARTY_HUB"), false);
+});
+

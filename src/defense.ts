@@ -90,6 +90,8 @@ export const DEFENSE_THRESHOLDS = {
   deescalateQuietPolls: 3,
   /** Consecutive quiet polls needed to fully clear back to "armed". */
   clearQuietPolls: 6,
+  /** Cooldown window (in seconds) of clean activity needed to de-escalate on active ticks. */
+  cooldownSec: 1800,
 } as const;
 
 const STATE_ORDER: readonly DefenseState[] = ["armed", "alerting", "gated", "blocked"];
@@ -101,12 +103,14 @@ function stateRank(s: DefenseState): number {
 /**
  * Pure, deterministic defense state machine.
  *
- * Active tick (fresh activity): the stance only ever escalates — to the max of
- * its current level and the risk floor for this tick (hysteresis: a spike holds
- * the stance; a single active poll never relaxes it).
- *   - any high-severity anomaly, or risk >= blocked, raises the floor to "blocked"
- *   - risk >= gated raises the floor to "gated"
- *   - risk >= alerting raises the floor to "alerting"
+ * Active tick (fresh activity):
+ *   - escalates to the risk floor if higher than the current stance:
+ *     - any high-severity anomaly, or risk >= blocked, raises the floor to "blocked"
+ *     - risk >= gated raises the floor to "gated"
+ *     - risk >= alerting raises the floor to "alerting"
+ *   - relaxes one level if the wallet has maintained clean activity (risk < alerting,
+ *     no high-severity anomaly) for at least `cooldownSec` (1800s / 30m)
+ *   - otherwise holds the stance (hysteresis: a single active poll never relaxes it).
  *
  * Quiet tick (no fresh activity): the stance relaxes only with sustained quiet —
  * one level down after `deescalateQuietPolls`, fully cleared to "armed" after
@@ -125,18 +129,41 @@ export function computeDefenseAction(ctx: DefenseContext): DefenseAction {
       floor = "alerting";
     }
 
-    const next = stateRank(floor) > stateRank(cur) ? floor : cur;
-    const changed = next !== cur;
+    if (stateRank(floor) > stateRank(cur)) {
+      const next = floor;
+      return {
+        state: next,
+        changed: true,
+        action: "escalate",
+        reason: `Defense escalated ${cur} -> ${next}: risk ${ctx.riskScore}/100${
+          ctx.hasHighSeverity ? " with a high-severity anomaly" : ""
+        }.`,
+        enforcement: enforcementFor(next),
+      };
+    }
+
+    // Active tick where current stance is higher than the tick's floor:
+    // Check if cooldown window has passed with clean activity (risk < alerting and no high severity).
+    // Hysteresis holds the stance if cooldown hasn't elapsed.
+    const isClean = !ctx.hasHighSeverity && ctx.riskScore < DEFENSE_THRESHOLDS.alerting;
+    const timeInState = ctx.nowSec - (ctx.current?.setAt ?? ctx.nowSec);
+    if (isClean && stateRank(cur) > 0 && timeInState >= DEFENSE_THRESHOLDS.cooldownSec) {
+      const next = STATE_ORDER[stateRank(cur) - 1];
+      return {
+        state: next,
+        changed: true,
+        action: "de-escalate",
+        reason: `Defense de-escalated ${cur} -> ${next}: clean active period (${timeInState}s >= ${DEFENSE_THRESHOLDS.cooldownSec}s cooldown) with risk ${ctx.riskScore}/100.`,
+        enforcement: enforcementFor(next),
+      };
+    }
+
     return {
-      state: next,
-      changed,
-      action: changed ? "escalate" : "hold",
-      reason: changed
-        ? `Defense escalated ${cur} -> ${next}: risk ${ctx.riskScore}/100${
-            ctx.hasHighSeverity ? " with a high-severity anomaly" : ""
-          }.`
-        : `Defense holds ${cur}: risk ${ctx.riskScore}/100 stays within the current stance.`,
-      enforcement: enforcementFor(next),
+      state: cur,
+      changed: false,
+      action: "hold",
+      reason: `Defense holds ${cur}: risk ${ctx.riskScore}/100 stays within the current stance.`,
+      enforcement: enforcementFor(cur),
     };
   }
 

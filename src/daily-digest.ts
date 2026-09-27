@@ -123,25 +123,78 @@ export function buildDailyDigestData(
   // 2. Transactions seen in window
   const seenStats = store.getSeenTxCountSince(sinceSec);
 
-  // 3. Flagged wallets with anomalies in this window
+  // 3. Flagged wallets with critical threats or active enforcement in this window
   const flaggedWallets: WalletDigestItem[] = [];
   for (const [wallet, anomalies] of byWalletAnomalies.entries()) {
-    const riskScore = computeRiskScore(anomalies);
+    // Group anomalies by batch timestamp to compute peak batch risk
+    const batchMap = new Map<number, Anomaly[]>();
+    for (const a of anomalies) {
+      const ts = a.timestamp ?? 0;
+      const list = batchMap.get(ts) ?? [];
+      list.push(a);
+      batchMap.set(ts, list);
+    }
+    let peakBatchRisk = 0;
+    for (const batch of batchMap.values()) {
+      const br = computeRiskScore(batch);
+      if (br > peakBatchRisk) peakBatchRisk = br;
+    }
+
+    const defenseStateInfo = store.getDefenseState(wallet);
+    const defenseState = defenseStateInfo?.state || defenseMap.get(wallet) || "armed";
+    const newestTs = Math.max(...batchMap.keys());
+    const latestBatch = batchMap.get(newestTs) ?? [];
+    const currentRisk = defenseStateInfo?.riskAt ?? computeRiskScore(latestBatch);
+    const effectiveRisk = Math.max(currentRisk, peakBatchRisk);
+
+    // Only flag wallets that are genuine threats:
+    // - currently blocked or gated in active defense, OR
+    // - current risk >= 30 (alerting threshold), OR
+    // - peak batch risk >= 50
+    const isThreat =
+      defenseState === "blocked" ||
+      defenseState === "gated" ||
+      currentRisk >= 30 ||
+      peakBatchRisk >= 50;
+
+    if (!isThreat) continue;
+
     const ruleTypes = Array.from(new Set(anomalies.map((a) => a.type)));
     const topRuleNames = ruleTypes.map((t) => RULE_LABELS[t] || t);
     const label = KNOWN_WALLET_LABELS[wallet] || "Solana Wallet";
-    const defenseState = defenseMap.get(wallet) || "armed";
 
     flaggedWallets.push({
       wallet,
       shortAddress: shortAddress(wallet),
       label,
-      riskScore,
+      riskScore: effectiveRisk,
       defenseState,
       anomaliesCount: anomalies.length,
       topRuleNames,
       anomalies: anomalies.slice(0, 3).map((a) => ({ type: a.type, severity: a.severity, text: a.text })),
     });
+  }
+
+  // Also include any watched wallets currently blocked or gated that had no fresh anomalies in window
+  for (const wallet of watched) {
+    const defenseState = defenseMap.get(wallet) || "armed";
+    if (
+      (defenseState === "blocked" || defenseState === "gated") &&
+      !flaggedWallets.some((fw) => fw.wallet === wallet)
+    ) {
+      const defInfo = store.getDefenseState(wallet);
+      const label = KNOWN_WALLET_LABELS[wallet] || "Solana Wallet";
+      flaggedWallets.push({
+        wallet,
+        shortAddress: shortAddress(wallet),
+        label,
+        riskScore: defInfo?.riskAt ?? (defenseState === "blocked" ? 100 : 50),
+        defenseState,
+        anomaliesCount: 0,
+        topRuleNames: ["Active Defense Enforcement"],
+        anomalies: [],
+      });
+    }
   }
 
   // Sort flagged wallets by risk score descending, then anomalies count
@@ -222,7 +275,12 @@ export function formatDailyDigestHtml(data: DailyDigestData): string {
     lines.push("🚨 <b>KEY THREATS & HIGH-RISK EVENTS</b>");
     for (const w of data.flaggedWallets.slice(0, 6)) {
       const badge = w.riskScore >= 70 ? "🔴" : w.riskScore >= 30 ? "🟡" : "🟢";
-      const postureBadge = w.defenseState === "blocked" ? " [BLOCKED 🛑]" : "";
+      const postureBadge =
+        w.defenseState === "blocked"
+          ? " [BLOCKED 🛑]"
+          : w.defenseState === "gated"
+          ? " [GATED ⚠️]"
+          : "";
       lines.push(`${badge} <code>${w.shortAddress}</code> [${escapeHtml(w.label)}]${postureBadge}`);
       lines.push(`   ├ Risk: <b>${w.riskScore}/100</b> · Anomalies: <b>${w.anomaliesCount}</b>`);
       const rulesList = w.topRuleNames.slice(0, 3).join(", ");
