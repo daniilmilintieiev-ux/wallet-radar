@@ -126,7 +126,18 @@ function evaluateDefense(
   const hasHighSeverity = anomalies.some(isExistentialThreat);
   const stateQuietStreak = active ? 0 : (current ? (current.quietStreak ?? 0) + 1 : quietStreak);
   const effectiveQuietStreak = quietStreak >= DEFENSE_THRESHOLDS.clearQuietPolls ? quietStreak : stateQuietStreak;
-  const action = computeDefenseAction({ riskScore, hasHighSeverity, active, current, quietStreak: effectiveQuietStreak, nowSec });
+  const isClean = !hasHighSeverity && riskScore < DEFENSE_THRESHOLDS.alerting;
+  const prevCleanStreak = current?.cleanStreak ?? 0;
+  const currentCleanStreak = active ? (isClean ? prevCleanStreak + 1 : 0) : 0;
+  const action = computeDefenseAction({
+    riskScore,
+    hasHighSeverity,
+    active,
+    current,
+    quietStreak: effectiveQuietStreak,
+    nowSec,
+    cleanStreak: currentCleanStreak,
+  });
   if (current === null && !action.changed) return action;
   const prev = current?.state ?? "armed";
   const next: DefenseStateInfo = {
@@ -135,6 +146,7 @@ function evaluateDefense(
     setAt: action.changed ? nowSec : (current?.setAt ?? nowSec),
     quietStreak: active ? 0 : (action.changed ? 0 : stateQuietStreak),
     actions: (current?.actions ?? 0) + (action.changed ? 1 : 0),
+    cleanStreak: action.changed ? 0 : currentCleanStreak,
   };
   store.setDefenseState(wallet, next);
   if (action.changed) {

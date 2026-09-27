@@ -83,7 +83,8 @@ export class Store {
         risk_at INTEGER NOT NULL DEFAULT 0,
         set_at INTEGER NOT NULL,
         quiet_streak INTEGER NOT NULL DEFAULT 0,
-        actions INTEGER NOT NULL DEFAULT 0
+        actions INTEGER NOT NULL DEFAULT 0,
+        clean_streak INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS defense_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +108,11 @@ export class Store {
     if (!payCols.some((c) => c.name === "wallet")) {
       this.db.exec("ALTER TABLE settled_payments ADD COLUMN wallet TEXT");
       this.db.exec("CREATE INDEX IF NOT EXISTS idx_settled_payments_wallet ON settled_payments(wallet)");
+    }
+    // Migration: add clean_streak to defense_states for databases created before it existed.
+    const defCols = this.db.prepare("PRAGMA table_info(defense_states)").all() as Array<{ name: string }>;
+    if (!defCols.some((c) => c.name === "clean_streak")) {
+      this.db.exec("ALTER TABLE defense_states ADD COLUMN clean_streak INTEGER NOT NULL DEFAULT 0");
     }
   }
 
@@ -545,28 +551,32 @@ export class Store {
 
   getDefenseState(address: string): DefenseStateInfo | null {
     const row = this.db
-      .prepare("SELECT state, risk_at, set_at, quiet_streak, actions FROM defense_states WHERE address = ?")
+      .prepare("SELECT state, risk_at, set_at, quiet_streak, actions, clean_streak FROM defense_states WHERE address = ?")
       .get(address) as
-      | { state: string; risk_at: number; set_at: number; quiet_streak: number; actions: number }
+      | { state: string; risk_at: number; set_at: number; quiet_streak: number; actions: number; clean_streak: number }
       | undefined;
     if (!row) return null;
-    return {
+    const stateInfo: DefenseStateInfo = {
       state: row.state as DefenseState,
       riskAt: Number(row.risk_at),
       setAt: Number(row.set_at),
       quietStreak: Number(row.quiet_streak),
       actions: Number(row.actions),
     };
+    if (row.clean_streak && Number(row.clean_streak) > 0) {
+      stateInfo.cleanStreak = Number(row.clean_streak);
+    }
+    return stateInfo;
   }
 
   setDefenseState(address: string, info: DefenseStateInfo): void {
     this.db
       .prepare(
-        "INSERT INTO defense_states (address, state, risk_at, set_at, quiet_streak, actions) VALUES (?, ?, ?, ?, ?, ?) " +
+        "INSERT INTO defense_states (address, state, risk_at, set_at, quiet_streak, actions, clean_streak) VALUES (?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT(address) DO UPDATE SET state = excluded.state, risk_at = excluded.risk_at, " +
-          "set_at = excluded.set_at, quiet_streak = excluded.quiet_streak, actions = excluded.actions",
+          "set_at = excluded.set_at, quiet_streak = excluded.quiet_streak, actions = excluded.actions, clean_streak = excluded.clean_streak",
       )
-      .run(address, info.state, info.riskAt, info.setAt, info.quietStreak, info.actions);
+      .run(address, info.state, info.riskAt, info.setAt, info.quietStreak, info.actions, info.cleanStreak ?? 0);
   }
 
   recordDefenseEvent(evt: DefenseEvent): void {

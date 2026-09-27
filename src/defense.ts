@@ -41,6 +41,8 @@ export interface DefenseStateInfo {
   quietStreak: number;
   /** Lifetime count of state transitions for this wallet. */
   actions: number;
+  /** Consecutive clean active transactions observed in this state (drives volume de-escalation). */
+  cleanStreak?: number;
 }
 
 export type DefenseActionType = "hold" | "escalate" | "de-escalate" | "clear";
@@ -62,6 +64,7 @@ export interface DefenseView {
   setAt: number;
   quietStreak: number;
   actions: number;
+  cleanStreak?: number;
   enforcement: DefenseEnforcement;
 }
 
@@ -91,6 +94,8 @@ export interface DefenseContext {
   quietStreak: number;
   /** Unix seconds of this tick. */
   nowSec: number;
+  /** Consecutive clean active transactions observed (drives volume de-escalation). */
+  cleanStreak?: number;
 }
 
 /** Risk / quiet thresholds for the defense ladder. */
@@ -107,6 +112,8 @@ export const DEFENSE_THRESHOLDS = {
   clearQuietPolls: 6,
   /** Cooldown window (in seconds) of clean activity needed to de-escalate on active ticks. */
   cooldownSec: 1800,
+  /** Consecutive clean active transactions needed to step down one level during active trading. */
+  cleanStreakThreshold: 3,
 } as const;
 
 const STATE_ORDER: readonly DefenseState[] = ["armed", "alerting", "gated", "blocked"];
@@ -124,7 +131,8 @@ function stateRank(s: DefenseState): number {
  *     - risk >= gated raises the floor to "gated"
  *     - risk >= alerting raises the floor to "alerting"
  *   - relaxes one level if the wallet has maintained clean activity (risk < alerting,
- *     no high-severity anomaly) for at least `cooldownSec` (1800s / 30m)
+ *     no high-severity anomaly) for at least `cooldownSec` (1800s / 30m), OR has maintained
+ *     a clean active transaction streak (`cleanStreak >= cleanStreakThreshold`) for soft stances
  *   - otherwise holds the stance (hysteresis: a single active poll never relaxes it).
  *
  * Quiet tick (no fresh activity): the stance relaxes only with sustained quiet —
@@ -158,17 +166,27 @@ export function computeDefenseAction(ctx: DefenseContext): DefenseAction {
     }
 
     // Active tick where current stance is higher than the tick's floor:
-    // Check if cooldown window has passed with clean activity (risk < alerting and no high severity).
-    // Hysteresis holds the stance if cooldown hasn't elapsed.
+    // Check if cooldown window has passed with clean activity (risk < alerting and no high severity),
+    // OR if a sufficient streak of clean active transactions has been established (cleanStreak >= cleanStreakThreshold).
+    // Volume streak de-escalation applies to soft stances (alerting, gated) to allow active traders to recover.
     const isClean = !ctx.hasHighSeverity && ctx.riskScore < DEFENSE_THRESHOLDS.alerting;
     const timeInState = ctx.nowSec - (ctx.current?.setAt ?? ctx.nowSec);
-    if (isClean && stateRank(cur) > 0 && timeInState >= DEFENSE_THRESHOLDS.cooldownSec) {
+    const cleanStreak = ctx.cleanStreak ?? ctx.current?.cleanStreak ?? 0;
+
+    const timeDeescalate = timeInState >= DEFENSE_THRESHOLDS.cooldownSec;
+    const streakThreshold = cur === "alerting" ? 1 : DEFENSE_THRESHOLDS.cleanStreakThreshold;
+    const streakDeescalate = cleanStreak >= streakThreshold;
+
+    if (isClean && stateRank(cur) > 0 && (timeDeescalate || streakDeescalate)) {
       const next = STATE_ORDER[stateRank(cur) - 1];
+      const byStreak = !timeDeescalate && streakDeescalate;
       return {
         state: next,
         changed: true,
         action: "de-escalate",
-        reason: `Defense de-escalated ${cur} -> ${next}: clean active period (${timeInState}s >= ${DEFENSE_THRESHOLDS.cooldownSec}s cooldown) with risk ${ctx.riskScore}/100.`,
+        reason: byStreak
+          ? `Defense de-escalated ${cur} -> ${next}: clean active streak (${cleanStreak} >= ${DEFENSE_THRESHOLDS.cleanStreakThreshold} txs) with risk ${ctx.riskScore}/100.`
+          : `Defense de-escalated ${cur} -> ${next}: clean active period (${timeInState}s >= ${DEFENSE_THRESHOLDS.cooldownSec}s cooldown) with risk ${ctx.riskScore}/100.`,
         enforcement: enforcementFor(next),
       };
     }

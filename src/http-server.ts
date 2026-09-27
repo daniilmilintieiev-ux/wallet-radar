@@ -512,6 +512,7 @@ export function defenseView(wallet: string, st: DefenseStateInfo): DefenseView {
     setAt: st.setAt,
     quietStreak: st.quietStreak,
     actions: st.actions,
+    cleanStreak: st.cleanStreak ?? 0,
     enforcement: enforcementFor(st.state),
   };
 }

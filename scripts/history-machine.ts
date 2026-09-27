@@ -4,7 +4,7 @@ import { detectAnomalies, computeRiskScore } from "../src/analyzer.js";
 import { fetchSwapMintRisk } from "../src/mint.js";
 import { fetchSwapPrices } from "../src/pricing.js";
 import { DEFAULT_CONFIG, EnhancedTx, Baseline, Anomaly, USDC_MINT, USDT_MINT, SOL_MINT } from "../src/types.js";
-import { computeDefenseAction, type DefenseStateInfo, isExistentialThreat } from "../src/defense.js";
+import { computeDefenseAction, type DefenseStateInfo, isExistentialThreat, DEFENSE_THRESHOLDS } from "../src/defense.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -223,10 +223,11 @@ export async function replayWalletHistory(
     const evalTxs = [currentTx]; // New transaction arriving right now
     const nowSec = currentTx.timestamp ?? 0;
 
-    // Update baseline using ONLY past transactions (no future leakage!)
-    if (pastTxs.length > 0) {
-      const pastNewest = pastTxs[pastTxs.length - 1].timestamp ?? 0;
-      baseline = updateBaseline(walletInfo.address, baseline, pastTxs, pastNewest, prices);
+    // Walk-forward baseline evolution: update baseline as each past transaction arrives
+    if (i > 0) {
+      const prevTx = sortedTxs[i - 1];
+      const prevTs = prevTx.timestamp ?? nowSec;
+      baseline = updateBaseline(walletInfo.address, baseline, [prevTx], prevTs, prices);
     }
 
     // Detect anomalies on the current transaction against the learned baseline
@@ -241,6 +242,9 @@ export async function replayWalletHistory(
 
     currentRiskScore = computeRiskScore(anomalies);
     const hasHigh = anomalies.some(isExistentialThreat);
+    const isClean = !hasHigh && currentRiskScore < DEFENSE_THRESHOLDS.alerting;
+    const prevClean: number = defInfo?.cleanStreak ?? 0;
+    const currentClean: number = isClean ? prevClean + 1 : 0;
 
     const action = computeDefenseAction({
       riskScore: currentRiskScore,
@@ -249,6 +253,7 @@ export async function replayWalletHistory(
       current: defInfo,
       quietStreak: 0,
       nowSec,
+      cleanStreak: currentClean,
     });
 
     const prevSetAt: number = defInfo ? (defInfo as DefenseStateInfo).setAt : nowSec;
@@ -259,6 +264,7 @@ export async function replayWalletHistory(
       setAt: action.changed ? nowSec : prevSetAt,
       quietStreak: 0,
       actions: prevActions + (action.changed ? 1 : 0),
+      cleanStreak: action.changed ? 0 : currentClean,
     };
 
     if (action.state === "blocked" && !blockedAtStep) {

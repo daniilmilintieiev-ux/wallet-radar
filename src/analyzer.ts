@@ -179,6 +179,7 @@ export const KNOWN_PROTOCOL_INFRASTRUCTURE = new Set<string>([
   "2uKQ1GhvcBf87vHBjSNjVnFUY4h7ewpMwDJxTqQUuFKt",
   "F1eCZebsjuaLXkF1Kwzxaq53t1Bn7uge8x412CCqGx8P",
   "AoGRUnV1UGhHN3P8hMKZX1gsNn2Rc1Po41gFms6xCqus",
+  "HsK7nknVVv6E9PEuovdQG1orUKvzZnWZfSpXkLpMCy9U",
 
   // Core System & Token Programs
   "11111111111111111111111111111111",
@@ -424,17 +425,32 @@ export function detectAnomalies(
   if (txs.length > 0) {
     const newest = maxOf(txs.map(ts));
     const windowSec = config.burstWindowMin * 60;
-    const inWindow = txs.filter((t) => newest - ts(t) <= windowSec).length;
+    // Batch mode: txs contains the whole batch (watchOnce poll or test).
+    // Streaming mode: txs is a single live/replay transaction, so check rapid-fire pace against rolling history.
+    let inWindow = txs.filter((t) => newest - ts(t) <= windowSec).length;
+    if (txs.length < config.burstThreshold && baseline?.recentTimestamps?.length) {
+      const streamingWindowSec = 120; // 2 minutes rapid-fire burst window for streaming transactions
+      const allTs = [...baseline.recentTimestamps, ...txs.map(ts)].filter((t) => t > 0);
+      inWindow = allTs.filter((t) => newest - t <= streamingWindowSec && t <= newest).length;
+    }
 
     // A burst indicates a sudden acceleration relative to normal behavior.
-    // If the wallet has an established high-throughput baseline (>= 50 txs, medianTps > 2/min,
-    // e.g. validator vote account or high-frequency DEX bot) and the current rate in the window
-    // is actually lower than its baseline rate, this is not an activity burst.
+    // If the wallet has an established high-throughput baseline (>= 8 txs, medianTps > 2/min or medianIntervalSec <= 15s,
+    // e.g. validator vote account, protocol infrastructure, or high-frequency DEX bot) and the current rate in the window
+    // is consistent with or lower than its baseline rate, this is not an activity burst.
+    // Consensus validator vote accounts and known protocol infrastructure operate at continuous high TPS.
+    const isValidator = txs.some(
+      (t) => t.source === "VOTE_PROGRAM" || txPrograms(t).includes("Vote111111111111111111111111111111111111111"),
+    );
+    const streamingWindowSec = 120;
+    const currentRateTps = inWindow / (txs.length < config.burstThreshold ? (streamingWindowSec / 60) : (config.burstWindowMin || 1));
     const isBelowBaselineRate = Boolean(
-      baseline &&
-        baseline.txCount >= 50 &&
-        baseline.medianTps > 2.0 &&
-        inWindow / config.burstWindowMin < baseline.medianTps,
+      isValidator ||
+      isProtocolInfrastructure(wallet) ||
+      (baseline &&
+        baseline.txCount >= 8 &&
+        ((baseline.medianTps > 2.0 && currentRateTps <= baseline.medianTps * 1.5) ||
+         (baseline.medianIntervalSec != null && baseline.medianIntervalSec > 0 && baseline.medianIntervalSec <= 15))),
     );
 
     if (inWindow >= config.burstThreshold && !isBelowBaselineRate) {
@@ -859,10 +875,10 @@ export function detectAnomalies(
     }
   }
   const distinctTypes = new Set(anomalies.map((a) => a.type));
-  const hasSubstantive = anomalies.some((a) =>
-    ["LARGE_SWAP", "ACTIVITY_BURST", "TOXIC_MINT", "CONCENTRATION", "OFF_HOURS"].includes(a.type),
-  );
-  const multiAnomalyShift = (distinctCategories.size >= 3 && hasSubstantive) || distinctCategories.size >= 4;
+  const substantiveCount = anomalies.filter((a) =>
+    ["LARGE_SWAP", "ACTIVITY_BURST", "TOXIC_MINT", "CONCENTRATION", "DORMANT_ACTIVE", "OFF_HOURS"].includes(a.type),
+  ).length;
+  const multiAnomalyShift = (distinctCategories.size >= 3 && substantiveCount >= 2) || distinctCategories.size >= 4;
 
   if (shiftedDimensions.size > 0 || multiAnomalyShift) {
     if (multiAnomalyShift && shiftReasons.length === 0) {
