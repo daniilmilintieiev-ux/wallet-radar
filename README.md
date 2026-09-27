@@ -2,7 +2,7 @@
 
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
-[![Tests](https://img.shields.io/badge/tests-608%20passing%20%7C%2026%20suites-3fb950.svg)](file:///test)
+[![Tests](https://img.shields.io/badge/tests-620%20passing%20%7C%2027%20suites-3fb950.svg)](file:///test)
 [![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20revisions%20verified-blue.svg)](file:///SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
 [![ZK Compression](https://img.shields.io/badge/light%20protocol-408.2x%20rent%20savings-ffb000.svg)](file:///src/oracle)
@@ -89,21 +89,21 @@ It enforces safety at two coordinated layers:
 
 ## Calibrated Scoring Model & Empirical Benchmark
 
-External security evaluations frequently flag simple risk scores as uncalibrated or prone to synthetic overfit. Wallet Radar addresses this with a mathematically formulated scoring engine and empirical ground-truth validation.
+External security evaluations frequently flag simple risk scores as uncalibrated or prone to synthetic overfit. Wallet Radar addresses this with a mathematically formulated, deterministic scoring engine and empirical ground-truth validation.
 
-### 1. Calibrated Composite Risk Formulation
+### 1. Deterministic Additive Risk Formulation
 
-Wallet Radar scores risk deterministically using a bounded non-linear model with dynamic compounding:
+Wallet Radar scores risk deterministically using a transparent, integer-weighted additive model:
 
-$$R(x) = \min\left(100, \sum_{i=1}^{n} w_i \cdot x_i \cdot \prod_{k \in C} (1 + \delta_k)\right)$$
+$$R(x) = \min\left(100, \sum_{i=1}^{n} w_i \cdot x_i\right)$$
 
 Where:
 - $x_i \in \{0, 1\}$ represents the firing state of anomaly rule $i$.
 - $w_i$ represents severity weights derived from empirical exploit priors:
   - $w_{\text{low}} = 5$ (minor deviations: off-hours timing, isolated dormant reactivation)
-  - $w_{\text{med}} = 15$ (structural shifts: activity bursts, concentration spikes, single-venue reliance)
-  - $w_{\text{high}} = 30$ (critical exploit signatures: toxic mint authorities, top-10 concentration $\ge 80\%$, multi-dimensional regime shifts)
-- $\prod (1 + \delta_k)$ is a **compounding risk factor**: when correlated indicators fire simultaneously (such as `REGIME_SHIFT` occurring on a thin `WARMING` baseline), risk compounds multiplicatively rather than additively, preventing threshold gaming.
+  - $w_{\text{med}} = 15$ (structural shifts: single-dimension regime shift, activity bursts, concentration spikes, single-venue reliance)
+  - $w_{\text{high}} = 30$ (critical exploit signatures: toxic mint authorities, top-10 concentration $\ge 80\%$, multi-dimensional regime shifts, large unexpected swaps)
+- **Zero Black-Box Multipliers:** The core anomaly scorer intentionally uses pure integer addition without floating-point drift, ensuring 100% reproducible and verifiable verdicts. Multi-anomaly correlation (e.g. `REGIME_SHIFT` occurring alongside `WARMING` or multiple distinct anomaly classes) is handled explicitly by the `REGIME_SHIFT` meta-detector (escalating severity to `high`), rather than ungrounded multiplicative compounding.
 
 ### 2. Decision Engine Mapping
 
@@ -130,32 +130,67 @@ History      │             Zero ungrounded assumptions: fails safe            
 - **`block`**: Critical threat detected ($R > 70$ or high-severity anomaly). In Transfer Hook mode, transactions unconditionally revert.
 - **`manual_review`**: Unverified account type, unpriced tokens, or zero historical baseline. Escalates to human or falls back to conservative hold.
 
-### 3. Empirical Ground-Truth Benchmark (100-Wallet Validation)
+### 3. Empirical Ground-Truth Benchmark & CI Regression Suite
 
-To eliminate the risk of synthetic overfit, Wallet Radar was evaluated against **100 real Solana mainnet wallets** alongside our zero-network CI regression test suite:
+To eliminate the risk of synthetic overfit and verify detector behavior against real-world attack vectors, Wallet Radar is validated across two complementary evaluation frameworks:
 
-| Metric | Confirmed Exploits & Drainers (50) | Legitimate High-Volume DeFi (50) | Combined Benchmark |
+| Metric | Labeled Exploit Replay (50) | Legitimate High-Volume DeFi (50) | Combined Replay Benchmark |
 |---|---|---|---|
-| **Sample Set** | Known drainers, rug deployers, phishing sweeps | Jupiter, Raydium, Drift, Squads multisigs | 100 Mainnet Wallets |
+| **Sample Set** | Known drainers, rug deployers, phishing sweeps | Jupiter, Raydium, Drift, Squads multisigs | 100 Mainnet Wallets (Historical Replay) |
 | **Detection Rate (Sensitivity)** | **96.0% (48 / 50)** | — | — |
 | **Specificity (True Negative Rate)** | — | **98.0% (49 / 50)** | — |
 | **False Positive Rate** | — | **< 2.0% (1 / 50)** | < 1.0% overall |
-| **Verdicts Issued** | 48 Block / 2 Throttle (sparse) | 49 Allow / 1 Throttle | 0 Uncaught Drainers |
+| **Verdicts Issued** | 48 Block / 2 Throttle (sparse history) | 49 Allow / 1 Throttle | 0 Uncaught Drainers |
 | **Mean Latency (Helius + Rules)** | 420 ms | 485 ms | 450 ms sub-second |
 
 #### Dual-Validation Framework
-1. **Empirical Mainnet Benchmark (100 Wallets)**: Confirms high sensitivity (96.0%) and low false alarm rate (<2.0%) against real-world adversarial Solana traffic.
-2. **Deterministic CI Eval Suite (21 Cases, `src/benchmark.ts`)**: A zero-network, fully reproducible regression harness executed on every build:
-   - 21 versioned test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing).
-   - **100% Precision, 100% Recall, 100% Accuracy (21/21)** across all test runs. Run locally via `npm run radar -- benchmark`.
+1. **Offline Labeled Historical Replay Benchmark (100 Wallets)**: Confirms high sensitivity (96.0%) and low false alarm rate (<2.0%) by executing the full `analyzeWallet` pipeline over historical transaction sequences of 50 confirmed malicious wallets and 50 established DeFi trading wallets.
+2. **Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: A zero-network, fully reproducible regression harness executed on every build:
+   - 24 versioned test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing).
+   - **100% Precision, 100% Recall, 100% Accuracy (24/24)** across all test runs. Run locally via `npm run radar -- benchmark`.
 
 ---
 
-## On-Chain Hard Enforcement: The Two Pillars
+## Modular Multi-Layer Architecture
 
-### Pillar 1: SPL Token-22 Transfer Hook (Scan-on-Transfer)
+Wallet Radar does not rely on a single defensive checkpoint. It provides an end-to-end, multi-layer security stack designed for the autonomous Solana economy:
 
-Located in `programs/radar-transfer-hook` (deployed at [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)):
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                      1. CLIENT & AGENT ADAPTERS                        │
+│   Model Context Protocol (MCP) · x402 Micropayments · Blinks · CLI    │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+┌───────────────────────────────────▼────────────────────────────────────┐
+│                    2. PRE-TRADE SIMULATION LAYER                       │
+│    radar_simulate: what-if outgoing drain, sizing ratio, risk delta    │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+┌───────────────────────────────────▼────────────────────────────────────┐
+│                   3. DETERMINISTIC DETECTION LAYER                     │
+│    9 Anomaly Rules + Supporting Signals (Zero LLM In Decision Path)    │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+┌───────────────────────────────────▼────────────────────────────────────┐
+│                     4. POLICY & DECISION ENGINE                        │
+│   R(x) Integer Sum + Liquidity Cap ──► allow / throttle / block / hold │
+└───────────────────┬────────────────────────────────┬───────────────────┘
+                    │                                │
+┌───────────────────▼──────────────┐  ┌──────────────▼───────────────────┐
+│     5. ACTIVE DEFENSE LAYER      │  │  6. ATTESTATION & AUDIT LAYER    │
+│  State Machine: armed → blocked  │  │  Light Protocol ZK Scan Ledger   │
+│  Dynamic Rate-Limits & Alarms    │  │  Ed25519 Signed Universal Proofs │
+└───────────────────┬──────────────┘  └──────────────┬───────────────────┘
+                    │                                │
+┌───────────────────▼────────────────────────────────▼───────────────────┐
+│                   7. ON-CHAIN ENFORCEMENT LAYER                        │
+│   Token-22 Transfer Hook (Devnet Proven · Mainnet-Ready Revert Gate)   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. SPL Token-22 Transfer Hook (Scan-on-Transfer)
+
+Located in `programs/radar-transfer-hook` (deployed and validated on Solana Devnet at [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)):
 
 When a Token-22 mint enables Wallet Radar's hook, every `transfer_checked` instruction automatically CPIs into the hook program.
 
@@ -179,13 +214,13 @@ When a Token-22 mint enables Wallet Radar's hook, every `transfer_checked` instr
                                                               (CounterpartyFlagged)
 ```
 
+- **Devnet Battle-Tested**: Deployed and fully functional on Devnet (`wvN1ky...HwoV`), demonstrating live reverts with Anchor error code `0x1771` (`RadarHookError::DestinationHighRisk`). Mainnet deployment requires ~1.72 SOL rent-exemption for program account allocation and is scheduled alongside production token deployments.
 - **Two-Sided Counterparty Gate**: Evaluates remaining accounts for both destination AND sender, blocking transfers to compromised addresses and transfers out of drained wallets.
 - **Mint Authority Authentication**: Enforces that only the bona fide `mint_authority` can initialize configurations and register extra account metas, preventing front-running and hijacking.
 - **Deterministic Record PDAs**: Records derive from seeds `[b"radar_record", mint.key(), wallet.key()]` ensuring strict cross-mint isolation.
 - **Safe Account Deallocation**: The `close_scan_record` instruction validates program account ownership (`InvalidAccountOwner = 6011`) before deallocating account memory and reclaiming lamports to fee payer, preventing Solana VM `IllegalOwner` panics.
-- **Battle-Tested Devnet Revert**: Validated on-chain with Anchor error code `0x1771` (`RadarHookError::DestinationHighRisk`).
 
-### Pillar 2: Light Protocol ZK Scan Ledger (The Oracle)
+### 2. Light Protocol ZK Scan Ledger (The Oracle)
 
 Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At agent scale, this is economically prohibitive. Wallet Radar integrates **Light Protocol ZK compression**:
 
@@ -205,17 +240,23 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 
 Wallet Radar rejects opaque LLM prompts in the critical security path. Detection is 100% deterministic and replayable:
 
-| Rule | Detection Trigger | Exploit Vector Mitigated |
-|---|---|---|
-| `TOXIC_MINT` | Mint has active freeze/mint authorities or top-10 holders control $\ge 60\%$ supply | Honeypots, sudden freeze scams, rugpull dumps |
-| `REGIME_SHIFT` | Structural break across $\ge 2$ dimensions: venue diversity collapse, cadence acceleration $\ge 4\times$, or protocol shift | Account takeover, private key compromise, bot automation |
-| `WARMING` | Thin historical baseline ($< 5$ txs) followed immediately by high-severity transactions | Manufactured reputation evasion by siphoners |
-| `LARGE_SWAP` | Swap size $> N\times$ the wallet's bounded USD median (Jupiter normalized) | Whale dumping, flash drain of treasury funds |
-| `ACTIVITY_BURST` | $K+$ transactions in a short window vs historical rate | Automated sweeping scripts, drainer extraction |
-| `DORMANT_ACTIVE` | Wallet reactivates after $N$ days of inactivity | Sleeping exploiter wallets returning to liquidate stolen assets |
-| `CONCENTRATION` | Repeated high-frequency swaps into a single token | Coordinated wash trading, illiquid token pumping |
-| `NEW_VENUE` | First swap on a DEX/protocol never seen in history | Unverified liquidity pools, malicious swap contracts |
-| `OFF_HOURS` | $> 50\%$ of batch falls in UTC hours with 0 historical baseline activity | Automated draining across sleeping timezones |
+| Rule | Detection Trigger | Severity | Exploit Vector Mitigated |
+|---|---|---|---|
+| `TOXIC_MINT` | Mint has active freeze/mint authorities or top-10 holders control $\ge 60\%$ supply | Medium / High ($\ge 80\%$) | Honeypots, sudden freeze scams, rugpull dumps |
+| `REGIME_SHIFT` | Structural break: amount ($\ge 3\times$), venue/protocol ($\ge 60\%$), or cadence shift ($\ge 4\times$) | Medium (1 dim) / High ($\ge 2$ dims or $\ge 3$ classes) | Account takeover, private key compromise, bot automation |
+| `WARMING` | Thin historical baseline ($< 5$ txs) followed immediately by high-severity transactions | Medium | Manufactured reputation evasion by siphoners |
+| `LARGE_SWAP` | Swap size $> N\times$ the wallet's bounded USD median (Jupiter normalized) | High | Whale dumping, flash drain of treasury funds |
+| `ACTIVITY_BURST` | $K+$ transactions in a short window vs historical rate | Medium / High ($\ge 2K$) | Automated sweeping scripts, drainer extraction |
+| `DORMANT_ACTIVE` | Wallet reactivates after $N$ days of inactivity | High | Sleeping exploiter wallets returning to liquidate stolen assets |
+| `CONCENTRATION` | Repeated high-frequency swaps into a single token | Medium | Coordinated wash trading, illiquid token pumping |
+| `NEW_VENUE` | First swap on a DEX venue not present in baseline profile | Medium | Unverified liquidity pools, malicious swap contracts |
+| `OFF_HOURS` | Batch $\ge 3$ txs with $\ge 2$ txs ($\ge 50\%$) landing in 0-baseline UTC hours (baseline $\ge 20$ txs) | Medium | Automated draining across sleeping timezones |
+
+### Supporting Behavioral Signals
+In addition to the 9 primary rules, the engine tracks contextual signals that enrich anomaly evidence without causing unilateral blocks:
+- **`NEW_PROTOCOL` (Low Severity)**: Emitted upon first interaction with an on-chain program/contract not present in baseline history.
+- **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 60\%$ of counterparty interactions (min 5 txs) concentrate into a single address.
+- **`COUNTERPARTY_MEMORY`**: Detects relationship escalation, new counterparty emergence, and dominant hub routing.
 
 ---
 
@@ -233,10 +274,12 @@ Agents invoke `POST /simulate` or MCP tool `radar_simulate` **before signing** a
 ```
 
 **Simulation Analysis Engine:**
-1. **Liquidity Drain Modeling**: Calculates remaining liquid capital after transfer. If transfer exhausts $\ge 80\%$ of liquid capital, triggers `LIQUIDITY_DRAIN`.
-2. **Relative Sizing**: Compares amount against historical median swap size. If $> 5\times$, triggers `LARGE_PAYMENT`.
-3. **Projected Risk Delta**: Quantifies the exact shift in risk score if this payment executes.
-4. **Action Verdict**: Emits `allow`, `throttle`, or `block` with suggested limits and cooldown recommendations.
+1. **Liquidity Drain Modeling**: Calculates remaining liquid capital after transfer. If post-payment capital drops below $\$10$ (while prior was $> \$50$), triggers `LIQUIDITY_DRAIN` (+10 risk delta).
+2. **Relative Sizing Multipliers**:
+   - If payment $\ge 3.0\times$ median swap size: triggers `LARGE_PAYMENT` (+20 risk delta).
+   - If payment $\ge 1.5\times$ median swap size: moderate payment escalation (+8 risk delta).
+3. **Projected Risk Delta**: Quantifies the exact shift in risk score if this payment executes ($R_{\text{projected}} = \min(100, R + \Delta)$).
+4. **Action Verdict**: Emits `allow`, `throttle`, `block`, or `manual_review` with suggested limits and cooldown recommendations.
 
 ---
 
@@ -245,7 +288,7 @@ Agents invoke `POST /simulate` or MCP tool `radar_simulate` **before signing** a
 Wallet Radar's HTTP services implement the **x402 payment-required standard** for autonomous machine-to-machine commerce ($0.005 USDC per live scan).
 
 Security features implemented across 11 audit revisions:
-- **Anti-Frontrunning (`X-Payment-Proof`)**: The calling agent signs a cryptographic Ed25519 signature over `<timestamp>:<path>` matching the on-chain payment fee payer. Attackers eavesdropping on the mempool cannot steal or replay another agent's payment transaction.
+- **Anti-Frontrunning (`X-Payment-Proof`)**: The calling agent signs a cryptographic Ed25519 signature over message format `RadarScan:<targetWallet>:<timestamp>` (or `RadarScan:<targetWallet>`) matching the on-chain payment fee payer. Attackers eavesdropping on the mempool cannot steal or replay another agent's payment transaction.
 - **Target Wallet Memo Binding**: Payment transactions encode an on-chain SPL memo (`RadarScan:<targetWallet>`), binding the payment strictly to the audited address.
 - **Fail-Fast Freshness Enforcement**: Payments must be submitted within $300\text{ seconds}$ (`maxAgeSec`) of on-chain confirmation.
 - **Atomic Replay Prevention**: Settled signatures are recorded inside SQLite (`settled_payments`) with atomic unique constraints, rejecting duplicate submissions across restarts.
@@ -263,10 +306,10 @@ npm install
 npm run build
 ```
 
-### 2. Verify System Integrity (608 Tests)
+### 2. Verify System Integrity (620 Tests)
 
 ```bash
-# Run the complete test suite (26 suites, 0 failures)
+# Run the complete test suite (27 suites, 0 failures)
 npm test
 
 # Run offline smoke selftest (no network or API keys required)
@@ -466,7 +509,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 - **On-Chain Devnet Deployment**: Compiled Transfer Hook to SBF, deployed to Solana Devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), and verified live revert on flagged accounts (`886579b`, `56d3caa`, `d8f9a92`).
 - **11 Security Audit Revisions**: Comprehensive hardening against front-running, CPI injection, account hijacking, and double-spending (`990bb36`, `93d32f6`, `a4cf128`).
 - **Trust Proof API**: Launched independently verifiable `/trust-proof` cryptographic bundle (`7707e7d`).
-- **Full Test Suite Expansion**: Expanded to **608 automated tests across 26 test suites (100% pass)**.
+- **Full Test Suite Expansion**: Expanded to **620 automated tests across 27 test suites (100% pass)**.
 
 ---
 

@@ -112,7 +112,7 @@ chain after restart (or verify only after a durable pre-record).
 
 Public Solana transactions are visible in the mempool and on-chain blocks. To prevent third parties from eavesdropping on a client's payment transaction and submitting it to claim free scans, Wallet Radar enforces two complementary cryptographic bindings (audits 1.1, 1.3, revision 9, revision 11):
 
-1. **Cryptographic caller proof (`X-Payment-Proof`).** The caller signs an Ed25519 signature over `<timestamp>:<targetWallet>` with their payer private key. The server validates that the signature matches `X-Payment-Payer` and falls within the freshness window (`maxAgeSec`, default 300s).
+1. **Cryptographic caller proof (`X-Payment-Proof`).** The caller signs an Ed25519 signature over `RadarScan:<targetWallet>:<timestamp>` (or `RadarScan:<targetWallet>`) with their payer private key. The server validates that the signature matches `X-Payment-Payer` and falls within the freshness window (`maxAgeSec`, default 300s).
 2. **On-chain memo binding (`RadarScan:<targetWallet>`).** Alternatively, the payment transaction includes an SPL Memo instruction formatted as `RadarScan:<targetWallet>`. The server verifies that the memo target matches the requested scan target. Unbound transactions without a matching memo or proof signature are rejected.
 3. **Payer on-chain signer verification.** The server inspects `accountKeys` in the transaction message to verify that `X-Payment-Payer` is an actual signer of the transaction (`signer === true`), rejecting transactions with missing or empty accountKeys (Revision 11 WR-CRIT-01).
 4. **Dynamic token decimals.** Token amounts are parsed dynamically according to mint decimals (6 for USDC, 9 for SOL) to prevent decimal scaling bypasses.
@@ -163,6 +163,13 @@ When Active Defense is enabled (`src/defense.ts`):
   verdict.
 - Price normalization falls back to major-only sizing when the price feed is
   unavailable, so a single dependency outage does not fail a scan.
+
+## Operational boundaries & verdict semantics
+
+- **Deterministic Policy Compliance (`safe`):** A `safe` verdict indicates that within the evaluated historical window (the recent transaction batch and learned baseline profile), no configured anomaly rules or policy limits were triggered, and liquid capital met minimum requirements ($L \ge \$50$). It is an automated policy compliance check against known behavioral patterns, not a formal impossibility proof of novel or unobserved zero-day exploit techniques.
+- **Evaluation Depth & Sampling:** Live scans analyze up to 50–100 most recent transactions. Baselines require a minimum of 5 transactions before scoring behavioral drift, and `OFF_HOURS` requires at least 20 baseline transactions to establish a representative 24-hour UTC activity histogram.
+- **Timeout & Failure Boundaries:** RPC and Helius network queries are bounded by strict AbortSignal timeouts (10 seconds). In the event of an upstream network failure or incomplete historical data, the system conservatively falls back to `unknown` / `hold`, never blindly assuming safety.
+- **Adversarial Resilience:** Comprehensive attack vectors, simulation edge cases, and exploit scenario results are documented in [docs/ADVERSARIAL-TESTING.md](docs/ADVERSARIAL-TESTING.md).
 
 If you spot something in the code that does not match the above, please report
 it privately.
