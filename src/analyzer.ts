@@ -671,7 +671,7 @@ export function detectAnomalies(
   // baseline's 24-bucket UTC histogram; a majority of the batch landing in
   // historically-dead hours is a classic bot/takeover signature.
   if (
-    baseline !== null &&
+    baseline != null &&
     baseline.txCount >= OFF_HOURS_MIN_BASELINE_TXS &&
     txs.length >= OFF_HOURS_MIN_BATCH_TXS
   ) {
@@ -714,7 +714,7 @@ export function detectAnomalies(
   const shiftReasons: string[] = [];
   const shiftedDimensions = new Set<string>();
 
-  const hasBaselineHistory = baseline !== null && baseline.txCount >= REGIME_MIN_BASELINE_TXS;
+  const hasBaselineHistory = baseline != null && baseline.txCount >= REGIME_MIN_BASELINE_TXS;
   const hasRecentWindow = txs.length >= REGIME_MIN_RECENT_TXS;
 
   if (hasBaselineHistory && hasRecentWindow) {
