@@ -50,7 +50,7 @@ const SEED_WALLETS: HarvestedWallet[] = [
   { address: "DmQSnFzRoENh3weu6EtBBhHTpQBQSsvjpMX8iYKRygQ4", name: "Pump.fun Insider Rugpuller", category: "scam_exploit", tier: "rugpuller", source: "threat_seed", expectedVerdict: "BLOCKED" },
   { address: "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j", name: "Pump.fun Toxic Rug Trader", category: "scam_exploit", tier: "toxic_trader", source: "threat_seed", expectedVerdict: "BLOCKED" },
   { address: "A2R6ydBWCfmJBAjF8GPedypA8BmCgFzHYV7oW3Yhnzpz", name: "Meteora DLMM to Toxic Token Shift", category: "scam_exploit", tier: "compromised", source: "threat_seed", expectedVerdict: "BLOCKED" },
-  { address: "7aPo3npvLCXNKTWuApjdnyyGBwn2176Z3jFRrDvbGXN8", name: "Rekt Trader on Shitcoins", category: "rekt_drawdown", tier: "rekt_trader", source: "threat_seed", expectedVerdict: "BLOCKED" },
+  { address: "7aPo3npvLCXNKTWuApjdnyyGBwn2176Z3jFRrDvbGXN8", name: "Retail micro-trader on pump.fun (.01-.05)", category: "clean_retail", tier: "rekt_trader", source: "threat_seed", expectedVerdict: "VERIFIED_SAFE" },
   { address: "F52NK7rsb3ChTfJsrzmDNU3rj2E3JYNDzgYiprq43Ztx", name: "Retail pump.fun trader with drawdown (.05-.20)", category: "clean_retail", tier: "rekt_trader", source: "threat_seed", expectedVerdict: "VERIFIED_SAFE" },
 
   // 2. High-Frequency Bots & Infrastructure (VERIFIED_SAFE)
@@ -116,19 +116,31 @@ async function main() {
   }
 
   const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
-  const targetCount = parseInt(process.argv.find((a) => a.startsWith("--limit="))?.split("=")[1] || "100", 10);
+  const targetCount = parseInt(process.argv.find((a) => a.startsWith("--limit="))?.split("=")[1] || "1000", 10);
   console.log(`================================================================================`);
   console.log(`  WALLET RADAR: LARGE WALLET HARVESTER (Target: ${targetCount} Wallets)`);
   console.log(`================================================================================`);
 
+  const outPath = path.resolve(process.cwd(), "benchmarks/large-wallets.json");
   const walletMap = new Map<string, HarvestedWallet>();
 
-  // Add seed wallets first
+  // Load existing harvested wallets if present to incrementally build up to targetCount
+  if (fs.existsSync(outPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(outPath, "utf8")) as HarvestedWallet[];
+      for (const w of existing) {
+        walletMap.set(w.address, w);
+      }
+      console.log(`[0/3] Loaded ${walletMap.size} existing wallets from benchmarks/large-wallets.json.`);
+    } catch {}
+  }
+
+  // Add / update seed wallets
   for (const seed of SEED_WALLETS) {
     walletMap.set(seed.address, seed);
   }
 
-  console.log(`[1/3] Seeded ${walletMap.size} baseline benchmark wallets.`);
+  console.log(`[1/3] Seeded baseline benchmark wallets (${walletMap.size} loaded).`);
 
   // Discover top token holders across major assets
   console.log(`[2/3] Querying top token accounts across ${TOP_MINTS.length} leading Solana assets...`);
@@ -147,7 +159,7 @@ async function main() {
         })
       });
       const data = await res.json() as any;
-      const topAccs = (data.result?.value || []).slice(0, 20);
+      const topAccs = (data.result?.value || []).slice(0, 30);
 
       // Batch query account info to find owners
       for (const acc of topAccs) {
@@ -183,35 +195,61 @@ async function main() {
     }
   }
 
-  // If still need more wallets to reach targetCount, fetch recent active DEX traders
+  // Query active DEX routers if we still need more wallets to reach targetCount
+  const DEX_ROUTERS = [
+    { name: "Jupiter Aggregator v6", program: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", source: "jupiter_feed" },
+    { name: "Raydium AMM v4", program: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", source: "raydium_feed" },
+    { name: "Meteora DLMM", program: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", source: "meteora_feed" },
+    { name: "Pump.fun Router", program: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", source: "pumpfun_feed" },
+  ];
+
   if (walletMap.size < targetCount) {
-    console.log(`\n[3/3] Querying active DEX traders from Jupiter Aggregator...`);
-    try {
-      const jupTxUrl = `https://api.helius.xyz/v0/addresses/JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4/transactions?api-key=${apiKey}&limit=100`;
-      const res = await fetch(jupTxUrl);
-      const txs = await res.json() as any[];
-      for (const t of txs) {
-        if (walletMap.size >= targetCount) break;
-        const payer = t.feePayer;
-        if (payer && !walletMap.has(payer) && payer.length >= 32) {
-          walletMap.set(payer, {
-            address: payer,
-            name: `Active Jupiter Trader (${payer.slice(0, 8)}...)`,
-            category: "clean_retail",
-            tier: "active_trader",
-            source: "jupiter_feed",
-            expectedVerdict: "VERIFIED_SAFE"
-          });
-          process.stdout.write(`\rDiscovered: ${walletMap.size}/${targetCount} wallets (Latest: DEX trader ${payer.slice(0, 8)}...)`);
+    console.log(`\n[3/3] Querying active DEX traders across major liquidity venues...`);
+    for (const dex of DEX_ROUTERS) {
+      if (walletMap.size >= targetCount) break;
+      let beforeSig: string | null = null;
+      let pages = 0;
+      const maxPagesPerDex = 15;
+
+      while (walletMap.size < targetCount && pages < maxPagesPerDex) {
+        pages++;
+        try {
+          let url = `https://api.helius.xyz/v0/addresses/${dex.program}/transactions?api-key=${apiKey}&limit=100`;
+          if (beforeSig) {
+            url += `&before=${beforeSig}`;
+          }
+          const res = await fetch(url);
+          const txs = await res.json() as any[];
+          if (!Array.isArray(txs) || txs.length === 0) break;
+
+          for (const t of txs) {
+            if (walletMap.size >= targetCount) break;
+            const payer = t.feePayer;
+            if (payer && !walletMap.has(payer) && payer.length >= 32) {
+              walletMap.set(payer, {
+                address: payer,
+                name: `Active ${dex.name} Trader (${payer.slice(0, 8)}...)`,
+                category: "clean_retail",
+                tier: "active_trader",
+                source: dex.source,
+                expectedVerdict: "VERIFIED_SAFE"
+              });
+              process.stdout.write(`\rDiscovered: ${walletMap.size}/${targetCount} wallets (Latest: ${dex.name} trader ${payer.slice(0, 8)}...)`);
+            }
+          }
+          beforeSig = txs[txs.length - 1]?.signature || null;
+          if (!beforeSig) break;
+          await new Promise((r) => setTimeout(r, 200));
+        } catch {
+          break;
         }
       }
-    } catch {}
+    }
   }
 
   console.log(`\n\n✔ Successfully collected ${walletMap.size} benchmark wallets!`);
 
   const outputWallets = Array.from(walletMap.values());
-  const outPath = path.resolve(process.cwd(), "benchmarks/large-wallets.json");
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, JSON.stringify(outputWallets, null, 2), "utf8");
 

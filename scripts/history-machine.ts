@@ -379,7 +379,7 @@ async function main() {
 
   let walletsToTest: HistoryReplayWallet[] = TARGET_WALLETS;
 
-  if (datasetArg === "large" || datasetArg === "all") {
+  if (datasetArg === "large" || datasetArg === "all" || !datasetArg) {
     const largePath = path.resolve(process.cwd(), "benchmarks/large-wallets.json");
     if (fs.existsSync(largePath)) {
       const raw = fs.readFileSync(largePath, "utf8");
@@ -397,7 +397,8 @@ async function main() {
     walletsToTest = walletsToTest.filter((w) => w.category === categoryArg);
   }
 
-  if (process.argv.includes("--cached-only")) {
+  const isCachedOnly = process.argv.includes("--cached-only") || !process.env.HELIUS_API_KEY || apiKey === "cached-replay";
+  if (isCachedOnly) {
     walletsToTest = walletsToTest.filter((w) =>
       fs.existsSync(path.join(CACHE_DIR, `${w.address}.json`)),
     );
