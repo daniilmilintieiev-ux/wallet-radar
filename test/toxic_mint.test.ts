@@ -700,3 +700,43 @@ test("audit 2.1: computeTop10Pct excludes AMM and bonding curve accounts from co
   const top10Pct = computeTop10Pct(totalSupplyBaseUnits, 6, holdersWithAmm, systemHolders);
   assert.equal(top10Pct, 10, "AMM/bonding curve pools must be excluded so top10 is only 10%");
 });
+
+test("audit 3.3: resolveSystemHolderAddresses resolves dynamic AMM pool PDAs owned by pump AMM program", async () => {
+  const mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const poolTokenAccount = "PoolVaultAccount111111111111111111111111111";
+  const poolPda = "7ST1Amo2VPQLboVxMU4GcikZyoMZWR364qe2FhgYjyR9";
+
+  const mockFetch: any = async (_url: string, opts: any) => {
+    const body = JSON.parse(opts.body);
+    if (body.id === "getMultipleAccounts") {
+      return {
+        ok: true,
+        json: async () => ({
+          result: {
+            value: [
+              { data: { parsed: { info: { owner: poolPda } } } },
+            ],
+          },
+        }),
+      };
+    }
+    if (body.id === "getMultipleAccountsHolders") {
+      return {
+        ok: true,
+        json: async () => ({
+          result: {
+            value: [
+              { owner: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" },
+            ],
+          },
+        }),
+      };
+    }
+    return { ok: false };
+  };
+
+  const systemAddrs = await resolveSystemHolderAddresses(mockFetch, "https://api.devnet.solana.com", [poolTokenAccount], mint);
+  assert.ok(systemAddrs);
+  assert.ok(systemAddrs.has(poolTokenAccount), "Pool token account owned by Pump AMM pool PDA must be identified as system AMM holder");
+});
+

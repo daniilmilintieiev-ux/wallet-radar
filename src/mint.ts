@@ -106,14 +106,24 @@ function numOrNull(v: unknown): number | null {
  * sits in DEX pools looks far more concentrated than it actually is (audit 3.2).
  * All IDs verified against mainnet on 2026-09-23 (program accounts / burn wallet).
  */
+export const KNOWN_AMM_PROGRAMS: ReadonlySet<string> = new Set([
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", // Raydium AMM v4
+  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C", // Raydium CPMM
+  "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaWNZDFZTF4ik", // Raydium CLMM
+  "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", // Orca Whirlpool
+  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // Meteora DLMM
+  "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB", // Meteora Dynamic Pools
+  "24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHm2Yoj356W9rKqL", // Meteora Vaults
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // pump.fun AMM
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", // pump.fun bonding curves
+  "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX", // OpenBook v1
+  "opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb", // OpenBook v2
+  "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY", // Phoenix DEX
+]);
+
 export const KNOWN_AMM_OWNERS: ReadonlySet<string> = new Set([
-  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", // Raydium AMM v4 pool vaults
+  ...KNOWN_AMM_PROGRAMS,
   "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", // Raydium AMM v4 authority PDA (Audit 2.1)
-  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C", // Raydium CPMM pool vaults
-  "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", // Orca Whirlpool vaults
-  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", // Meteora DLMM pool vaults
-  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // pump.fun AMM vaults
-  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", // pump.fun bonding curves program
   "1nc1nerator11111111111111111111111111111111", // incinerator (burned tokens)
 ]);
 
@@ -193,8 +203,11 @@ export async function resolveSystemHolderAddresses(
     const data = (await res.json()) as any;
     const value = data?.result?.value;
     if (!Array.isArray(value)) return null;
+
     const bondingCurve = mint ? getPumpFunBondingCurvePda(mint) : null;
     const system = new Set<string>();
+    const unknownHolders: { tokenAccount: string; holder: string }[] = [];
+
     for (let i = 0; i < tokenAccountAddresses.length; i++) {
       const acct = value[i];
       if (!acct || typeof acct !== "object") continue;
@@ -205,13 +218,58 @@ export async function resolveSystemHolderAddresses(
           : typeof acct.owner === "string"
             ? acct.owner
             : null;
+
+      if (!holder) continue;
+
       if (
-        (holder && (KNOWN_AMM_OWNERS.has(holder) || holder === bondingCurve)) ||
-        (bondingCurve && tokenAccountAddresses[i] === bondingCurve)
+        KNOWN_AMM_OWNERS.has(holder) ||
+        (bondingCurve && (holder === bondingCurve || tokenAccountAddresses[i] === bondingCurve))
       ) {
         system.add(tokenAccountAddresses[i]);
+      } else if (isValidBase58(holder)) {
+        unknownHolders.push({ tokenAccount: tokenAccountAddresses[i], holder });
       }
     }
+
+    // Resolve owner programs of unknown holders to catch dynamic AMM pool PDAs (Audit fix)
+    if (unknownHolders.length > 0) {
+      try {
+        const uniqueHolders = Array.from(new Set(unknownHolders.map((h) => h.holder)));
+        const res2 = await fetchFn(rpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "getMultipleAccountsHolders",
+            method: "getMultipleAccounts",
+            params: [uniqueHolders, { encoding: "jsonParsed" }],
+          }),
+          signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
+        });
+        if (res2.ok) {
+          const data2 = (await res2.json()) as any;
+          const holderAccounts = data2?.result?.value;
+          if (Array.isArray(holderAccounts)) {
+            const holderOwnerMap = new Map<string, string>();
+            for (let j = 0; j < uniqueHolders.length; j++) {
+              const hAcct = holderAccounts[j];
+              if (hAcct && typeof hAcct.owner === "string") {
+                holderOwnerMap.set(uniqueHolders[j], hAcct.owner);
+              }
+            }
+            for (const item of unknownHolders) {
+              const programOwner = holderOwnerMap.get(item.holder);
+              if (programOwner && KNOWN_AMM_PROGRAMS.has(programOwner)) {
+                system.add(item.tokenAccount);
+              }
+            }
+          }
+        }
+      } catch {
+        // Best effort: keep already resolved system accounts
+      }
+    }
+
     if (bondingCurve) {
       system.add(bondingCurve);
     }
