@@ -34,7 +34,7 @@ export class TelegramSink implements AlertSink {
 
   async send(text: string, payload?: AlertPayload, options?: { parseMode?: string }): Promise<void> {
     try {
-      const parseMode = options?.parseMode ?? this.defaultParseMode;
+      const parseMode = options?.parseMode ?? (this.defaultParseMode || (text.includes("<b>") || text.includes("<code>") ? "HTML" : undefined));
       const body: Record<string, unknown> = { chat_id: this.chatId, text };
       if (parseMode) {
         body.parse_mode = parseMode;
@@ -144,4 +144,57 @@ export function formatAlert(
     .join("\n");
   const digestLine = digest ? `\n${digest}` : "";
   return `${head}\n${body}${digestLine}`;
+}
+
+/** Formats a rich, visual HTML message for Telegram bot alert delivery. */
+export function formatAlertHtml(
+  wallet: string,
+  riskScore: number,
+  anomalies: Anomaly[],
+  options: {
+    defenseState?: string;
+    digest?: string;
+    label?: string;
+  } = {},
+): string {
+  const short = wallet.length > 8 ? `${wallet.slice(0, 4)}...${wallet.slice(-4)}` : wallet;
+  const labelStr = options.label ? ` [${options.label}]` : "";
+  const posture = options.defenseState
+    ? options.defenseState === "blocked"
+      ? " · 🛑 <b>BLOCKED</b>"
+      : options.defenseState === "gated"
+      ? " · ⚠️ <b>GATED</b>"
+      : ` · <b>${options.defenseState.toUpperCase()}</b>`
+    : "";
+
+  const sevBadge = riskScore >= 70 ? "🔴" : riskScore >= 30 ? "🟡" : "🟢";
+
+  const lines: string[] = [
+    `🚨 <b>WALLET RADAR · THREAT DETECTED</b>`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `Target: <code>${short}</code>${labelStr}`,
+    `Risk: ${sevBadge} <b>${riskScore}/100</b>${posture}`,
+    `Anomalies: <b>${anomalies.length}</b>`,
+    ``,
+    `<b>Detected Anomaly Breakdown:</b>`,
+  ];
+
+  for (const a of anomalies.slice(0, 5)) {
+    const icon = a.severity === "high" ? "🔴" : a.severity === "medium" ? "🟡" : "⚪";
+    lines.push(`${icon} <b>${a.type}</b>: ${a.text}`);
+  }
+
+  if (anomalies.length > 5) {
+    lines.push(`<i>...and ${anomalies.length - 5} more anomalies</i>`);
+  }
+
+  if (options.digest) {
+    lines.push(``);
+    lines.push(`💡 <i>${options.digest}</i>`);
+  }
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`🛡️ <i>Pre-trade firewall has updated defense posture.</i>`);
+
+  return lines.join("\n");
 }

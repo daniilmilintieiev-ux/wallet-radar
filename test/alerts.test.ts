@@ -7,6 +7,7 @@ import {
   TelegramSink,
   WebhookSink,
   makeSink,
+  formatAlertHtml,
 } from "../src/alerts.js";
 import { Anomaly } from "../src/types.js";
 
@@ -185,4 +186,37 @@ test("makeSink: picks sink based on environment variables", () => {
     if (saved.webhook === undefined) delete process.env.WEBHOOK_URL;
     else process.env.WEBHOOK_URL = saved.webhook;
   }
+});
+
+test("formatAlertHtml: formats clean Telegram HTML with badges and structure", () => {
+  const html = formatAlertHtml("2pcVVJtijz7o1GzJrq3o13CWdMe2iyHj8wDc22tnBC99", 85, SAMPLE_ANOMALIES, {
+    defenseState: "blocked",
+    digest: "Liquidity drain pattern detected.",
+    label: "Whale Reference",
+  });
+
+  assert.ok(html.includes("WALLET RADAR · THREAT DETECTED"));
+  assert.ok(html.includes("<code>2pcV...BC99</code>"));
+  assert.ok(html.includes("[Whale Reference]"));
+  assert.ok(html.includes("<b>85/100</b>"));
+  assert.ok(html.includes("<b>BLOCKED</b>"));
+  assert.ok(html.includes("LARGE_SWAP"));
+  assert.ok(html.includes("ACTIVITY_BURST"));
+});
+
+test("TelegramSink: auto-detects HTML content and sends parse_mode=HTML", async () => {
+  let capturedBody: any;
+  const mockFetch: typeof fetch = async (url, init) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const sink = new TelegramSink("test-tok", "test-chat", mockFetch);
+  await sink.send("<b>High Alert:</b> <code>1111...</code> blocked.");
+
+  assert.equal(capturedBody.chat_id, "test-chat");
+  assert.equal(capturedBody.parse_mode, "HTML");
 });

@@ -62,7 +62,7 @@ const SEED_WALLETS: HarvestedWallet[] = [
   // 3. Institutional Vaults & Exchange Custody (VERIFIED_SAFE)
   { address: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", name: "Jupiter Aggregator v6 Protocol Authority", category: "institutional_vault", tier: "protocol_authority", source: "vault_seed", expectedVerdict: "VERIFIED_SAFE" },
   { address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", name: "Binance Cold/Hot Storage (9.9M SOL)", category: "institutional_vault", tier: "exchange_custody", source: "vault_seed", expectedVerdict: "VERIFIED_SAFE" },
-  { address: "5tzFkiKscMRHK5ZXkrZXZ1RWhLPTDPJCnwMNh1ADIN83", name: "Binance Hot Wallet 1", category: "institutional_vault", tier: "exchange_custody", source: "vault_seed", expectedVerdict: "VERIFIED_SAFE" },
+  { address: "5tzFkiKscMRHK5ZXkrZXZ1RWhLPTDPJCnwMNh1AD1N83", name: "Binance Hot Wallet 1", category: "institutional_vault", tier: "exchange_custody", source: "vault_seed", expectedVerdict: "VERIFIED_SAFE" },
   { address: "2AQdpHJ2JpcEgPiATUXjQxA8QmafFegfQwSLWSprPicm", name: "Coinbase Prime Custody Hot Wallet", category: "institutional_vault", tier: "exchange_custody", source: "vault_seed", expectedVerdict: "VERIFIED_SAFE" },
 
   // 4. Cold Storage & Rare History (LOW_TRUST_WARMING)

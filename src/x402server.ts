@@ -139,6 +139,7 @@ export interface X402ServerOptions {
   dbPath?: string;
   recipient?: string;
   rpcUrl?: string;
+  baseUrl?: string;
   maxAgeSec?: number;
   paymentVerifier?: PaymentVerifier;
   scanHandler?: (wallet: string) => Promise<unknown>;
@@ -774,7 +775,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       // 0. Solana Actions / Blinks routes (/actions.json, /api/actions/...)
       if (pathname === "/actions.json" || pathname.startsWith("/api/actions")) {
         const handled = await handleBlinkHttpRequest(req, res, {
-          baseUrl: `http://${req.headers.host || "localhost"}`,
+          baseUrl: options.baseUrl,
           recipient,
           rpcUrl: options.rpcUrl,
           connection: options.connection,

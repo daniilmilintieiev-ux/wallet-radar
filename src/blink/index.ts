@@ -326,7 +326,7 @@ export function getBlinkRegistrationManifest(
 
   return {
     name: "Wallet Radar",
-    version: "0.1.0",
+    version: "1.0.0",
     description: "One-tap Solana wallet risk scan and on-chain ZK attestation via Blinks",
     actionUrl,
     actionsJsonUrl,
@@ -426,8 +426,10 @@ export async function handleBlinkHttpRequest(
   res: http.ServerResponse,
   options: BlinkServerOptions = {},
 ): Promise<boolean> {
-  const host = req.headers.host || "localhost";
-  const url = new URL(req.url || "/", `http://${host}`);
+  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "localhost";
+  const proto = (req.headers["x-forwarded-proto"] as string) || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
+  const effectiveBaseUrl = options.baseUrl || process.env.RADAR_BLINK_BASE_URL || `${proto}://${host}`;
+  const url = new URL(req.url || "/", `${proto}://${host}`);
   const pathname = url.pathname;
   const method = req.method?.toUpperCase() || "GET";
 
@@ -458,7 +460,7 @@ export async function handleBlinkHttpRequest(
     if (method === "GET") {
       const targetWallet = url.searchParams.get("wallet") || undefined;
       const actionMetadata = buildRadarScanActionGet({
-        baseUrl: options.baseUrl,
+        baseUrl: effectiveBaseUrl,
         iconUrl: options.iconUrl,
         priceUsdc: options.priceUsdc,
         targetWallet,
@@ -509,7 +511,7 @@ export async function handleBlinkHttpRequest(
 
       try {
         const postRes = await buildRadarScanActionPost(account, targetWallet, {
-          baseUrl: options.baseUrl,
+          baseUrl: effectiveBaseUrl,
           recipient: options.recipient,
           priceUsdc: options.priceUsdc,
           rpcUrl: options.rpcUrl,
