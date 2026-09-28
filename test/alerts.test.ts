@@ -220,3 +220,27 @@ test("TelegramSink: auto-detects HTML content and sends parse_mode=HTML", async 
   assert.equal(capturedBody.chat_id, "test-chat");
   assert.equal(capturedBody.parse_mode, "HTML");
 });
+
+test("formatAlertHtml: escapes HTML entities in digest, label, and anomaly texts (S-5)", () => {
+  const hostileAnomalies: Anomaly[] = [
+    {
+      type: "TOXIC_MINT" as any,
+      wallet: "2pcVVJtijz7o1GzJrq3o13CWdMe2iyHj8wDc22tnBC99",
+      severity: "high",
+      timestamp: 1700000000,
+      evidence: {},
+      text: '<script>alert("pwned")</script> & token <bad>',
+    },
+  ];
+  const html = formatAlertHtml("2pcVVJtijz7o1GzJrq3o13CWdMe2iyHj8wDc22tnBC99", 90, hostileAnomalies, {
+    label: "<b>Injected</b> & evil",
+    digest: '<a href="javascript:attack()">Click</a> & "quote"',
+  });
+
+  assert.ok(!html.includes("<script>"));
+  assert.ok(html.includes("&lt;script&gt;alert(&quot;pwned&quot;)&lt;/script&gt; &amp; token &lt;bad&gt;"));
+  assert.ok(!html.includes("<b>Injected</b> & evil"));
+  assert.ok(html.includes("[&lt;b&gt;Injected&lt;/b&gt; &amp; evil]"));
+  assert.ok(!html.includes("<a href="));
+  assert.ok(html.includes("&lt;a href=&quot;javascript:attack()&quot;&gt;Click&lt;/a&gt; &amp; &quot;quote&quot;"));
+});

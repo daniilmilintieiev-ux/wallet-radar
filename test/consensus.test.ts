@@ -78,8 +78,8 @@ test("LLM hold-veto: conservative fourth voter flips clean panel to hold", () =>
   assert.equal(c.verdict, "hold");
   assert.equal(c.rule, "any-hold-veto");
   assert.deepEqual(c.dissent, ["behavior", "solvency", "identity"]);
-  // LLM weight 0.5 vs 3.0 for the safe majority -> low agreement, dissenting minority.
-  assert.equal(c.agreement, 0.14);
+  // LLM weight 1.0 vs 3.0 for the safe majority -> agreement is 1/4 = 0.25 (S-6).
+  assert.equal(c.agreement, 0.25);
 });
 
 test("LLM safe cannot override a deterministic hold", () => {

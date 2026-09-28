@@ -8,7 +8,7 @@ import * as z from "zod/v4";
  * timestamp for time-based rules); every other field passes through untouched
  * so newer Helius response shapes keep working.
  */
-const ENHANCED_TX_SCHEMA = z.looseObject({
+export const ENHANCED_TX_SCHEMA = z.looseObject({
   signature: z.string().min(1),
   timestamp: z.number(),
 });

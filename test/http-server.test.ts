@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
-import { createServer, clientIp } from "../src/http-server.js";
+import { createServer, clientIp, createRateLimiter } from "../src/http-server.js";
 import { getVersion } from "../src/mcp-server.js";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -813,7 +813,7 @@ test("http-server: POST /simulate input validations (missing balances, negative 
     });
     assert.equal(res3.status, 400);
     const b3 = (await res3.json()) as { error: string };
-    assert.ok(b3.error.includes("body.token must be 'usdc' or 'sol'"));
+    assert.ok(b3.error.includes("body.token must be 'usdc', 'usdt', or 'sol'"));
   } finally {
     await r.close();
   }
@@ -1209,6 +1209,68 @@ test("http-server: POST /gate-copy validates targetWallet and requires API key",
   } finally {
     await r.close();
   }
+});
+
+test("http-server: POST /analyze rejects transactions missing signature or timestamp (S-1)", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallet: "DemoWallet11111111111111111111111111111111",
+        txs: [
+          { foo: "bar" }, // missing signature and timestamp
+        ],
+      }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.ok(body.error.includes("body.txs[0] must be a transaction object with signature (string) and timestamp (number)"));
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: POST /simulate accepts token 'usdt' without throwing 400 (S-2)", async () => {
+  const r = await startTestServer();
+  try {
+    const validWallet = "11111111111111111111111111111111";
+    const res = await fetch(`${r.base}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallet: validWallet,
+        amountUsd: 10,
+        token: "usdt",
+        balances: { sol: 1, usdc: 10, usdt: 10 },
+      }),
+    });
+    // Should NOT be 400 parameter rejection (returns 503 when live HELIUS key is missing)
+    assert.notEqual(res.status, 400);
+  } finally {
+    await r.close();
+  }
+});
+
+test("http-server: createRateLimiter protects blocked IPs from eviction by spoofed IP traffic (S-7)", () => {
+  const limiter = createRateLimiter(2);
+  const abusiveIp = "192.168.1.100";
+
+  // IP consumes allowance and gets rate limited
+  assert.equal(limiter.check(abusiveIp).ok, true);
+  assert.equal(limiter.check(abusiveIp).ok, true);
+  const blockedCheck = limiter.check(abusiveIp);
+  assert.equal(blockedCheck.ok, false);
+
+  // An attacker sends requests from lots of random single-request IPs to trigger evictions
+  for (let i = 0; i < 50; i++) {
+    limiter.check(`10.0.0.${i}`);
+  }
+
+  // The abusive IP must REMAIN rate-limited (not evicted!)
+  const recheckAbusive = limiter.check(abusiveIp);
+  assert.equal(recheckAbusive.ok, false);
 });
 
 

@@ -69,7 +69,7 @@ const DEFAULT_WEIGHTS: Record<AgentName, number> = {
   behavior: 1.0,
   solvency: 1.0,
   identity: 1.0,
-  llm: 0.5,
+  llm: 1.0,
 };
 
 function weightOf(vote: AgentVote, opts: ConsensusOptions): number {

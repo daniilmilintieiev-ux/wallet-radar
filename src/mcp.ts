@@ -7,7 +7,7 @@ import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
-import { fetchWalletTransactions } from "./collector.js";
+import { fetchWalletTransactions, ENHANCED_TX_SCHEMA } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
@@ -172,6 +172,15 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           content: [{ type: "text", text: "Invalid txs: expected a JSON array of transaction objects." }],
           isError: true,
         };
+      }
+      for (let i = 0; i < parsed.length; i++) {
+        const res = ENHANCED_TX_SCHEMA.safeParse(parsed[i]);
+        if (!res.success) {
+          return {
+            content: [{ type: "text", text: `Invalid txs[${i}]: expected transaction object with signature (string) and timestamp (number).` }],
+            isError: true,
+          };
+        }
       }
       const storedBaseline = options.store ? options.store.getBaseline(wallet) : null;
       const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);

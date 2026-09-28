@@ -9,7 +9,7 @@ import { buildEnvHookBridge } from "./hook/index.js";
 import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { digestAnomalies } from "./digest.js";
-import { fetchWalletTransactions } from "./collector.js";
+import { fetchWalletTransactions, ENHANCED_TX_SCHEMA } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk } from "./mint.js";
 import { Store } from "./store.js";
@@ -733,6 +733,12 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
       parsed = txs;
     } else {
       throw new Error("Invalid txs: expected a JSON array of transaction objects");
+    }
+    for (let i = 0; i < parsed.length; i++) {
+      const res = ENHANCED_TX_SCHEMA.safeParse(parsed[i]);
+      if (!res.success) {
+        throw new Error(`Invalid txs[${i}]: expected transaction object with signature (string) and timestamp (number)`);
+      }
     }
     const storedBaseline = isValidBase58(wallet) ? store.getBaseline(wallet) : null;
     const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);

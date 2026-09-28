@@ -8,7 +8,7 @@ import { detectAnomalies, computeRiskScore } from "./analyzer.js";
 import { updateBaseline, resolveScoringBaseline } from "./baseline.js";
 import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
-import { fetchWalletTransactions } from "./collector.js";
+import { fetchWalletTransactions, ENHANCED_TX_SCHEMA } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk, fetchMintMetadata } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist, formatTrustLine, type TrustResult, type TrustVerdict, type TrustBalances } from "./trust.js";
@@ -292,6 +292,15 @@ async function toolAnalyze(body: Record<string, unknown>, ctx: RequestContext = 
   if (parsed.length > 1000) {
     throw new HttpError(400, "body.txs: at most 1000 transactions allowed.");
   }
+  const validated: EnhancedTx[] = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const res = ENHANCED_TX_SCHEMA.safeParse(parsed[i]);
+    if (!res.success) {
+      throw new HttpError(400, `body.txs[${i}] must be a transaction object with signature (string) and timestamp (number).`);
+    }
+    validated.push(res.data as EnhancedTx);
+  }
+  parsed = validated;
   const storedBaseline = ctx?.store && isBase58Address(wallet) ? ctx.store.getBaseline(wallet) : null;
   const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
   const anomalies = detectAnomalies(wallet, parsed, scoringBaseline);
@@ -366,7 +375,9 @@ async function toolSimulate(body: Record<string, unknown>, ctx: RequestContext =
     }
   }
   const token = typeof body.token === "string" ? body.token : "usdc";
-  if (token !== "usdc" && token !== "sol") throw new HttpError(400, "body.token must be 'usdc' or 'sol'.");
+  if (token !== "usdc" && token !== "sol" && token !== "usdt") {
+    throw new HttpError(400, "body.token must be 'usdc', 'usdt', or 'sol'.");
+  }
   if (body.maxRisk !== undefined && (typeof body.maxRisk !== "number" || !Number.isFinite(body.maxRisk) || body.maxRisk < 0 || body.maxRisk > 100)) {
     throw new HttpError(400, "body.maxRisk must be a number between 0 and 100.");
   }
@@ -672,20 +683,15 @@ export function applyDefense(store: Store, body: Record<string, unknown>, out: R
       );
     }
     // Audit 2.3: /scan responses carry out.verdict directly without an out.action container.
-    // Tighten out.verdict (and out.riskScore) when the wallet is blocked or gated.
+    // Tighten out.verdict when the wallet is blocked or gated.
+    // NOTE (S-3): The true underlying riskScore is preserved; defense posture is reflected in verdict and defense view.
     if (typeof out.verdict === "string") {
       if (st.state === "blocked") {
         out.verdict = "HIGH RISK";
-        if (typeof out.riskScore === "number" && out.riskScore < 85) {
-          out.riskScore = 85;
-        }
         out.enforcedByDefense = true;
       } else if (st.state === "gated") {
         if (out.verdict === "SAFE" || out.verdict === "LOW RISK") {
           out.verdict = "SUSPICIOUS";
-          if (typeof out.riskScore === "number" && out.riskScore < 60) {
-            out.riskScore = 60;
-          }
           out.enforcedByDefense = true;
         }
       }
@@ -1133,15 +1139,39 @@ export function createRateLimiter(limitPerMin: number): RateLimiter {
       const now = Date.now();
       const b = buckets.get(ip);
       if (!b || now >= b.resetAt) {
-        // Guard against memory exhaustion from high-cardinality spoofed IPs (audit 3.2)
+        // Guard against memory exhaustion from high-cardinality spoofed IPs (audit 3.2, S-7)
         if (buckets.size >= MAX_BUCKETS) {
-          const firstKey = buckets.keys().next().value;
-          if (firstKey !== undefined) buckets.delete(firstKey);
+          // 1. Purge expired buckets first
+          let reclaimed = false;
+          for (const [k, val] of buckets) {
+            if (now >= val.resetAt) {
+              buckets.delete(k);
+              reclaimed = true;
+              if (buckets.size < MAX_BUCKETS) break;
+            }
+          }
+          // 2. If still full, evict an unblocked entry (never evict actively blocked offenders)
+          if (buckets.size >= MAX_BUCKETS) {
+            for (const [k, val] of buckets) {
+              if (val.count <= limitPerMin) {
+                buckets.delete(k);
+                reclaimed = true;
+                break;
+              }
+            }
+          }
+          // 3. If all buckets are actively rate-limited offenders, protect tracking by rejecting untracked new IPs
+          if (buckets.size >= MAX_BUCKETS && !reclaimed) {
+            return { ok: false, retryAfterSec: 60 };
+          }
         }
         buckets.set(ip, { count: 1, resetAt: now + WINDOW_MS });
         return { ok: true };
       }
       b.count += 1;
+      // Refresh recency in Map so active IPs are not evicted as oldest (LRU behavior)
+      buckets.delete(ip);
+      buckets.set(ip, b);
       if (b.count > limitPerMin) {
         return { ok: false, retryAfterSec: Math.max(1, Math.ceil((b.resetAt - now) / 1000)) };
       }

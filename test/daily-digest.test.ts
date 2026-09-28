@@ -130,13 +130,23 @@ test("buildDailyDigestData & formatDailyDigestHtml: full aggregation and visual 
     assert.equal(data.economics.costUsd, 0.0005);
     assert.equal(data.economics.netUsd, 0.0045);
 
-    // Format HTML
+    // Format HTML default (clean node name, no hardcoded personal links without env/options)
     const html = formatDailyDigestHtml(data);
     assert.ok(html.includes("WALLET RADAR · DAILY DIGEST"));
     assert.ok(html.includes("Pump.fun Trader"));
     assert.ok(html.includes("BLOCKED"));
     assert.ok(html.includes("0.005 USDC"));
-    assert.ok(html.includes("radar.cbellory.xyz/dashboard"));
+    assert.ok(html.includes("Radar Node"));
+
+    // Format HTML with configurable options (S-4)
+    const htmlCustom = formatDailyDigestHtml(data, {
+      nodeName: "Worker Node 1",
+      dashboardUrl: "https://radar.example.com/dashboard",
+      blinksUrl: "https://pay.example.com",
+    });
+    assert.ok(htmlCustom.includes("Worker Node 1"));
+    assert.ok(htmlCustom.includes("radar.example.com/dashboard"));
+    assert.ok(htmlCustom.includes("pay.example.com"));
   });
 });
 

@@ -247,13 +247,23 @@ export function buildDailyDigestData(
   };
 }
 
+export interface DigestFormatOptions {
+  nodeName?: string;
+  digestTime?: string;
+  dashboardUrl?: string;
+  blinksUrl?: string;
+}
+
 /** Formats the aggregated data into a visually pleasing, human-readable Telegram HTML message. */
-export function formatDailyDigestHtml(data: DailyDigestData): string {
+export function formatDailyDigestHtml(data: DailyDigestData, options?: DigestFormatOptions): string {
   const lines: string[] = [];
+
+  const nodeName = options?.nodeName ?? process.env.RADAR_NODE_NAME ?? process.env.RADAR_NODE_LABEL ?? "Radar Node";
+  const digestTime = options?.digestTime ?? process.env.RADAR_DIGEST_TIME ?? "07:00 (UTC+3)";
 
   // Header
   lines.push("🛡️ <b>WALLET RADAR · DAILY DIGEST</b>");
-  lines.push(`<i>${data.dateStr} · 07:00 (UTC+3) · Orange Pi Node</i>`);
+  lines.push(`<i>${data.dateStr} · ${escapeHtml(digestTime)} · ${escapeHtml(nodeName)}</i>`);
   lines.push("━━━━━━━━━━━━━━━━━━━━");
   lines.push("");
 
@@ -320,10 +330,19 @@ export function formatDailyDigestHtml(data: DailyDigestData): string {
   lines.push(`• Daily Net PnL: <b>${netSign}$${data.economics.netUsd.toFixed(4)}</b> (${netEmoji})`);
   lines.push("");
 
-  // Footer links
-  lines.push("━━━━━━━━━━━━━━━━━━━━");
-  lines.push('🌐 <b>Dashboard:</b> <a href="https://radar.cbellory.xyz/dashboard">radar.cbellory.xyz/dashboard</a>');
-  lines.push('⚡ <b>Blinks:</b> <a href="https://pay.cbellory.xyz/actions.json">pay.cbellory.xyz</a>');
+  // Footer links (rendered when configured via options or env)
+  const dashboardUrl = options?.dashboardUrl ?? process.env.RADAR_DASHBOARD_URL;
+  const blinksUrl = options?.blinksUrl ?? process.env.RADAR_BLINKS_URL ?? process.env.RADAR_PAY_URL;
+  if (dashboardUrl || blinksUrl) {
+    lines.push("━━━━━━━━━━━━━━━━━━━━");
+    if (dashboardUrl) {
+      lines.push(`🌐 <b>Dashboard:</b> <a href="${escapeHtml(dashboardUrl)}">${escapeHtml(dashboardUrl.replace(/^https?:\/\//, ""))}</a>`);
+    }
+    if (blinksUrl) {
+      const actionsUrl = blinksUrl.endsWith("/actions.json") ? blinksUrl : `${blinksUrl.replace(/\/$/, "")}/actions.json`;
+      lines.push(`⚡ <b>Blinks:</b> <a href="${escapeHtml(actionsUrl)}">${escapeHtml(blinksUrl.replace(/^https?:\/\//, ""))}</a>`);
+    }
+  }
 
   return lines.join("\n");
 }
@@ -337,10 +356,11 @@ export async function sendDailyDigest(
     windowHours?: number;
     markAlerted?: boolean;
     fetchImpl?: typeof fetch;
+    formatOptions?: DigestFormatOptions;
   } = {},
 ): Promise<{ ok: boolean; message: string; data: DailyDigestData; text: string }> {
   const data = buildDailyDigestData(store, options);
-  const text = formatDailyDigestHtml(data);
+  const text = formatDailyDigestHtml(data, options.formatOptions);
 
   const sink = options.sink ?? getTelegramSink(options.fetchImpl);
   if (!sink) {

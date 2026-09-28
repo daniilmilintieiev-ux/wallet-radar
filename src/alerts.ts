@@ -146,6 +146,16 @@ export function formatAlert(
   return `${head}\n${body}${digestLine}`;
 }
 
+/** Sanitizes a string for safe inclusion in Telegram HTML parse mode. */
+export function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 /** Formats a rich, visual HTML message for Telegram bot alert delivery. */
 export function formatAlertHtml(
   wallet: string,
@@ -158,13 +168,13 @@ export function formatAlertHtml(
   } = {},
 ): string {
   const short = wallet.length > 8 ? `${wallet.slice(0, 4)}...${wallet.slice(-4)}` : wallet;
-  const labelStr = options.label ? ` [${options.label}]` : "";
+  const labelStr = options.label ? ` [${escapeHtml(options.label)}]` : "";
   const posture = options.defenseState
     ? options.defenseState === "blocked"
       ? " · 🛑 <b>BLOCKED</b>"
       : options.defenseState === "gated"
       ? " · ⚠️ <b>GATED</b>"
-      : ` · <b>${options.defenseState.toUpperCase()}</b>`
+      : ` · <b>${escapeHtml(options.defenseState.toUpperCase())}</b>`
     : "";
 
   const sevBadge = riskScore >= 70 ? "🔴" : riskScore >= 30 ? "🟡" : "🟢";
@@ -172,7 +182,7 @@ export function formatAlertHtml(
   const lines: string[] = [
     `🚨 <b>WALLET RADAR · THREAT DETECTED</b>`,
     `━━━━━━━━━━━━━━━━━━━━`,
-    `Target: <code>${short}</code>${labelStr}`,
+    `Target: <code>${escapeHtml(short)}</code>${labelStr}`,
     `Risk: ${sevBadge} <b>${riskScore}/100</b>${posture}`,
     `Anomalies: <b>${anomalies.length}</b>`,
     ``,
@@ -181,7 +191,7 @@ export function formatAlertHtml(
 
   for (const a of anomalies.slice(0, 5)) {
     const icon = a.severity === "high" ? "🔴" : a.severity === "medium" ? "🟡" : "⚪";
-    lines.push(`${icon} <b>${a.type}</b>: ${a.text}`);
+    lines.push(`${icon} <b>${escapeHtml(a.type)}</b>: ${escapeHtml(a.text)}`);
   }
 
   if (anomalies.length > 5) {
@@ -190,7 +200,7 @@ export function formatAlertHtml(
 
   if (options.digest) {
     lines.push(``);
-    lines.push(`💡 <i>${options.digest}</i>`);
+    lines.push(`💡 <i>${escapeHtml(options.digest)}</i>`);
   }
 
   lines.push(`━━━━━━━━━━━━━━━━━━━━`);

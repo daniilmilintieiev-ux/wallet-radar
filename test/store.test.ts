@@ -515,7 +515,7 @@ test("audit 2.3: applyDefense directly hardens /scan response verdict and riskSc
   const wallet = "W_DEFENSE_SCAN";
   const now = 1700000000;
 
-  // 1. Stance: blocked -> /scan verdict must become HIGH RISK and riskScore >= 85
+  // 1. Stance: blocked -> /scan verdict must become HIGH RISK, preserving authentic riskScore (S-3)
   store.setDefenseState(wallet, { state: "blocked", riskAt: 90, setAt: now, quietStreak: 0, actions: 1 });
   const scanBlocked: Record<string, unknown> = {
     wallet,
@@ -524,10 +524,10 @@ test("audit 2.3: applyDefense directly hardens /scan response verdict and riskSc
   };
   applyDefense(store, { wallet }, scanBlocked);
   assert.equal(scanBlocked.verdict, "HIGH RISK");
-  assert.equal(scanBlocked.riskScore, 85);
+  assert.equal(scanBlocked.riskScore, 10);
   assert.equal(scanBlocked.enforcedByDefense, true);
 
-  // 2. Stance: gated -> /scan verdict SAFE must become SUSPICIOUS and riskScore >= 60
+  // 2. Stance: gated -> /scan verdict SAFE must become SUSPICIOUS, preserving authentic riskScore (S-3)
   store.setDefenseState(wallet, { state: "gated", riskAt: 65, setAt: now, quietStreak: 0, actions: 2 });
   const scanGated: Record<string, unknown> = {
     wallet,
@@ -536,7 +536,7 @@ test("audit 2.3: applyDefense directly hardens /scan response verdict and riskSc
   };
   applyDefense(store, { wallet }, scanGated);
   assert.equal(scanGated.verdict, "SUSPICIOUS");
-  assert.equal(scanGated.riskScore, 60);
+  assert.equal(scanGated.riskScore, 20);
   assert.equal(scanGated.enforcedByDefense, true);
 
   store.close();
