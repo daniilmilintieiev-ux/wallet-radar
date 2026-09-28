@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { simulatePayment, type SimulateInput } from "../src/simulate.js";
+import { simulatePayment, computeTieredLimits, type SimulateInput } from "../src/simulate.js";
 import { Anomaly } from "../src/types.js";
 
 function makeInput(overrides: Partial<SimulateInput> = {}): SimulateInput {
@@ -179,6 +179,99 @@ describe("simulatePayment", () => {
     // $300 / $50 = 6x ratio -> triggers LARGE_PAYMENT
     assert.ok(result.wouldTrigger.includes("LARGE_PAYMENT"));
     assert.equal(result.liquidityAfterUsd, 150);
+  });
+
+  describe("Tiered Limits & Execution Engine", () => {
+    it("computes tiered limits for safe high-liquidity wallet", () => {
+      const limits = computeTieredLimits({
+        liquidityUsd: 1000,
+        riskScore: 10,
+        medianSwapAmountUsd: 100,
+        legacyVerdict: "safe",
+      });
+      assert.equal(limits.instant.allowed, true);
+      assert.equal(limits.instant.cooldownSec, 0);
+      assert.equal(limits.instant.slippageToleranceBps, 150);
+      assert.ok(limits.instant.maxAmountUsd > 0);
+
+      assert.equal(limits.standard.allowed, true);
+      assert.equal(limits.standard.cooldownSec, 60);
+      assert.equal(limits.standard.slippageToleranceBps, 100);
+      assert.ok(limits.standard.maxAmountUsd > limits.instant.maxAmountUsd);
+
+      assert.equal(limits.guarded.allowed, true);
+      assert.equal(limits.guarded.cooldownSec, 300);
+      assert.equal(limits.guarded.slippageToleranceBps, 50);
+      assert.ok(limits.guarded.maxAmountUsd > limits.standard.maxAmountUsd);
+
+      assert.ok(limits.ceilingUsd >= limits.guarded.maxAmountUsd);
+    });
+
+    it("restricts instant tier on hold wallet and enforces elevated cooldowns", () => {
+      const limits = computeTieredLimits({
+        liquidityUsd: 100,
+        riskScore: 40,
+        medianSwapAmountUsd: 50,
+        legacyVerdict: "hold",
+      });
+      assert.equal(limits.instant.allowed, false);
+      assert.equal(limits.standard.allowed, true);
+      assert.equal(limits.standard.cooldownSec, 900);
+      assert.equal(limits.guarded.cooldownSec, 1800);
+    });
+
+    it("strictly shuts down all tiers for high-threat wallet (risk >= 70)", () => {
+      const limits = computeTieredLimits({
+        liquidityUsd: 5000,
+        riskScore: 85,
+        medianSwapAmountUsd: 200,
+        legacyVerdict: "hold",
+      });
+      assert.equal(limits.instant.allowed, false);
+      assert.equal(limits.standard.allowed, false);
+      assert.equal(limits.guarded.allowed, false);
+      assert.equal(limits.ceilingUsd, 0);
+    });
+
+    it("simulation categorizes micro trade into instant tier with 0s cooldown", () => {
+      const result = simulatePayment(makeInput({
+        amountUsd: 15,
+        balances: { sol: 10, usdc: 2000, usdt: 0 },
+        medianSwapAmountUsd: 100,
+      }));
+      assert.equal(result.safeToExecute, true);
+      assert.equal(result.executionTier, "instant");
+      assert.equal(result.suggestedCooldownSec, 0);
+      assert.equal(result.slippageToleranceBps, 150);
+    });
+
+    it("simulation categorizes standard trade into standard tier with 60s cooldown", () => {
+      const result = simulatePayment(makeInput({
+        amountUsd: 75,
+        balances: { sol: 10, usdc: 2000, usdt: 0 },
+        medianSwapAmountUsd: 50,
+      }));
+      assert.equal(result.safeToExecute, true);
+      assert.equal(result.executionTier, "standard");
+      assert.equal(result.suggestedCooldownSec, 60);
+      assert.equal(result.slippageToleranceBps, 100);
+    });
+
+    it("simulation detects toxic token mint with freeze authority and blocks payment", () => {
+      const result = simulatePayment(makeInput({
+        amountUsd: 50,
+        mint: "ToxicMint11111111111111111111111111111111",
+        mintRisk: {
+          mint: "ToxicMint11111111111111111111111111111111",
+          mintAuthority: null,
+          freezeAuthority: "MaliciousDev11111111111111111111111111111111",
+        },
+      }));
+      assert.equal(result.safeToExecute, false);
+      assert.equal(result.executionTier, "blocked");
+      assert.ok(result.wouldTrigger.includes("TOXIC_MINT"));
+      assert.ok(result.recommendation.includes("BLOCKED"));
+    });
   });
 });
 

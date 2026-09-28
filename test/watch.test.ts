@@ -824,5 +824,136 @@ test("watchOnce: adaptive pacing with quietPolls=1 stretches on first quiet poll
   cleanup(dir);
 });
 
+test("watchOnce: per-wallet crash isolation: unhandled error in wallet 1 does not crash wallet 2", async () => {
+  const { store, dir } = tmpStore();
+  const wFail = "W_CRASH";
+  const wSafe = "W_SAFE";
+  store.addWallet(wFail);
+  store.addWallet(wSafe);
+
+  // Pre-seed baselines
+  store.saveBaseline({
+    walletAddress: wFail,
+    updatedAt: 1,
+    knownVenues: [],
+    knownPrograms: [],
+    medianSwapAmount: 0,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1000,
+    txCount: 1,
+  });
+  store.saveBaseline({
+    walletAddress: wSafe,
+    updatedAt: 1,
+    knownVenues: [],
+    knownPrograms: [],
+    medianSwapAmount: 0,
+    medianTps: 0,
+    activeHours: [],
+    lastSeenAt: 1000,
+    txCount: 1,
+  });
+
+  const fetchTxs = async (wallet: string): Promise<EnhancedTx[]> => [
+    {
+      signature: `sig_${wallet}_1`,
+      timestamp: 2000,
+      source: "JUPITER",
+      programs: [],
+    },
+  ];
+
+  // Price fetcher throws for wFail, succeeds for wSafe
+  const fetchPrices = async (_txs: EnhancedTx[], wallet?: string) => {
+    if (wallet === wFail) {
+      throw new Error("Fatal unhandled price API error for W_CRASH");
+    }
+    return {};
+  };
+
+  const report = await watchOnce(store, "key", {
+    fetchTxs,
+    fetchPrices,
+    usePrices: true,
+    nowSec: 2500,
+  });
+
+  assert.equal(report.wallets.length, 2);
+  const rFail = report.wallets.find((w) => w.wallet === wFail);
+  const rSafe = report.wallets.find((w) => w.wallet === wSafe);
+
+  assert.ok(rFail);
+  // wSafe proceeded and succeeded despite wFail price fetch error!
+  assert.ok(rSafe);
+  assert.equal(rSafe.error, undefined);
+  assert.equal(rSafe.freshTxCount, 1);
+  assert.equal(store.getBaseline(wSafe)?.txCount, 2);
+
+  store.close();
+  cleanup(dir);
+});
+
+test("watchOnce: baseline double-counting prevention: alert sink failure preserves markSeen and prevents double-counting", async () => {
+  const { store, dir } = tmpStore();
+  const wallet = "W_DOUBLE";
+  store.addWallet(wallet);
+
+  // Pre-seed baseline
+  store.saveBaseline({
+    walletAddress: wallet,
+    updatedAt: 1,
+    knownVenues: ["JUPITER"],
+    knownPrograms: [USDC_MINT],
+    medianSwapAmount: 50,
+    medianSwapAmountUsd: 50,
+    medianTps: 0.1,
+    activeHours: [],
+    lastSeenAt: 1000,
+    txCount: 1,
+  });
+
+  // Fresh swap triggers an alert (e.g. LARGE_SWAP 10x median)
+  const freshTx = makeSwapTx("sig_fresh_1", 2000, USDC_MINT, 500, MEME_MINT, 5000);
+  const fetchTxs = async () => [freshTx];
+
+  // Alert sink throws on send (e.g. Telegram rate limit 429)
+  let sinkAttempts = 0;
+  const failingSink = {
+    async send() {
+      sinkAttempts++;
+      throw new Error("Telegram API 429: Too Many Requests");
+    },
+  };
+
+  // Poll 1: Baseline updated with fresh tx, alert sink throws, but markSeen is already recorded!
+  const r1 = await watchOnce(store, "key", {
+    fetchTxs,
+    sink: failingSink,
+    usePrices: false,
+    nowSec: 2500,
+  });
+
+  assert.equal(sinkAttempts, 1);
+  assert.equal(r1.wallets[0].freshTxCount, 1);
+  const baseAfterPoll1 = store.getBaseline(wallet);
+  assert.equal(baseAfterPoll1?.txCount, 2);
+
+  // Poll 2: Helius returns the exact same transaction again
+  const r2 = await watchOnce(store, "key", {
+    fetchTxs,
+    sink: failingSink,
+    usePrices: false,
+    nowSec: 2600,
+  });
+
+  // Transaction was already marked seen: freshTxCount is 0, baseline is NOT inflated!
+  const baseAfterPoll2 = store.getBaseline(wallet);
+  assert.equal(baseAfterPoll2?.txCount, 2); // NOT double-counted to 3!
+
+  store.close();
+  cleanup(dir);
+});
+
 
 

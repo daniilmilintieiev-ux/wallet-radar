@@ -630,4 +630,226 @@ describe("Agent SDK v1 (src/sdk)", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("client.trust(wallet): queries /trust endpoint and handles response", async () => {
+    const mockTrustRes = {
+      wallet: targetWallet,
+      verdict: "safe",
+      reasons: [],
+      riskScore: 12,
+      anomalies: [],
+      liquidityUsd: 1500,
+      balances: { sol: 5, usdc: 750, usdt: 0 },
+      solPrice: 150,
+      medianSwapAmountUsd: 80,
+    };
+
+    const mockFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      assert.ok(String(url).endsWith("/trust"));
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.wallet, targetWallet);
+      assert.equal(body.maxRisk, 25);
+      return new Response(JSON.stringify(mockTrustRes), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const client = createRadarClient({ fetchFn: mockFetch });
+    const res = await client.trust(targetWallet, { maxRisk: 25 });
+    assert.equal(res.wallet, targetWallet);
+    assert.equal(res.verdict, "safe");
+    assert.equal(res.riskScore, 12);
+    assert.equal(res.liquidityUsd, 1500);
+  });
+
+  test("client.batch(wallets): queries /batch endpoint and returns shortlist", async () => {
+    const mockBatchRes = {
+      safe: [{ wallet: "w1", verdict: "safe", riskScore: 10, liquidityUsd: 1000, reasons: [], anomalies: [], balances: null, solPrice: null, medianSwapAmountUsd: null }],
+      hold: [{ wallet: "w2", verdict: "hold", riskScore: 85, liquidityUsd: 50, reasons: ["high risk"], anomalies: [], balances: null, solPrice: null, medianSwapAmountUsd: null }],
+      unknown: [],
+    };
+
+    const mockFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      assert.ok(String(url).endsWith("/batch"));
+      const body = JSON.parse(init?.body as string);
+      assert.deepEqual(body.wallets, ["w1", "w2"]);
+      return new Response(JSON.stringify(mockBatchRes), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const client = createRadarClient({ fetchFn: mockFetch });
+    const res = await client.batch(["w1", "w2"]);
+    assert.equal(res.safe.length, 1);
+    assert.equal(res.hold.length, 1);
+    assert.equal(res.safe[0].wallet, "w1");
+  });
+
+  test("client.simulate(input): performs pre-trade what-if simulation", async () => {
+    const mockSimRes = {
+      decision: {
+        action: "allow",
+        reasons: ["trade within liquidity and risk bounds"],
+      },
+      exceedsLiquidity: false,
+      liquidityAfterUsd: 900,
+      riskDelta: 5,
+      projectedRiskScore: 15,
+      wouldTrigger: [],
+      recommendation: "Safe to proceed with payment",
+      safeToExecute: true,
+    };
+
+    const mockFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      assert.ok(String(url).endsWith("/simulate"));
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.wallet, targetWallet);
+      assert.equal(body.amountUsd, 100);
+      return new Response(JSON.stringify(mockSimRes), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const client = createRadarClient({ fetchFn: mockFetch });
+    const res = await client.simulate({ wallet: targetWallet, amountUsd: 100 });
+    assert.equal(res.safeToExecute, true);
+    assert.equal(res.decision.action, "allow");
+    assert.equal(res.liquidityAfterUsd, 900);
+  });
+
+  test("client.gateCopy(params): blocks toxic wallets before copying", async () => {
+    const mockFetch = async (url: string | URL | Request): Promise<Response> => {
+      if (String(url).endsWith("/trust")) {
+        return new Response(
+          JSON.stringify({
+            wallet: targetWallet,
+            verdict: "hold",
+            reasons: ["risk score 92 > max 30", "freeze authority active"],
+            riskScore: 92,
+            anomalies: [{ type: "TOXIC_MINT" }],
+            liquidityUsd: 10,
+            balances: { sol: 0.1, usdc: 0, usdt: 0 },
+            solPrice: 150,
+            medianSwapAmountUsd: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected endpoint: ${String(url)}`);
+    };
+
+    const client = createRadarClient({ fetchFn: mockFetch });
+    const verdict = await client.gateCopy({ targetWallet, copyAmountUsd: 50 });
+
+    assert.equal(verdict.allow, false);
+    assert.equal(verdict.action, "block");
+    assert.equal(verdict.riskScore, 92);
+    assert.match(verdict.reason, /BLOCKED by pre-trade firewall/i);
+    assert.match(verdict.reason, /freeze authority active/i);
+  });
+
+  test("client.gateCopy(params): allows safe wallet within limits and runs simulation", async () => {
+    const mockFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const urlStr = String(url);
+      if (urlStr.endsWith("/trust")) {
+        return new Response(
+          JSON.stringify({
+            wallet: targetWallet,
+            verdict: "safe",
+            reasons: [],
+            riskScore: 15,
+            anomalies: [],
+            liquidityUsd: 2500,
+            balances: { sol: 10, usdc: 1000, usdt: 0 },
+            solPrice: 150,
+            medianSwapAmountUsd: 120,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (urlStr.endsWith("/simulate")) {
+        const body = JSON.parse(init?.body as string);
+        assert.equal(body.amountUsd, 80);
+        return new Response(
+          JSON.stringify({
+            decision: { action: "allow", reasons: [] },
+            exceedsLiquidity: false,
+            liquidityAfterUsd: 2420,
+            riskDelta: 2,
+            projectedRiskScore: 17,
+            wouldTrigger: [],
+            recommendation: "Safe trade execution",
+            safeToExecute: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected endpoint: ${urlStr}`);
+    };
+
+    const client = createRadarClient({ fetchFn: mockFetch });
+    const verdict = await client.gateCopy({ targetWallet, copyAmountUsd: 80 });
+
+    assert.equal(verdict.allow, true);
+    assert.equal(verdict.action, "allow");
+    assert.equal(verdict.riskScore, 15);
+    assert.match(verdict.reason, /VERIFIED_SAFE/i);
+    assert.ok(verdict.details.trust);
+    assert.ok(verdict.details.simulation);
+  });
+
+  test("client.gateCopy(params): throttles payment up to safe ceiling instead of blocking", async () => {
+    const mockFetch = async (url: string | URL | Request): Promise<Response> => {
+      const urlStr = String(url);
+      if (urlStr.endsWith("/trust")) {
+        return new Response(
+          JSON.stringify({
+            wallet: targetWallet,
+            verdict: "safe",
+            reasons: [],
+            riskScore: 20,
+            anomalies: [],
+            liquidityUsd: 1000,
+            balances: { sol: 5, usdc: 250, usdt: 0 },
+            solPrice: 150,
+            medianSwapAmountUsd: 50,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (urlStr.endsWith("/simulate")) {
+        return new Response(
+          JSON.stringify({
+            decision: { action: "throttle", verdict: "throttle", suggestedLimitUsd: 65, maxPaymentUsd: 65 },
+            exceedsLiquidity: false,
+            liquidityAfterUsd: 850,
+            riskDelta: 10,
+            projectedRiskScore: 30,
+            wouldTrigger: ["LARGE_PAYMENT"],
+            recommendation: "Reduce payment to $65.00. Current payment size is elevated relative to wallet profile.",
+            safeToExecute: false,
+            executionTier: "guarded",
+            suggestedCooldownSec: 60,
+            slippageToleranceBps: 50,
+            tieredLimits: { guarded: { maxAmountUsd: 65 } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected endpoint: ${urlStr}`);
+    };
+
+    const client = createRadarClient({ fetchFn: mockFetch });
+    const verdict = await client.gateCopy({ targetWallet, copyAmountUsd: 150 });
+
+    assert.equal(verdict.allow, true);
+    assert.equal(verdict.action, "throttle");
+    assert.equal(verdict.maxSafeAmountUsd, 65);
+    assert.equal(verdict.executionTier, "guarded");
+    assert.equal(verdict.slippageToleranceBps, 50);
+    assert.match(verdict.reason, /THROTTLED/i);
+  });
 });

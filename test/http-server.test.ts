@@ -1188,4 +1188,27 @@ test("audit 2.5: readBody rejects payload larger than 1MB with 413", async () =>
   }
 });
 
+test("http-server: POST /gate-copy validates targetWallet and requires API key", async () => {
+  const r = await startTestServer();
+  try {
+    // 1. Invalid wallet -> 400
+    const resBad = await fetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: "invalid_addr" }),
+    });
+    assert.equal(resBad.status, 400);
+
+    // 2. Valid wallet without HELIUS_API_KEY -> 503
+    const resNoKey = await fetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: "11111111111111111111111111111111", copyAmountUsd: 50 }),
+    });
+    assert.equal(resNoKey.status, 503);
+  } finally {
+    await r.close();
+  }
+});
+
 

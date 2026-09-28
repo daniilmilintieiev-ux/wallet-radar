@@ -1038,4 +1038,66 @@ test("txCounterparties: strips protocol infrastructure accounts from counterpart
   assert.deepEqual(cps, ["PeerWallet1111111111111111111111111111111"]);
 });
 
+test("ACTIVITY_BURST: attacker inserting dummy Vote instruction cannot bypass burst detection", () => {
+  const baseline: Baseline = {
+    walletAddress: WALLET,
+    updatedAt: 1_700_000_000,
+    knownVenues: ["JUPITER"],
+    knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    medianSwapAmount: 10,
+    medianTps: 0.1,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 10,
+  };
+
+  // Burst: 10 swaps in 20s. Attacker adds dummy Vote program/source to attempt bypass.
+  const attackTxs: EnhancedTx[] = Array.from({ length: 10 }, (_, i) => ({
+    signature: `attack_${i}`,
+    timestamp: 1_700_000_100 + i * 2,
+    source: i === 0 ? "VOTE_PROGRAM" : "JUPITER",
+    programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "Vote111111111111111111111111111111111111111"],
+    swap: {
+      tokenInputs: [{ mint: USDC_MINT, rawTokenAmount: { tokenAmount: "1000000", decimals: 6 } }],
+      tokenOutputs: [{ mint: SOL_MINT, rawTokenAmount: { tokenAmount: "10000000", decimals: 9 } }],
+    },
+  }));
+
+  const anomalies = detectAnomalies(WALLET, attackTxs, baseline);
+  assert.ok(
+    anomalies.some((a) => a.type === "ACTIVITY_BURST"),
+    "Attack batch with swaps and dummy Vote instruction must still trigger ACTIVITY_BURST",
+  );
+});
+
+test("ACTIVITY_BURST: genuine consensus validator vote stream does not trigger burst", () => {
+  const validatorWallet = "VoteAccount111111111111111111111111111111";
+  const baseline: Baseline = {
+    walletAddress: validatorWallet,
+    updatedAt: 1_700_000_000,
+    knownVenues: [],
+    knownPrograms: ["Vote111111111111111111111111111111111111111"],
+    medianSwapAmount: 0,
+    medianTps: 5.0,
+    activeHours: [],
+    lastSeenAt: 1_700_000_000,
+    txCount: 100,
+  };
+
+  // 10 genuine vote transactions, no swaps
+  const voteTxs: EnhancedTx[] = Array.from({ length: 10 }, (_, i) => ({
+    signature: `vote_${i}`,
+    timestamp: 1_700_000_100 + i * 2,
+    source: "VOTE_PROGRAM",
+    programs: ["Vote111111111111111111111111111111111111111"],
+  }));
+
+  const anomalies = detectAnomalies(validatorWallet, voteTxs, baseline);
+  assert.equal(
+    anomalies.some((a) => a.type === "ACTIVITY_BURST"),
+    false,
+    "Genuine validator vote stream should not trigger ACTIVITY_BURST",
+  );
+});
+
 

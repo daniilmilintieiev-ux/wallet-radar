@@ -312,15 +312,29 @@ export async function watchOnce(
       // fresh.length > 0: active wallet, reset quiet streak to base interval
       store.recordPacing(wallet, 0, nowSec + basePollSec);
 
-      const prices = usePrices ? await fetchPrices(fresh, wallet) : null;
+      let prices: Record<string, number> | null = null;
+      if (usePrices) {
+        try {
+          prices = await fetchPrices(fresh, wallet);
+        } catch (err) {
+          console.warn(`Price fetch failed for ${wallet}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       const baseline = updateBaseline(wallet, prev, fresh, nowSec, prices);
       store.saveBaseline(baseline);
+      store.markSeen(wallet, fresh.map((t) => ({ sig: t.signature, ts: t.timestamp })));
 
       let anomalyCount = 0;
       let riskScore = 0;
       let defense: DefenseAction | null = null;
       if (!seeded) {
-        const mintRisk = await fetchMintRisk(fresh, wallet);
+        let mintRisk: MintRiskMap | null = null;
+        try {
+          mintRisk = await fetchMintRisk(fresh, wallet);
+        } catch (err) {
+          console.warn(`Mint risk fetch failed for ${wallet}: ${err instanceof Error ? err.message : String(err)}`);
+        }
         const anomalies = detectAnomalies(wallet, fresh, prev, undefined, prices, mintRisk);
         if (anomalies.length > 0) {
           store.recordAnomalies(anomalies, nowSec);
@@ -333,25 +347,32 @@ export async function watchOnce(
         if (anomalies.length > 0) {
           const isDailyOnly = process.env.RADAR_ALERT_MODE === "daily" || process.env.RADAR_INSTANT_ALERTS === "0";
           const llmCfg = isDailyOnly ? null : llmConfigFromEnv();
-          const { digest, source } = await bestEffortDigest(
-            wallet,
-            riskScore,
-            anomalies,
-            llmCfg,
-          );
+          let digest: string | undefined;
+          let source: string | undefined;
+          try {
+            const res = await bestEffortDigest(wallet, riskScore, anomalies, llmCfg);
+            digest = res.digest;
+            source = res.source;
+          } catch (err) {
+            console.warn(`Digest generation failed for ${wallet}: ${err instanceof Error ? err.message : String(err)}`);
+          }
           if (sink) {
-            const defenseLine = defense?.changed ? `\nDEFENSE: ${defense.reason}` : "";
-            await sink.send(
-              formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined) + defenseLine,
-              { wallet, risk: riskScore, anomalies },
-            );
-            store.markAllAlerted(wallet);
+            try {
+              const defenseLine = defense?.changed ? `\nDEFENSE: ${defense.reason}` : "";
+              await sink.send(
+                formatAlert(wallet, riskScore, anomalies, source === "llm" ? digest : undefined) + defenseLine,
+                { wallet, risk: riskScore, anomalies },
+              );
+              store.markAllAlerted(wallet);
+            } catch (sinkErr) {
+              const sinkErrMsg = sinkErr instanceof Error ? sinkErr.message : String(sinkErr);
+              console.error(`Alert delivery failed for ${wallet}: ${sinkErrMsg}`);
+            }
           }
         }
         anomalyCount = anomalies.length;
       }
 
-      store.markSeen(wallet, fresh.map((t) => ({ sig: t.signature, ts: t.timestamp })));
       report.wallets.push({
         wallet,
         freshTxCount: fresh.length,
@@ -361,6 +382,18 @@ export async function watchOnce(
         riskScore,
         pnl: baseline.pnl,
         defense: defense ?? undefined,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`Watch loop error processing wallet ${wallet}: ${errMsg}`);
+      report.wallets.push({
+        wallet,
+        freshTxCount: 0,
+        seeded,
+        initialSeed: isInitialSeed,
+        anomalyCount: 0,
+        riskScore: 0,
+        error: errMsg,
       });
     } finally {
       inFlightWallets.delete(wallet);

@@ -412,7 +412,7 @@ export function detectAnomalies(
       anomalies.push({
         type: "DORMANT_ACTIVE",
         wallet,
-        severity: "high",
+        severity: daysSince >= 60 ? "high" : "medium",
         timestamp: newest,
         evidence: { daysSilent: Number(daysSince.toFixed(1)) },
         text: `Wallet reactivated after ~${Math.floor(daysSince)} days of inactivity.`,
@@ -438,10 +438,13 @@ export function detectAnomalies(
     // If the wallet has an established high-throughput baseline (>= 8 txs, medianTps > 2/min or medianIntervalSec <= 15s,
     // e.g. validator vote account, protocol infrastructure, or high-frequency DEX bot) and the current rate in the window
     // is consistent with or lower than its baseline rate, this is not an activity burst.
-    // Consensus validator vote accounts and known protocol infrastructure operate at continuous high TPS.
-    const isValidator = txs.some(
-      (t) => t.source === "VOTE_PROGRAM" || txPrograms(t).includes("Vote111111111111111111111111111111111111111"),
-    );
+    // Consensus validator vote accounts operate at continuous high TPS without token swaps.
+    // Guard against attackers inserting a dummy Vote instruction into token swaps/drainers to bypass burst detection.
+    const hasSwapsInBatch = txs.some((t) => extractSwap(t, wallet) !== null);
+    const voteTxCount = txs.filter(
+      (t) => t.source === "VOTE_PROGRAM" || (txPrograms(t).length <= 2 && txPrograms(t).includes("Vote111111111111111111111111111111111111111")),
+    ).length;
+    const isValidator = !hasSwapsInBatch && txs.length >= 8 && (voteTxCount / txs.length >= 0.8);
     const streamingWindowSec = 120;
     const currentRateTps = inWindow / (txs.length < config.burstThreshold ? (streamingWindowSec / 60) : (config.burstWindowMin || 1));
     const isBelowBaselineRate = Boolean(

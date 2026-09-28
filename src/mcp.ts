@@ -34,6 +34,7 @@ export const MCP_TOOL_NAMES = [
   "radar_trust",
   "radar_batch",
   "radar_simulate",
+  "radar_gate_copy",
   "radar_selftest",
   "radar_benchmark",
 ] as const;
@@ -49,7 +50,7 @@ export interface McpServerOptions {
 }
 
 export function buildServer(options: McpServerOptions = {}): McpServer {
-  const server = new McpServer({ name: "wallet-radar", version: "0.1.0" });
+  const server = new McpServer({ name: "wallet-radar", version: "1.0.0" });
 
   server.registerTool(
     "radar_scan",
@@ -331,6 +332,137 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       } catch (err) {
         return {
           content: [{ type: "text", text: `Simulation failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "radar_gate_copy",
+    {
+      description:
+        "Pre-trade copy-trading firewall for autonomous agents: gates a proposed copy-trade, swap, or payment before execution on Solana. Evaluates behavioral risk, token mint freeze/mint authority honeypots, and pre-trade simulation with tiered execution limits (instant/standard/guarded). Returns an immediate ALLOW, THROTTLE, or BLOCK verdict.",
+      inputSchema: {
+        targetWallet: z.string().describe("Target trader or counterparty Solana wallet address (base58)"),
+        copyAmountUsd: z.number().positive().optional().describe("Proposed trade or copy amount in USD (e.g. 50)"),
+        mint: z.string().optional().describe("Optional SPL token mint being acquired (checks freeze/mint authority)"),
+        maxRisk: z.number().int().min(0).max(100).optional().describe("Max acceptable risk score 0-100 (default 30)"),
+        minLiquidityUsd: z.number().min(0).optional().describe("Minimum acceptable liquidity in USD (default 50)"),
+      },
+    },
+    async ({ targetWallet, copyAmountUsd, mint, maxRisk, minLiquidityUsd }) => {
+      const apiKey = process.env.HELIUS_API_KEY;
+      if (!apiKey) {
+        return {
+          content: [{ type: "text", text: "HELIUS_API_KEY is not set. Configure it in the server env." }],
+          isError: true,
+        };
+      }
+      try {
+        const trustResult = await runTrustCheck(apiKey, targetWallet, { maxRisk, minLiquidityUsd });
+        if (trustResult.verdict === "hold") {
+          const reasonsStr = trustResult.reasons?.length > 0 ? trustResult.reasons.join("; ") : "Risk or liquidity thresholds exceeded";
+          return json({
+            allow: false,
+            reason: `BLOCKED by pre-trade firewall: ${reasonsStr}`,
+            action: "block",
+            riskScore: trustResult.riskScore,
+            maxSafeAmountUsd: 0,
+            executionTier: "blocked",
+            details: { trust: trustResult },
+          });
+        }
+        if (trustResult.verdict === "unknown") {
+          return json({
+            allow: false,
+            reason: "HOLD: insufficient historical data or unverified balance to establish trust baseline",
+            action: "manual_review",
+            riskScore: trustResult.riskScore,
+            maxSafeAmountUsd: 0,
+            details: { trust: trustResult },
+          });
+        }
+
+        let simRes: any;
+        if (copyAmountUsd !== undefined && copyAmountUsd > 0) {
+          simRes = simulatePayment({
+            wallet: targetWallet,
+            amountUsd: copyAmountUsd,
+            balances: trustResult.balances ?? { sol: 0, usdc: 0, usdt: 0 },
+            solPrice: trustResult.solPrice,
+            riskScore: trustResult.riskScore,
+            anomalies: trustResult.anomalies,
+            medianSwapAmountUsd: trustResult.medianSwapAmountUsd,
+            legacyVerdict: trustResult.verdict,
+            maxRisk,
+            minLiquidityUsd,
+            mint,
+          });
+
+          const simAction = (simRes.decision as any)?.action ?? (simRes.decision as any)?.verdict;
+          const isBlocked = simAction === "block" || simRes.executionTier === "blocked" || (simRes.wouldTrigger && simRes.wouldTrigger.includes("TOXIC_MINT"));
+          const isThrottled = !isBlocked && (simAction === "throttle" || simRes.executionTier === "guarded");
+
+          if (isBlocked) {
+            return json({
+              allow: false,
+              reason: simRes.recommendation || `BLOCKED: simulated payment exceeds risk capacity (${(simRes.decision as any)?.reasons?.join("; ") || "unacceptable risk"})`,
+              action: "block",
+              riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+              maxSafeAmountUsd: 0,
+              executionTier: "blocked",
+              slippageToleranceBps: 0,
+              cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.recommendedDelaySec ?? 300),
+              details: { trust: trustResult, simulation: simRes },
+            });
+          }
+
+          if (isThrottled) {
+            const maxSafe = (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? simRes.tieredLimits?.guarded?.maxAmountUsd ?? simRes.tieredLimits?.standard?.maxAmountUsd ?? copyAmountUsd;
+            return json({
+              allow: true,
+              reason: `THROTTLED: ${simRes.recommendation || "payment permitted up to tiered limit"}`,
+              action: "throttle",
+              riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+              maxSafeAmountUsd: maxSafe,
+              executionTier: simRes.executionTier ?? "guarded",
+              slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+              cooldownSec: simRes.suggestedCooldownSec ?? ((simRes.decision as any)?.recommendedDelaySec ?? 60),
+              details: { trust: trustResult, simulation: simRes },
+            });
+          }
+
+          if (!simRes.safeToExecute) {
+            return json({
+              allow: false,
+              reason: simRes.recommendation || `HOLD: simulated payment cannot be safely executed as requested`,
+              action: "manual_review",
+              riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+              maxSafeAmountUsd: (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? 0,
+              executionTier: simRes.executionTier ?? "standard",
+              slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+              cooldownSec: simRes.suggestedCooldownSec ?? 60,
+              details: { trust: trustResult, simulation: simRes },
+            });
+          }
+        }
+
+        const safeMax = copyAmountUsd ?? (simRes?.tieredLimits?.standard?.maxAmountUsd ?? (trustResult.liquidityUsd > 0 ? Math.round(trustResult.liquidityUsd * 0.2 * 100) / 100 : 100));
+        return json({
+          allow: true,
+          reason: `VERIFIED_SAFE: risk ${trustResult.riskScore ?? 0} <= ${maxRisk ?? 30}, liquidity $${trustResult.liquidityUsd} >= $${minLiquidityUsd ?? 50}${simRes?.executionTier ? ` (Tier: ${simRes.executionTier.toUpperCase()})` : ""}`,
+          action: "allow",
+          riskScore: trustResult.riskScore,
+          maxSafeAmountUsd: safeMax,
+          executionTier: simRes?.executionTier ?? "instant",
+          slippageToleranceBps: simRes?.slippageToleranceBps ?? 100,
+          cooldownSec: simRes?.suggestedCooldownSec ?? 0,
+          details: { trust: trustResult, simulation: simRes },
+        });
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Gate copy failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         };
       }

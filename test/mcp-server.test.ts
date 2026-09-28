@@ -50,6 +50,7 @@ test("mcp-server CLI: --health outputs valid JSON health object and exits 0", as
     "radar_trust",
     "radar_batch",
     "radar_simulate",
+    "radar_gate_copy",
     "radar_selftest",
     "radar_benchmark",
   ]);

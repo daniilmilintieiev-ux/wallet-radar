@@ -10,7 +10,7 @@ import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
-import { fetchSwapMintRisk } from "./mint.js";
+import { fetchSwapMintRisk, fetchMintMetadata } from "./mint.js";
 import { runTrustCheck, runTrustChecks, buildShortlist, formatTrustLine, type TrustResult, type TrustVerdict, type TrustBalances } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment, type SimulateInput } from "./simulate.js";
@@ -32,6 +32,7 @@ import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
 import { isValidBase58, validateConfig, corsHeaders } from "./config.js";
 import { buildTrustProof } from "./trust-proof.js";
+import { handleBlinkHttpRequest } from "./blink/index.js";
 
 const SERVICE = "wallet-radar";
 
@@ -48,6 +49,7 @@ const ENDPOINTS: EndpointInfo[] = [
   { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
   { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once." },
   { method: "POST", path: "/simulate", tool: "radar_simulate", description: "Pre-trade what-if simulation: 'if wallet Y pays out X USDC/SOL, what happens to Y?' The wallet under analysis is the payer. Models liquidity impact, large-payment trigger, risk score delta, and returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing." },
+  { method: "POST", path: "/gate-copy", tool: "radar_gate_copy", description: "Pre-trade copy-trading firewall: gates a proposed copy-trade, swap, or payment before execution. Evaluates behavioral risk, token mint freeze/mint authority honeypots, and pre-trade simulation with tiered limits. Returns an immediate ALLOW, THROTTLE, or BLOCK verdict." },
   { method: "GET", path: "/watch", tool: "radar_watch", description: "List the monitoring watchlist: each watched wallet with its seed status and unalerted-anomaly count. Requires the watch store (start the server with RADAR_WATCH=1)." },
   { method: "POST", path: "/watch", tool: "radar_watch", description: "Add a wallet to the monitoring watchlist so it is continuously re-checked for new anomalies (webhook/Telegram on detection). Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/unwatch", tool: "radar_unwatch", description: "Remove a wallet from the monitoring watchlist. Requires the watch store (RADAR_WATCH=1)." },
@@ -347,7 +349,7 @@ async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
   return buildShortlist(results);
 }
 
-async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
+async function toolSimulate(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
   const amountUsd = body.amountUsd;
@@ -372,7 +374,7 @@ async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
     throw new HttpError(400, "body.minLiquidityUsd must be a non-negative number.");
   }
 
-  const apiKey = process.env.HELIUS_API_KEY;
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark.");
 
   // Fetch current risk data for the wallet
@@ -382,15 +384,25 @@ async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
     includeAudit: typeof body.audit === "boolean" ? body.audit : false,
   });
 
+  const mint = typeof body.mint === "string" ? body.mint : undefined;
+  let mintRisk = null;
+  if (mint && isBase58Address(mint)) {
+    try {
+      mintRisk = await fetchMintMetadata(mint, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
+    } catch {}
+  }
+
+  const resolvedBalances = {
+    sol: balances?.sol ?? trustResult.balances?.sol ?? 0,
+    usdc: balances?.usdc ?? trustResult.balances?.usdc ?? 0,
+    usdt: balances?.usdt ?? trustResult.balances?.usdt ?? 0,
+  };
+
   const simInput: SimulateInput = {
     wallet,
     amountUsd,
-    token,
-    balances: {
-      sol: balances.sol ?? 0,
-      usdc: balances.usdc ?? 0,
-      usdt: balances.usdt ?? 0,
-    },
+    token: token as "usdc" | "sol" | "usdt",
+    balances: resolvedBalances,
     solPrice: trustResult.solPrice,
     riskScore: trustResult.riskScore,
     anomalies: trustResult.anomalies,
@@ -398,9 +410,131 @@ async function toolSimulate(body: Record<string, unknown>): Promise<unknown> {
     legacyVerdict: trustResult.verdict,
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
     minLiquidityUsd: typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : undefined,
+    mint,
+    mintRisk,
   };
 
   return simulatePayment(simInput);
+}
+
+async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
+  const targetWallet = body.targetWallet ?? body.wallet;
+  if (!isBase58Address(targetWallet)) throw new HttpError(400, "targetWallet must be a Solana base58 address.");
+  const copyAmountUsd = typeof body.copyAmountUsd === "number" ? body.copyAmountUsd : typeof body.amountUsd === "number" ? body.amountUsd : undefined;
+  const maxRisk = typeof body.maxRisk === "number" ? body.maxRisk : 30;
+  const minLiquidityUsd = typeof body.minLiquidityUsd === "number" ? body.minLiquidityUsd : 50;
+  const mint = typeof body.mint === "string" ? body.mint : undefined;
+
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
+  if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server.");
+
+  const trustResult = await runTrustCheck(apiKey, targetWallet as string, { maxRisk, minLiquidityUsd });
+  if (trustResult.verdict === "hold") {
+    const reasonsStr = trustResult.reasons?.length > 0 ? trustResult.reasons.join("; ") : "Risk or liquidity thresholds exceeded";
+    return {
+      allow: false,
+      reason: `BLOCKED by pre-trade firewall: ${reasonsStr}`,
+      action: "block",
+      riskScore: trustResult.riskScore,
+      maxSafeAmountUsd: 0,
+      executionTier: "blocked",
+      details: { trust: trustResult },
+    };
+  }
+  if (trustResult.verdict === "unknown") {
+    return {
+      allow: false,
+      reason: "HOLD: insufficient historical data or unverified balance to establish trust baseline",
+      action: "manual_review",
+      riskScore: trustResult.riskScore,
+      maxSafeAmountUsd: 0,
+      details: { trust: trustResult },
+    };
+  }
+
+  let simRes: any;
+  if (copyAmountUsd !== undefined && copyAmountUsd > 0) {
+    let mintRisk = null;
+    if (mint && isBase58Address(mint)) {
+      try {
+        mintRisk = await fetchMintMetadata(mint, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
+      } catch {}
+    }
+    simRes = simulatePayment({
+      wallet: targetWallet as string,
+      amountUsd: copyAmountUsd,
+      balances: trustResult.balances ?? { sol: 0, usdc: 0, usdt: 0 },
+      solPrice: trustResult.solPrice,
+      riskScore: trustResult.riskScore,
+      anomalies: trustResult.anomalies,
+      medianSwapAmountUsd: trustResult.medianSwapAmountUsd,
+      legacyVerdict: trustResult.verdict,
+      maxRisk,
+      minLiquidityUsd,
+      mint,
+      mintRisk,
+    });
+
+    const simAction = (simRes.decision as any)?.action ?? (simRes.decision as any)?.verdict;
+    const isBlocked = simAction === "block" || simRes.executionTier === "blocked" || (simRes.wouldTrigger && simRes.wouldTrigger.includes("TOXIC_MINT"));
+    const isThrottled = !isBlocked && (simAction === "throttle" || simRes.executionTier === "guarded");
+
+    if (isBlocked) {
+      return {
+        allow: false,
+        reason: simRes.recommendation || `BLOCKED: simulated payment exceeds risk capacity (${(simRes.decision as any)?.reasons?.join("; ") || "unacceptable risk"})`,
+        action: "block",
+        riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+        maxSafeAmountUsd: 0,
+        executionTier: "blocked",
+        slippageToleranceBps: 0,
+        cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.cooldownMs ? Math.round(simRes.decision.cooldownMs / 1000) : 300),
+        details: { trust: trustResult, simulation: simRes },
+      };
+    }
+
+    if (isThrottled) {
+      const maxSafe = (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? simRes.tieredLimits?.guarded?.maxAmountUsd ?? simRes.tieredLimits?.standard?.maxAmountUsd ?? copyAmountUsd;
+      return {
+        allow: true,
+        reason: `THROTTLED: ${simRes.recommendation || "payment permitted up to tiered limit"}`,
+        action: "throttle",
+        riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+        maxSafeAmountUsd: maxSafe,
+        executionTier: simRes.executionTier ?? "guarded",
+        slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+        cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.cooldownMs ? Math.round(simRes.decision.cooldownMs / 1000) : 60),
+        details: { trust: trustResult, simulation: simRes },
+      };
+    }
+
+    if (!simRes.safeToExecute) {
+      return {
+        allow: false,
+        reason: simRes.recommendation || `HOLD: simulated payment cannot be safely executed as requested`,
+        action: "manual_review",
+        riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+        maxSafeAmountUsd: (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? 0,
+        executionTier: simRes.executionTier ?? "standard",
+        slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+        cooldownSec: simRes.suggestedCooldownSec ?? 60,
+        details: { trust: trustResult, simulation: simRes },
+      };
+    }
+  }
+
+  const safeMax = copyAmountUsd ?? (simRes?.tieredLimits?.standard?.maxAmountUsd ?? (trustResult.liquidityUsd > 0 ? Math.round(trustResult.liquidityUsd * 0.2 * 100) / 100 : 100));
+  return {
+    allow: true,
+    reason: `VERIFIED_SAFE: risk ${trustResult.riskScore ?? 0} <= ${maxRisk}, liquidity $${trustResult.liquidityUsd} >= $${minLiquidityUsd}${simRes?.executionTier ? ` (Tier: ${simRes.executionTier.toUpperCase()})` : ""}`,
+    action: "allow",
+    riskScore: trustResult.riskScore,
+    maxSafeAmountUsd: safeMax,
+    executionTier: simRes?.executionTier ?? "instant",
+    slippageToleranceBps: simRes?.slippageToleranceBps ?? 100,
+    cooldownSec: simRes?.suggestedCooldownSec ?? 0,
+    details: { trust: trustResult, simulation: simRes },
+  };
 }
 
 function toolSelftest(): unknown {
@@ -648,6 +782,8 @@ const TOOL_BY_PATH: Record<string, (body: Record<string, unknown>, ctx: RequestC
   "/radar_batch": toolBatch,
   "/simulate": toolSimulate,
   "/radar_simulate": toolSimulate,
+  "/gate-copy": toolGateCopy,
+  "/radar_gate_copy": toolGateCopy,
   "/selftest": toolSelftest,
   "/radar_selftest": toolSelftest,
   "/benchmark": toolBenchmark,
@@ -662,6 +798,8 @@ const LIVE_HELIUS_PATHS = new Set([
   "/radar_trust",
   "/simulate",
   "/radar_simulate",
+  "/gate-copy",
+  "/radar_gate_copy",
   "/batch",
   "/radar_batch",
 ]);
@@ -737,6 +875,18 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         store: ctx.store,
         rpcUrl: ctx.rpcUrl,
         oracleClient: ctx.oracleClient,
+      });
+      if (handled) return;
+    }
+
+    // Solana Actions / Blinks routes (/actions.json, /api/actions/...)
+    if (p === "/actions.json" || p.startsWith("/api/actions")) {
+      const handled = await handleBlinkHttpRequest(req, res, {
+        recipient: process.env.RADAR_X402_RECIPIENT,
+        rpcUrl: ctx.rpcUrl,
+        scanHandler: async (wallet: string) => {
+          return await toolTrust({ wallet });
+        },
       });
       if (handled) return;
     }

@@ -113,11 +113,21 @@ export function computeDecision(inputs: DecisionInputs): DecisionResult {
   let confidence: number;
   let recommendation: string;
 
-  // Any HIGH severity anomaly => block
-  if (anomalies.some((a) => a.severity === "high")) {
+  // Any high-severity exploit/attack anomaly => block
+  // DORMANT_ACTIVE represents silence/reactivation (not a malicious attack): route to manual review or throttle
+  const hasExploitHigh = anomalies.some(
+    (a) => a.severity === "high" && a.type !== "DORMANT_ACTIVE",
+  );
+  const isPureDormantHigh = anomalies.some((a) => a.type === "DORMANT_ACTIVE") && !hasExploitHigh;
+
+  if (hasExploitHigh) {
     verdict = "block";
     confidence = Math.min(0.95, 0.7 + (riskScore ?? 50) / 200);
     recommendation = "Block payment: high-severity anomaly detected. Wait for cooldown and re-scan.";
+  } else if (isPureDormantHigh) {
+    verdict = "manual_review";
+    confidence = 0.6;
+    recommendation = "Dormant wallet reactivated. Manual review recommended before executing payments.";
   } else if (legacyVerdict === "unknown") {
     verdict = "manual_review";
     confidence = 0.4;

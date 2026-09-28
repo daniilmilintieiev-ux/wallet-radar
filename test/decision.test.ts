@@ -244,5 +244,32 @@ describe("computeDecision", () => {
     });
     assert.equal(safe.cooldownMs, 60 * 60 * 1000);
   });
+
+  it("DORMANT_ACTIVE alone routes to manual_review rather than hard block", () => {
+    // Pure DORMANT_ACTIVE high severity (e.g. > 60 days dormancy)
+    const dormantResult = computeDecision({
+      riskScore: 30,
+      anomalies: [makeAnomaly("DORMANT_ACTIVE", "high", "Wallet reactivated after 75 days of inactivity")],
+      liquidityUsd: 500,
+      legacyVerdict: "safe",
+    });
+    assert.equal(dormantResult.verdict, "manual_review");
+    assert.match(dormantResult.recommendation, /Dormant wallet reactivated/i);
+    assert.notEqual(dormantResult.verdict, "block");
+  });
+
+  it("DORMANT_ACTIVE with concurrent exploit anomaly triggers block", () => {
+    const exploitResult = computeDecision({
+      riskScore: 70,
+      anomalies: [
+        makeAnomaly("DORMANT_ACTIVE", "high", "Reactivated after 90 days"),
+        makeAnomaly("DRAIN_PATTERN", "high", "Rapid asset drainage observed"),
+      ],
+      liquidityUsd: 50,
+      legacyVerdict: "hold",
+    });
+    assert.equal(exploitResult.verdict, "block");
+    assert.match(exploitResult.recommendation, /Block payment/i);
+  });
 });
 
