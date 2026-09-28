@@ -12,6 +12,7 @@ import type { Anomaly } from "./types.js";
 export function isExistentialThreat(a: Anomaly): boolean {
   if (a.severity !== "high") return false;
   if (a.type === "TOXIC_MINT" && Boolean(a.evidence?.freezeAuthority)) return true;
+  if (a.type === "TAINTED_FUNDING") return true;
   return false;
 }
 

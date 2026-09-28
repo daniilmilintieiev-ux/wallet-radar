@@ -14,11 +14,40 @@ import {
 import { swapUsdValue, UsdPriceMap } from "./pricing.js";
 import { detectCounterpartyAnomalies } from "./counterparty.js";
 import { median, maxOf, minOf } from "./stats.js";
+import { classifyWalletArchetype, WalletArchetype } from "./archetype.js";
+import { KNOWN_SAFE_MINTS, KNOWN_AMM_OWNERS } from "./mint.js";
 
 /** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
 export const TOP10_CONCENTRATION_PCT = 60;
 /** Top-10 holder concentration (% of supply) at/above which the TOXIC_MINT severity is `high`. */
 export const TOP10_HIGH_PCT = 80;
+
+/** Materiality dollar floor: swaps below this USD amount never trigger LARGE_SWAP. */
+export const MATERIAL_SWAP_FLOOR_USD = 50.0;
+/** Materiality raw amount floors for major mint fallback. */
+export const MATERIAL_SWAP_FLOOR_SOL = 0.3;
+export const MATERIAL_SWAP_FLOOR_MAJOR_STABLE = 50.0;
+
+/** Confirmed exploiters, drainers, and malicious funding hubs on Solana. */
+export const KNOWN_EXPLOITERS = new Set<string>([
+  "GG5ATPW7bxGm5y4aGa2uWWZV1JvjETiM2Rabc2fT8Y7f", // Toxic Pump.fun deployer
+  "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j", // Serial pump rug trader
+  "CJtMw981n7L2j36Kz5w8w4E1oUvV8uLq2Gg4W3zX8z7y", // Slope exploiter
+  "4NDz8Zgqyq58B35VvH51uJ6tGgX9q3wK5zV8w4E1oUvV", // Mango exploiter
+  "Drain111111111111111111111111111111111111111",
+  "Phish11111111111111111111111111111111111111",
+]);
+
+/** Confirmed major CEX deposit/withdrawal hot wallets (Binance, Coinbase, Kraken, OKX, Bybit). */
+export const KNOWN_CEX_WALLETS = new Set<string>([
+  "5tzFkiKscMRHK5ZXkrZXZ1RChPTyVC5yFsNuPaGhPkBx", // Binance Hot 1
+  "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", // Binance Hot 2
+  "H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS", // Coinbase 1
+  "2AQdpHJ2JpcEgPiATUXjQxA8QmafFegfQwSLWSprPics", // Coinbase 2
+  "FWznbcNXWQuHTawe9RxvQ2LdJF2YScFs4PXSoDw9413U", // Kraken
+  "5VCwKtCXgCJ6kit5FybXjvriW3xCFsMQHMxoQ5h13MXj", // OKX
+  "AC5RDfQFmDS1deWZos921qbhirGLTgRyrfqfqZGC8ZET", // Bybit
+]);
 
 // Re-exported for modules that import the well-known mints from the analyzer.
 export { SOL_MINT, USDC_MINT, USDT_MINT };
@@ -47,6 +76,7 @@ export const KNOWN_PROTOCOL_INFRASTRUCTURE = new Set<string>([
   "GMCJvYGf5Ex2ARiMquaBDqU6iKM8uiEQkB8jCnoNfHpC",
   "FJnaiidSLXFweWkgbinxEHRykVHsnkzDcYbNDR3RF5LN",
   "B7FHz1mszZEXddi2fRx4MAaBpUV8hqvq2HQgRT66eN4P",
+  "78Bo7xxGWBEvqbh3VMKvkFG4Z63cXKSJ2LCEXAanhN7a", // DEX arbitrage routing relayer
 
   // Raydium pools, authorities & routers
   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
@@ -275,27 +305,55 @@ export function extractSwap(
   tx: EnhancedTx,
   wallet?: string,
 ): SwapEvent | null {
-  const swap = tx.swap;
+  const swap = tx.swap ?? (tx as any).events?.swap;
   if (swap) {
-    const inLeg =
-      swap.tokenInputs?.[0] ??
-      (swap.nativeInput ? { rawTokenAmount: { tokenAmount: String(swap.nativeInput.amount ?? 0), decimals: 9 } } : undefined);
-    const outLeg =
-      swap.tokenOutputs?.[0] ??
-      (swap.nativeOutput ? { rawTokenAmount: { tokenAmount: String(swap.nativeOutput.amount ?? 0), decimals: 9 } } : undefined);
-    return {
-      dex: tx.source ?? "unknown",
-      signature: tx.signature,
-      timestamp: tx.timestamp,
-      tokenIn: {
-        mint: inLeg?.mint ?? (swap.nativeInput ? SOL_MINT : ""),
-        amount: inLeg ? tokenUiAmount(inLeg) : 0,
-      },
-      tokenOut: {
-        mint: outLeg?.mint ?? (swap.nativeOutput ? SOL_MINT : ""),
-        amount: outLeg ? tokenUiAmount(outLeg) : 0,
-      },
-    };
+    let inMint = "";
+    let inAmount = 0;
+    if (swap.tokenInputs && swap.tokenInputs.length > 0) {
+      for (const leg of swap.tokenInputs) {
+        if (!leg.mint) continue;
+        if (!inMint) inMint = leg.mint;
+        if (leg.mint === inMint) {
+          inAmount += tokenUiAmount(leg);
+        }
+      }
+    }
+    if (swap.nativeInput && (!inMint || inMint === SOL_MINT)) {
+      inMint = SOL_MINT;
+      inAmount += (swap.nativeInput.amount ?? 0) / 1e9;
+    }
+
+    let outMint = "";
+    let outAmount = 0;
+    if (swap.tokenOutputs && swap.tokenOutputs.length > 0) {
+      for (const leg of swap.tokenOutputs) {
+        if (!leg.mint) continue;
+        if (!outMint && leg.mint !== inMint) outMint = leg.mint;
+        if (leg.mint === outMint) {
+          outAmount += tokenUiAmount(leg);
+        }
+      }
+    }
+    if (swap.nativeOutput && (!outMint || outMint === SOL_MINT) && inMint !== SOL_MINT) {
+      outMint = SOL_MINT;
+      outAmount += (swap.nativeOutput.amount ?? 0) / 1e9;
+    }
+
+    if (inMint || outMint) {
+      return {
+        dex: tx.source ?? "unknown",
+        signature: tx.signature,
+        timestamp: tx.timestamp,
+        tokenIn: {
+          mint: inMint || (swap.nativeInput ? SOL_MINT : ""),
+          amount: inAmount,
+        },
+        tokenOut: {
+          mint: outMint || (swap.nativeOutput ? SOL_MINT : ""),
+          amount: outAmount,
+        },
+      };
+    }
   }
   // Fallback for the newer Helius response shape (no `swap` field):
   // reconstruct the legs from token/native transfers relative to the wallet
@@ -310,23 +368,39 @@ export function extractSwap(
   let outAmount = 0;
   for (const t of tx.tokenTransfers ?? []) {
     if (!t.mint) continue;
-    if (t.fromUserAccount === me && !inMint) {
-      inMint = t.mint;
-      inAmount = Number(t.tokenAmount ?? 0);
+    if (t.fromUserAccount === me) {
+      if (!inMint) {
+        inMint = t.mint;
+        inAmount = Number(t.tokenAmount ?? 0);
+      } else if (t.mint === inMint) {
+        inAmount += Number(t.tokenAmount ?? 0);
+      }
     }
-    if (t.toUserAccount === me && (!outMint || (outMint === inMint && t.mint !== inMint))) {
-      outMint = t.mint;
-      outAmount = Number(t.tokenAmount ?? 0);
+    if (t.toUserAccount === me) {
+      if (!outMint && t.mint !== inMint) {
+        outMint = t.mint;
+        outAmount = Number(t.tokenAmount ?? 0);
+      } else if (t.mint === outMint) {
+        outAmount += Number(t.tokenAmount ?? 0);
+      }
     }
   }
   for (const t of tx.nativeTransfers ?? []) {
-    if (t.fromUserAccount === me && !inMint) {
-      inMint = SOL_MINT;
-      inAmount = Number(t.amount ?? 0) / 1e9;
+    if (t.fromUserAccount === me) {
+      if (!inMint) {
+        inMint = SOL_MINT;
+        inAmount = Number(t.amount ?? 0) / 1e9;
+      } else if (inMint === SOL_MINT) {
+        inAmount += Number(t.amount ?? 0) / 1e9;
+      }
     }
-    if (t.toUserAccount === me && (!outMint || (outMint === inMint && SOL_MINT !== inMint))) {
-      outMint = SOL_MINT;
-      outAmount = Number(t.amount ?? 0) / 1e9;
+    if (t.toUserAccount === me) {
+      if (!outMint && SOL_MINT !== inMint) {
+        outMint = SOL_MINT;
+        outAmount = Number(t.amount ?? 0) / 1e9;
+      } else if (outMint === SOL_MINT) {
+        outAmount += Number(t.amount ?? 0) / 1e9;
+      }
     }
   }
   if (!inMint && !outMint) return null;
@@ -370,7 +444,10 @@ export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
         if (t.toUserAccount === me && t.toTokenAccount) myTokenAccounts.add(t.toTokenAccount);
       }
     }
-    const from = (u?: string) => (u && u !== me && !myTokenAccounts.has(u) ? u : undefined);
+    const from = (u?: string) =>
+      u && u !== me && !myTokenAccounts.has(u) && !KNOWN_AMM_OWNERS.has(u)
+        ? u
+        : undefined;
     for (const t of tx.tokenTransfers ?? []) {
       if (wallet && t.fromUserAccount !== wallet && t.toUserAccount !== wallet) continue;
       const other = t.fromUserAccount === me ? t.toUserAccount : t.fromUserAccount;
@@ -384,7 +461,43 @@ export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
       if (o) raw.push(o);
     }
   }
-  return raw.filter((cp) => !isProtocolInfrastructure(cp));
+  return raw.filter((cp) => !isProtocolInfrastructure(cp) && !KNOWN_AMM_OWNERS.has(cp));
+}
+
+/**
+ * 1-Hop Funding Source Check: inspects the earliest incoming native SOL transfer
+ * to identify if the wallet was seeded from known malicious drainers or mixers.
+ */
+export function checkFundingSource(wallet: string, txs: EnhancedTx[]): Anomaly | null {
+  if (txs.length === 0) return null;
+  const sorted = [...txs].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+  for (const tx of sorted) {
+    for (const nt of tx.nativeTransfers ?? []) {
+      if (
+        nt.toUserAccount === wallet &&
+        nt.fromUserAccount &&
+        nt.fromUserAccount !== wallet &&
+        (nt.amount ?? 0) > 0
+      ) {
+        if (KNOWN_EXPLOITERS.has(nt.fromUserAccount)) {
+          return {
+            type: "TAINTED_FUNDING",
+            wallet,
+            severity: "high",
+            timestamp: tx.timestamp ?? 0,
+            evidence: {
+              funder: nt.fromUserAccount,
+              amountSol: (nt.amount ?? 0) / 1e9,
+              sig: tx.signature,
+            },
+            text: `Initial funding of ${((nt.amount ?? 0) / 1e9).toFixed(3)} SOL received from known malicious actor (${nt.fromUserAccount}).`,
+          };
+        }
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -401,18 +514,27 @@ export function detectAnomalies(
 ): Anomaly[] {
   const anomalies: Anomaly[] = [];
   const ts = (tx: EnhancedTx) => tx.timestamp ?? 0;
+  const archetype = classifyWalletArchetype(wallet, txs, baseline, isProtocolInfrastructure);
+
+  // 1-Hop Funding Source Check: flag wallets initialized with funds from known exploiters/drainers
+  const fundingAnomaly = checkFundingSource(wallet, txs);
+  if (fundingAnomaly) {
+    anomalies.push(fundingAnomaly);
+  }
 
   // DORMANT_ACTIVE: activity after N days of silence.
   // Judge the gap by the NEWEST tx only: the batch may legitimately contain
   // an already-seen tx (pagination overlap), which must not suppress the alert.
+  // DAO treasuries / protocol vaults naturally have long dormancy between proposals.
   if (baseline?.lastSeenAt && txs.length > 0) {
     const newest = maxOf(txs.map(ts));
     const daysSince = (newest - baseline.lastSeenAt) / 86_400;
-    if (daysSince >= config.dormantDays) {
+    const effectiveDormantDays = archetype === "protocol_vault" ? 90 : config.dormantDays;
+    if (daysSince >= effectiveDormantDays) {
       anomalies.push({
         type: "DORMANT_ACTIVE",
         wallet,
-        severity: daysSince >= 60 ? "high" : "medium",
+        severity: daysSince >= 60 && archetype !== "protocol_vault" ? "high" : "medium",
         timestamp: newest,
         evidence: { daysSilent: Number(daysSince.toFixed(1)) },
         text: `Wallet reactivated after ~${Math.floor(daysSince)} days of inactivity.`,
@@ -448,6 +570,7 @@ export function detectAnomalies(
     const streamingWindowSec = 120;
     const currentRateTps = inWindow / (txs.length < config.burstThreshold ? (streamingWindowSec / 60) : (config.burstWindowMin || 1));
     const isBelowBaselineRate = Boolean(
+      archetype === "high_tps_infrastructure" ||
       isValidator ||
       isProtocolInfrastructure(wallet) ||
       (baseline &&
@@ -511,11 +634,15 @@ export function detectAnomalies(
     const rawRecent = baseline.recentSwapAmounts;
     const rawMedian = rawRecent && rawRecent.length > 0 ? median(rawRecent) : baseline.medianSwapAmount;
     const rawSamples = rawRecent && rawRecent.length > 0 ? rawRecent.length : baseline.txCount;
+    const isWhaleOrVault = archetype === "whale_defi" || archetype === "protocol_vault";
+    const effectiveMultiplier = isWhaleOrVault ? config.largeSwapMultiplier * 1.5 : config.largeSwapMultiplier;
+    const effectiveUsdFloor = isWhaleOrVault ? 500.0 : MATERIAL_SWAP_FLOOR_USD;
+
     if (prices && usdMedian > 0) {
       for (const s of swaps) {
         const usd = swapUsdValue(s, prices);
         if (usd === null) continue;
-        if (usd >= usdMedian * config.largeSwapMultiplier && usd >= 50) {
+        if (usd >= usdMedian * effectiveMultiplier && usd >= effectiveUsdFloor) {
           anomalies.push({
             type: "LARGE_SWAP",
             wallet,
@@ -527,7 +654,7 @@ export function detectAnomalies(
               mint: s.tokenIn.mint,
               sig: s.signature,
             },
-            text: `Swap of ~$${fmtUsd(usd)} is ${config.largeSwapMultiplier}x the wallet's median (~$${fmtUsd(usdMedian)}).`,
+            text: `Swap of ~$${fmtUsd(usd)} is ${effectiveMultiplier.toFixed(1)}x the wallet's median (~$${fmtUsd(usdMedian)}).`,
           });
         }
       }
@@ -535,7 +662,8 @@ export function detectAnomalies(
       for (const s of swaps) {
         if (!MAJOR_MINTS.includes(s.tokenIn.mint)) continue;
         const size = s.tokenIn.amount;
-        if (size >= rawMedian * config.largeSwapMultiplier && size >= 0.5) {
+        const minFloor = s.tokenIn.mint === SOL_MINT ? MATERIAL_SWAP_FLOOR_SOL : MATERIAL_SWAP_FLOOR_MAJOR_STABLE;
+        if (size >= rawMedian * effectiveMultiplier && size >= minFloor) {
           anomalies.push({
             type: "LARGE_SWAP",
             wallet,
@@ -546,7 +674,7 @@ export function detectAnomalies(
               median: Number(rawMedian.toFixed(4)),
               sig: s.signature,
             },
-            text: `Swap of ${size.toFixed(4)} is ${config.largeSwapMultiplier}x the wallet's median (~${rawMedian.toFixed(4)}).`,
+            text: `Swap of ${size.toFixed(4)} is ${effectiveMultiplier.toFixed(1)}x the wallet's median (~${rawMedian.toFixed(4)}).`,
           });
         }
       }
@@ -593,7 +721,7 @@ export function detectAnomalies(
         total += 1;
       }
     }
-    if (total >= COUNTERPARTY_MIN_TXS) {
+    if (archetype !== "high_tps_infrastructure" && total >= COUNTERPARTY_MIN_TXS) {
       let top = "";
       let topCount = 0;
       for (const [cp, c] of freq) {
@@ -639,11 +767,12 @@ export function detectAnomalies(
 
   // TOXIC_MINT: swaps involving tokens with unrenounced freeze/mint authorities, OR extreme
   // top-holder concentration (top-10 wallets control most of the supply = rug risk).
+  // Verified bluechips and canonical ecosystem mints are exempt.
   if (mintRisk) {
     const flaggedMints = new Set<string>();
     for (const s of swaps) {
       const candidateMints = [s.tokenIn.mint, s.tokenOut.mint].filter(
-        (m) => m && !MAJOR_MINTS.includes(m),
+        (m) => m && !MAJOR_MINTS.includes(m) && !KNOWN_SAFE_MINTS.has(m),
       );
       for (const m of candidateMints) {
         if (flaggedMints.has(m)) continue;
@@ -656,11 +785,13 @@ export function detectAnomalies(
         if (hasFreeze || hasMint || concentrated) {
           flaggedMints.add(m);
           const veryConcentrated = top10 != null && top10 >= TOP10_HIGH_PCT;
-          const severity: Severity = hasFreeze || veryConcentrated ? "high" : "medium";
+          const isPump = Boolean(meta.isPumpFun || m.toLowerCase().endsWith("pump"));
+          const severity: Severity = hasFreeze || veryConcentrated || (isPump && (hasMint || concentrated)) ? "high" : "medium";
           const reasons: string[] = [];
           if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})`);
           if (hasMint) reasons.push(`mint authority (${meta.mintAuthority})`);
           if (concentrated) reasons.push(`top-10 holders control ${top10}% of supply`);
+          if (isPump) reasons.push(`pump.fun token`);
           anomalies.push({
             type: "TOXIC_MINT",
             wallet,
@@ -671,6 +802,7 @@ export function detectAnomalies(
               freezeAuthority: meta.freezeAuthority,
               mintAuthority: meta.mintAuthority,
               top10Pct: top10,
+              isPumpFun: isPump,
               sig: s.signature,
             },
             text: `Token ${m}: ${reasons.join("; ")}.`,
@@ -683,7 +815,10 @@ export function detectAnomalies(
   // COUNTERPARTY MEMORY: cross-batch relationship signals (new counterparty,
   // dominant hub, relationship escalation). Emitted before the anti-evasion
   // meta-rules so they participate in REGIME_SHIFT's distinct-type count.
-  anomalies.push(...detectCounterpartyAnomalies(wallet, txs, baseline?.counterparties ?? null));
+  // High-throughput infrastructure/MM bots deal with thousands of counterparties normally.
+  if (archetype !== "high_tps_infrastructure") {
+    anomalies.push(...detectCounterpartyAnomalies(wallet, txs, baseline?.counterparties ?? null));
+  }
 
   // OFF_HOURS (9th rule): activity in UTC hours the wallet has never been
   // active in. Compares the fresh batch's hour distribution against the

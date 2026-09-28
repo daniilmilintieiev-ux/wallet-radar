@@ -1,5 +1,5 @@
 import { extractSwap } from "./analyzer.js";
-import { EnhancedTx, SwapEvent, USDC_MINT, USDT_MINT } from "./types.js";
+import { EnhancedTx, SwapEvent, SOL_MINT, USDC_MINT, USDT_MINT } from "./types.js";
 
 /** mint -> USD price */
 export type UsdPriceMap = Record<string, number>;
@@ -111,6 +111,21 @@ export function collectSwapMints(txs: EnhancedTx[], wallet?: string): string[] {
   }
   return Array.from(mints);
 }
+
+export const BLUECHIP_FALLBACK_PRICES: Readonly<Record<string, number>> = {
+  [SOL_MINT]: 150.0,
+  [USDC_MINT]: 1.0,
+  [USDT_MINT]: 1.0,
+  "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 64000.0, // WBTC (Portal)
+  "7vfCXTUXx5WJV5JADk17DUJ4ksau7utnkP4b97do4S8Q": 2600.0,  // WETH (Portal)
+  "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": 180.0,   // mSOL (Marinade)
+  "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1": 180.0,   // bSOL (BlazeStake)
+  "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn": 185.0,  // JitoSOL
+  "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": 0.85,    // JUP
+  "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R": 1.70,    // RAY
+  "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": 0.00002,// BONK
+  "HZ1JovNiRvrqNBPgQGwQXh2FicQUnL3eApEYswwa9BRJ": 0.35,   // PYTH
+};
 
 /**
  * Best-effort price fetch for a tx batch: returns null (major-only fallback)

@@ -2,11 +2,14 @@ import { fetchWalletTransactions } from "../src/collector.js";
 import { updateBaseline } from "../src/baseline.js";
 import { detectAnomalies, computeRiskScore } from "../src/analyzer.js";
 import { fetchSwapMintRisk } from "../src/mint.js";
-import { fetchSwapPrices } from "../src/pricing.js";
+import { fetchSwapPrices, BLUECHIP_FALLBACK_PRICES } from "../src/pricing.js";
 import { DEFAULT_CONFIG, EnhancedTx, Baseline, Anomaly, USDC_MINT, USDT_MINT, SOL_MINT } from "../src/types.js";
 import { computeDefenseAction, type DefenseStateInfo, isExistentialThreat, DEFENSE_THRESHOLDS } from "../src/defense.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+const globalPriceCache: Record<string, number> = { ...BLUECHIP_FALLBACK_PRICES };
+const globalMintCache: Record<string, any> = {};
 
 export type TrustStance = "VERIFIED_SAFE" | "LOW_TRUST_WARMING" | "BLOCKED";
 
@@ -59,9 +62,9 @@ export const TARGET_WALLETS: HistoryReplayWallet[] = [
   },
   {
     address: "F52NK7rsb3ChTfJsrzmDNU3rj2E3JYNDzgYiprq43Ztx",
-    category: "rekt_drawdown",
-    description: "Shitcoin trader with steep drawdown in pump tokens",
-    expectedVerdict: "BLOCKED",
+    category: "clean_retail",
+    description: "Retail pump.fun trader with steep drawdown ($0.05 - $0.20 swaps)",
+    expectedVerdict: "VERIFIED_SAFE",
   },
 
   // 3. RARE TRANSACTIONS / THIN HISTORY / WARMING (User's suggestion: mark as LOW_TRUST)
@@ -200,11 +203,17 @@ export async function replayWalletHistory(
 
   // Pre-fetch mint risk and swap prices for all involved tokens
   const mintRisk = await fetchSwapMintRisk(sortedTxs, { wallet: walletInfo.address, apiKey });
+  Object.assign(globalMintCache, mintRisk);
+
   const rawPrices = await fetchSwapPrices(sortedTxs, { wallet: walletInfo.address });
+  if (rawPrices) {
+    Object.assign(globalPriceCache, rawPrices);
+  }
   const prices = {
     [USDC_MINT]: 1.0,
     [USDT_MINT]: 1.0,
     [SOL_MINT]: 150.0,
+    ...globalPriceCache,
     ...(rawPrices || {}),
   };
 

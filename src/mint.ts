@@ -1,8 +1,8 @@
 import { PublicKey } from "@solana/web3.js";
-import { extractSwap, MAJOR_MINTS } from "./analyzer.js";
+import { extractSwap } from "./analyzer.js";
 import { Store } from "./store.js";
 import { isValidBase58 } from "./config.js";
-import type { EnhancedTx, MintRiskInfo, MintRiskMap } from "./types.js";
+import { EnhancedTx, MintRiskInfo, MintRiskMap, MAJOR_MINTS } from "./types.js";
 
 export type { MintRiskInfo, MintRiskMap };
 
@@ -40,7 +40,9 @@ export function parseDasAssetResponse(data: unknown): MintRiskInfo | null {
     }
   }
 
-  return { mint, mintAuthority, freezeAuthority };
+  const isPumpFun = mint.toLowerCase().endsWith("pump");
+  const isAuthorityRevoked = mintAuthority === null && freezeAuthority === null;
+  return { mint, mintAuthority, freezeAuthority, isPumpFun, isAuthorityRevoked };
 }
 
 export function parseRpcAccountInfoResponse(mint: string, data: unknown): MintRiskInfo | null {
@@ -60,12 +62,14 @@ export function parseRpcAccountInfoResponse(mint: string, data: unknown): MintRi
     typeof info.mintAuthority === "string" && info.mintAuthority.length > 0
       ? info.mintAuthority
       : null;
-    const freezeAuthority =
-      typeof info.freezeAuthority === "string" && info.freezeAuthority.length > 0
-        ? info.freezeAuthority
-        : null;
+  const freezeAuthority =
+    typeof info.freezeAuthority === "string" && info.freezeAuthority.length > 0
+      ? info.freezeAuthority
+      : null;
 
-  return { mint, mintAuthority, freezeAuthority };
+  const isPumpFun = mint.toLowerCase().endsWith("pump");
+  const isAuthorityRevoked = mintAuthority === null && freezeAuthority === null;
+  return { mint, mintAuthority, freezeAuthority, isPumpFun, isAuthorityRevoked };
 }
 
 function toSupplyString(v: unknown): string | null {
@@ -267,8 +271,10 @@ export const KNOWN_SAFE_MINTS = new Set<string>([
   "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", // Marinade Staked SOL (mSOL)
   "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1", // BlazeStake Staked SOL (bSOL)
   "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", // Wormhole Wrapped BTC (WBTC)
-  "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", // Wormhole Wrapped ETH (WETH)
-  "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", // Pyth Network (PYTH)
+  "7vfCXTUXx5WJV5JADk17DUJ4ksau7utnkP4b97do4S8Q", // Wormhole Wrapped ETH (WETH mainnet)
+  "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", // Wormhole Wrapped ETH (legacy)
+  "HZ1JovNiRvrqNBPgQGwQXh2FicQUnL3eApEYswwa9BRJ", // Pyth Network (PYTH mainnet)
+  "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", // Pyth Network (legacy)
   "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", // Jupiter (JUP)
   "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R", // Raydium (RAY)
   "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", // Bonk (BONK)
@@ -292,6 +298,10 @@ export const KNOWN_SAFE_MINTS = new Set<string>([
   "Gekfj7SL2fVpTDxJZmeC46cTYxinjB6gkAnb6EGT6mnn", // gekSOL
   "L33mHftsNpaj39z1omnGbGbuA5eKqSsbmr91rjTod48", // leemSOL
 ]);
+
+export function isSafeMint(mint: string): boolean {
+  return KNOWN_SAFE_MINTS.has(mint);
+}
 
 export function collectCandidateMints(txs: EnhancedTx[], wallet?: string): string[] {
   const mints = new Set<string>();

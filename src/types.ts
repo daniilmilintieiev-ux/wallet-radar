@@ -2,6 +2,7 @@
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+export const MAJOR_MINTS = [SOL_MINT, USDC_MINT, USDT_MINT];
 
 /** A single decoded DEX swap extracted from a Helius enhanced transaction. */
 export interface SwapEvent {
@@ -162,10 +163,11 @@ export type AnomalyType =
   | "NEW_COUNTERPARTY"
   | "COUNTERPARTY_HUB"
   | "COUNTERPARTY_ESCALATION"
-   | "TOXIC_MINT"
-   | "OFF_HOURS"
-   | "REGIME_SHIFT"
-   | "WARMING";
+  | "TOXIC_MINT"
+  | "OFF_HOURS"
+  | "REGIME_SHIFT"
+  | "WARMING"
+  | "TAINTED_FUNDING";
 
 export interface MintRiskInfo {
   mint: string;
@@ -173,6 +175,12 @@ export interface MintRiskInfo {
   freezeAuthority: string | null;
   /** Top-10 holder concentration, % of total supply (0-100). `null` = unknown. */
   top10Pct?: number | null;
+  /** Approximate mint age in hours when known. */
+  mintAgeHours?: number | null;
+  /** True when the mint belongs to pump.fun (e.g. ends with pump). */
+  isPumpFun?: boolean;
+  /** True when authorities are confirmed revoked (both mint and freeze are null). */
+  isAuthorityRevoked?: boolean;
 }
 
 export type MintRiskMap = Record<string, MintRiskInfo>;

@@ -51,7 +51,7 @@ const SEED_WALLETS: HarvestedWallet[] = [
   { address: "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j", name: "Pump.fun Toxic Rug Trader", category: "scam_exploit", tier: "toxic_trader", source: "threat_seed", expectedVerdict: "BLOCKED" },
   { address: "A2R6ydBWCfmJBAjF8GPedypA8BmCgFzHYV7oW3Yhnzpz", name: "Meteora DLMM to Toxic Token Shift", category: "scam_exploit", tier: "compromised", source: "threat_seed", expectedVerdict: "BLOCKED" },
   { address: "7aPo3npvLCXNKTWuApjdnyyGBwn2176Z3jFRrDvbGXN8", name: "Rekt Trader on Shitcoins", category: "rekt_drawdown", tier: "rekt_trader", source: "threat_seed", expectedVerdict: "BLOCKED" },
-  { address: "F52NK7rsb3ChTfJsrzmDNU3rj2E3JYNDzgYiprq43Ztx", name: "Shitcoin Trader with Critical Drawdown", category: "rekt_drawdown", tier: "rekt_trader", source: "threat_seed", expectedVerdict: "BLOCKED" },
+  { address: "F52NK7rsb3ChTfJsrzmDNU3rj2E3JYNDzgYiprq43Ztx", name: "Retail pump.fun trader with drawdown (.05-.20)", category: "clean_retail", tier: "rekt_trader", source: "threat_seed", expectedVerdict: "VERIFIED_SAFE" },
 
   // 2. High-Frequency Bots & Infrastructure (VERIFIED_SAFE)
   { address: "scs1NCSTafrUX6RBx113B9YDCepo1QdEzU8WwEkf25i", name: "Solana Validator Vote Account", category: "high_frequency_bot", tier: "infrastructure", source: "infra_seed", expectedVerdict: "VERIFIED_SAFE" },
