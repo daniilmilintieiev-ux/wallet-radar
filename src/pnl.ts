@@ -1,5 +1,5 @@
 import { extractSwap } from "./analyzer.js";
-import { swapUsdValue, UsdPriceMap, HistoricalPriceResolver } from "./pricing.js";
+import { swapUsdValue, type UsdPriceMap, type HistoricalPriceResolver } from "./pricing.js";
 import {
   EnhancedTx,
   OpenLot,
@@ -10,7 +10,7 @@ import {
   USDT_MINT,
 } from "./types.js";
 
-export { OpenLot, HistoricalPriceResolver };
+export type { OpenLot, HistoricalPriceResolver };
 
 const QUOTE_PRIORITY = [USDC_MINT, USDT_MINT, SOL_MINT];
 

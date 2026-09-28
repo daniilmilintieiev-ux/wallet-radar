@@ -2,9 +2,9 @@ import { PublicKey } from "@solana/web3.js";
 import { extractSwap, MAJOR_MINTS } from "./analyzer.js";
 import { Store } from "./store.js";
 import { isValidBase58 } from "./config.js";
-import { EnhancedTx, MintRiskInfo, MintRiskMap } from "./types.js";
+import type { EnhancedTx, MintRiskInfo, MintRiskMap } from "./types.js";
 
-export { MintRiskInfo, MintRiskMap };
+export type { MintRiskInfo, MintRiskMap };
 
 export function parseDasAssetResponse(data: unknown): MintRiskInfo | null {
   if (!data || typeof data !== "object") return null;
