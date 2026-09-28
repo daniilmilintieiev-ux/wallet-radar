@@ -40,3 +40,10 @@ p3-scan-buffers.mjs
 # Internal QA and scratch reports
 OVERNIGHT-VERIFICATION-REPORT.md
 *-REPORT.md
+
+# Video report generator outputs & media
+docs/audio/
+docs/slides/
+docs/posters/
+docs/weekly-video-report.html
+docs/videos/weekly-report*

@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary & Value Proposition
 
-Wallet Radar monitors Solana wallets for behavioral anomalies, rug pulls, and counterparty risks. For the Colosseum Hackathon (Sep 14 – Oct 13), we bridge off-chain risk intelligence to on-chain composability through two Solana primitives:
+Wallet Radar monitors Solana wallets for behavioral anomalies, rug pulls, and counterparty risks. For the Colosseum Hackathon (Sep 14 – Oct 12), we bridge off-chain risk intelligence to on-chain composability through two Solana primitives:
 
 1. **The Oracle via ZK Compression (Light Protocol + Helius)**:
    - An on-chain attestation ledger recording every completed wallet scan (`riskScore`, `verdict`, timestamp, firing rules, tx signatures).

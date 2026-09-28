@@ -15,7 +15,7 @@ export function getVersion(): string {
       if (pkg.version) return String(pkg.version);
     }
   } catch {}
-  return "0.1.0";
+  return "1.0.0";
 }
 
 export interface McpHealth {

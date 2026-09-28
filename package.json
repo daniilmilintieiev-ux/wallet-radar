@@ -1,6 +1,6 @@
 {
   "name": "wallet-radar",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Autonomous pre-trade firewall for Solana AI agents: behavioral baseline, 9 deterministic rules, simulation, and on-chain enforcement.",
   "type": "module",
   "main": "./dist/src/sdk/index.js",
@@ -38,7 +38,8 @@
     "digest": "node dist/scripts/daily-digest.js",
     "history-machine": "node dist/scripts/history-machine.js",
     "history-machine:large": "node dist/scripts/history-machine.js --dataset=large",
-    "harvest:wallets": "node dist/scripts/harvest-large-dataset.js"
+    "harvest:wallets": "node dist/scripts/harvest-large-dataset.js",
+    "example:copy-bot": "node dist/examples/copy-bot-firewall.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

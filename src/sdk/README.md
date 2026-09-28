@@ -94,6 +94,59 @@ const health = await client.selftest();
 console.log(`Radar Engine Status: ${health.ok ? "Ready" : "Offline"}`);
 ```
 
+### 7. Copy-Trading Bot Pre-Trade Firewall (`gateCopy`)
+
+One-line gate for copy-trading bots (Trojan, Maestro, Photon, BullX, or custom AI trading bots). Intercepts the copy signal BEFORE submitting the transaction on-chain:
+
+```typescript
+const verdict = await client.gateCopy({
+  targetWallet: "TargetTraderAddress...",
+  copyAmountUsd: 100, // Proposed trade size in USD
+  maxRisk: 30,        // Max allowed behavioral risk (0-100, default: 30)
+  minLiquidityUsd: 50 // Minimum acceptable liquidity in USD (default: 50)
+});
+
+if (!verdict.allow) {
+  console.warn(`[FIREWALL BLOCKED] ${verdict.reason}`);
+  return; // Abort trade — capital protected from toxic mint or drain
+}
+
+// Proceed with copy trade up to safe limit:
+console.log(`[FIREWALL APPROVED] Safe trade limit: $${verdict.maxSafeAmountUsd}`);
+await executeSwap({ wallet: targetTrader, amountUsd: Math.min(100, verdict.maxSafeAmountUsd) });
+```
+
+### 8. Pre-Trade What-If Simulation (`simulate`)
+
+Simulates liquidity impact and calculates risk-score delta before committing capital:
+
+```typescript
+const simulation = await client.simulate({
+  wallet: "TargetTraderAddress...",
+  amountUsd: 250,
+  token: "usdc"
+});
+
+console.log(`Safe to execute: ${simulation.safeToExecute}`);
+console.log(`Action: ${simulation.decision.action}`); // "allow" | "throttle" | "block"
+console.log(`Remaining Liquidity: $${simulation.liquidityAfterUsd}`);
+console.log(`Projected Risk Delta: +${simulation.riskDelta}`);
+```
+
+### 9. Pre-Flight Trust Check (`trust` & `batch`)
+
+Check behavioral risk score and liquidity of one or a batch of up to 20 wallets:
+
+```typescript
+const trust = await client.trust("TargetWalletAddress...");
+console.log(`Verdict: ${trust.verdict}`); // "safe" | "hold" | "unknown"
+console.log(`Liquidity: $${trust.liquidityUsd}`);
+
+// Gate an entire copy-trading watchlist in batch:
+const shortlist = await client.batch(["Wallet1...", "Wallet2...", "Wallet3..."]);
+console.log(`Safe traders: ${shortlist.safe.length}, Blocked/Hold: ${shortlist.hold.length}`);
+```
+
 ## Configuration Options
 
 | Option | Type | Description |

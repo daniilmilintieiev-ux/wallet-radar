@@ -2,7 +2,7 @@
 
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
-[![Tests](https://img.shields.io/badge/tests-620%20passing%20%7C%2027%20suites-3fb950.svg)](file:///test)
+[![Tests](https://img.shields.io/badge/tests-600%2B%20passing%20%7C%2028%20suites-3fb950.svg)](file:///test)
 [![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20revisions%20verified-blue.svg)](file:///SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
 [![ZK Compression](https://img.shields.io/badge/light%20protocol-408.2x%20rent%20savings-ffb000.svg)](file:///src/oracle)
@@ -306,7 +306,7 @@ npm install
 npm run build
 ```
 
-### 2. Verify System Integrity (620 Tests)
+### 2. Verify System Integrity (600+ Tests)
 
 ```bash
 # Run the complete test suite (27 suites, 0 failures)
@@ -509,7 +509,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 - **On-Chain Devnet Deployment**: Compiled Transfer Hook to SBF, deployed to Solana Devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), and verified live revert on flagged accounts (`886579b`, `56d3caa`, `d8f9a92`).
 - **11 Security Audit Revisions**: Comprehensive hardening against front-running, CPI injection, account hijacking, and double-spending (`990bb36`, `93d32f6`, `a4cf128`).
 - **Trust Proof API**: Launched independently verifiable `/trust-proof` cryptographic bundle (`7707e7d`).
-- **Full Test Suite Expansion**: Expanded to **620 automated tests across 27 test suites (100% pass)**.
+- **Full Test Suite Expansion**: Expanded to **600+ automated tests across 28 test suites (100% pass)**.
 
 ---
 
