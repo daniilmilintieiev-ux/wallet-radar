@@ -1,7 +1,7 @@
 import { fetchWalletTransactions } from "../src/collector.js";
 import { updateBaseline } from "../src/baseline.js";
 import { detectAnomalies, computeRiskScore } from "../src/analyzer.js";
-import { fetchSwapMintRisk } from "../src/mint.js";
+import { fetchSwapMintRisk, collectCandidateMints } from "../src/mint.js";
 import { fetchSwapPrices, BLUECHIP_FALLBACK_PRICES } from "../src/pricing.js";
 import { DEFAULT_CONFIG, EnhancedTx, Baseline, Anomaly, USDC_MINT, USDT_MINT, SOL_MINT } from "../src/types.js";
 import { computeDefenseAction, type DefenseStateInfo, isExistentialThreat, DEFENSE_THRESHOLDS } from "../src/defense.js";
@@ -10,6 +10,20 @@ import * as path from "node:path";
 
 const globalPriceCache: Record<string, number> = { ...BLUECHIP_FALLBACK_PRICES };
 const globalMintCache: Record<string, any> = {};
+
+const MINT_CACHE_FILE = path.resolve(process.cwd(), "benchmarks/mint-cache.json");
+const PRICE_CACHE_FILE = path.resolve(process.cwd(), "benchmarks/price-cache.json");
+
+if (fs.existsSync(PRICE_CACHE_FILE)) {
+  try {
+    Object.assign(globalPriceCache, JSON.parse(fs.readFileSync(PRICE_CACHE_FILE, "utf-8")));
+  } catch {}
+}
+if (fs.existsSync(MINT_CACHE_FILE)) {
+  try {
+    Object.assign(globalMintCache, JSON.parse(fs.readFileSync(MINT_CACHE_FILE, "utf-8")));
+  } catch {}
+}
 
 export type TrustStance = "VERIFIED_SAFE" | "LOW_TRUST_WARMING" | "BLOCKED";
 
@@ -180,6 +194,7 @@ export async function replayWalletHistory(
   apiKey: string,
   walletInfo: HistoryReplayWallet,
   verbose = false,
+  isCachedOnly = false,
 ): Promise<WalletReplayResult> {
   const rawTxs = await getOrFetchHistory(apiKey, walletInfo.address);
   // Sort chronologically ascending (oldest first)
@@ -202,19 +217,33 @@ export async function replayWalletHistory(
   }
 
   // Pre-fetch mint risk and swap prices for all involved tokens
-  const mintRisk = await fetchSwapMintRisk(sortedTxs, { wallet: walletInfo.address, apiKey });
-  Object.assign(globalMintCache, mintRisk);
+  const candidateMints = collectCandidateMints(sortedTxs, walletInfo.address);
+  const uncachedMints = candidateMints.filter((m) => !(m in globalMintCache));
 
-  const rawPrices = await fetchSwapPrices(sortedTxs, { wallet: walletInfo.address });
-  if (rawPrices) {
-    Object.assign(globalPriceCache, rawPrices);
+  if (uncachedMints.length > 0 && apiKey && apiKey !== "cached-replay") {
+    try {
+      const fetchedMint = await fetchSwapMintRisk(sortedTxs, { wallet: walletInfo.address, apiKey });
+      if (fetchedMint) {
+        Object.assign(globalMintCache, fetchedMint);
+      }
+    } catch {}
   }
-  const prices = {
+  const mintRisk = { ...globalMintCache };
+
+  const uncachedPrices = candidateMints.filter((m) => !(m in globalPriceCache));
+  if (uncachedPrices.length > 0 && apiKey && apiKey !== "cached-replay") {
+    try {
+      const rawPrices = await fetchSwapPrices(sortedTxs, { wallet: walletInfo.address });
+      if (rawPrices) {
+        Object.assign(globalPriceCache, rawPrices);
+      }
+    } catch {}
+  }
+  const prices: Record<string, number> = {
     [USDC_MINT]: 1.0,
     [USDT_MINT]: 1.0,
     [SOL_MINT]: 150.0,
     ...globalPriceCache,
-    ...(rawPrices || {}),
   };
 
   let baseline: Baseline | null = null;
@@ -425,7 +454,7 @@ async function main() {
     console.log(`  Profile:  ${w.description}`);
 
     try {
-      const res = await replayWalletHistory(apiKey, w, isVerbose);
+      const res = await replayWalletHistory(apiKey, w, isVerbose, isCachedOnly);
       results.push(res);
 
       const statusBadge = res.isAccurate ? "PASSED (MATCH)" : "FAILED (MISMATCH)";
@@ -517,6 +546,12 @@ async function main() {
     "utf-8",
   );
   console.log(`Saved detailed run report to ${outPath}\n`);
+
+  try {
+    fs.writeFileSync(PRICE_CACHE_FILE, JSON.stringify(globalPriceCache, null, 2), "utf-8");
+    fs.writeFileSync(MINT_CACHE_FILE, JSON.stringify(globalMintCache, null, 2), "utf-8");
+    console.log(`Saved offline mint and price caches to ${MINT_CACHE_FILE} & ${PRICE_CACHE_FILE}`);
+  } catch {}
 }
 
 if (process.argv[1]?.endsWith("history-machine.ts") || process.argv[1]?.endsWith("history-machine.js")) {

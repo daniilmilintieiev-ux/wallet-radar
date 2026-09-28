@@ -195,6 +195,40 @@ async function main() {
     }
   }
 
+  // Query active Solana consensus validators (100% verified high_frequency_bot)
+  if (walletMap.size < targetCount) {
+    console.log(`\nQuerying active Solana Consensus Validators...`);
+    try {
+      const vRes = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getVoteAccounts"
+        })
+      });
+      const vData = await vRes.json() as any;
+      const validators = (vData.result?.current || []).slice(0, 120);
+      for (const val of validators) {
+        if (walletMap.size >= targetCount) break;
+        if (val.votePubkey && !walletMap.has(val.votePubkey)) {
+          walletMap.set(val.votePubkey, {
+            address: val.votePubkey,
+            name: `Solana Validator (${val.nodePubkey.slice(0, 8)}...)`,
+            category: "high_frequency_bot",
+            tier: "consensus_validator",
+            source: "validator_registry",
+            expectedVerdict: "VERIFIED_SAFE"
+          });
+        }
+      }
+      console.log(`Added validators. Total wallets now: ${walletMap.size}`);
+    } catch (e: any) {
+      console.warn("Failed to fetch validators:", e.message);
+    }
+  }
+
   // Query active DEX routers if we still need more wallets to reach targetCount
   const DEX_ROUTERS = [
     { name: "Jupiter Aggregator v6", program: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", source: "jupiter_feed" },
