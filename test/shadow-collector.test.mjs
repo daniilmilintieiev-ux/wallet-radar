@@ -12,6 +12,9 @@ import {
   queryGateCopy,
   COPY_AMOUNT_USD,
   POOL_MAX_AGE_MINUTES,
+  MAX_CONSECUTIVE_RADAR_ERRORS,
+  runCollectionCycle,
+  fetchMintStateAtT,
 } from "../scripts/shadow/collect.mjs";
 import {
   classifyOutcome,
@@ -277,6 +280,276 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     }
   });
 
+  test(`runCollectionCycle: ${MAX_CONSECUTIVE_RADAR_ERRORS} consecutive RADAR_ERROR responses abort the cycle (fatalRadarError:true), never recorded as a verdict (stage 7D task 3)`, async () => {
+    const n = MAX_CONSECUTIVE_RADAR_ERRORS;
+    const pools = Array.from({ length: n }, (_, i) => ({
+      pair: `Pair${i}11111111111111111111111111111111111111`,
+      mint: `Mint${i}11111111111111111111111111111111111111`,
+      dexId: "raydium",
+    }));
+    const creator = "Creator999999999999999999999999999999999999";
+    const buyers = pools.map((_, i) => `Buyer${i}9999999999999999999999999999999999999`);
+    const creationSigs = pools.map((_, i) => ({ signature: `creationSig${i}`, blockTime: 1000 + i * 100 }));
+    const buySigs = pools.map((_, i) => ({ signature: `buySig${i}`, blockTime: 1050 + i * 100 }));
+    // Frozen BEFORE the mock runs -- fetchFreshPools snapshots its own `now` at the start of
+    // the call, then awaits this mock; a timestamp generated live inside the mock (new Date() at
+    // resolve time) can race past that snapshot and produce a negative age, flakily dropping the
+    // pool. A fixed past timestamp removes the race entirely.
+    const freshPoolCreatedAtIso = new Date(Date.now() - 60_000).toISOString();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("geckoterminal.com")) {
+        return jsonResponse({
+          data: pools.map((p) => ({
+            attributes: { address: p.pair, pool_created_at: freshPoolCreatedAtIso },
+            relationships: { dex: { data: { id: p.dexId } }, base_token: { data: { id: `solana_${p.mint}` } } },
+          })),
+        });
+      }
+      if (url.includes("dexscreener.com")) {
+        return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] }); // fresh, never TOKEN_TOO_OLD
+      }
+      if (url.includes("/gate-copy")) {
+        return jsonResponse({ error: "HELIUS_API_KEY is not set on the server." }, 503); // always RADAR_ERROR
+      }
+      // Solana JSON-RPC
+      const body = JSON.parse(init.body);
+      if (body.method === "getAccountInfo") {
+        const addr = body.params[0];
+        if (pools.some((p) => p.mint === addr)) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { info: {} } } } } }); // strat A: no authorities
+        }
+        if (buyers.includes(addr)) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111", executable: false } } });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: null } });
+      }
+      if (body.method === "getSignaturesForAddress") {
+        const idx = pools.findIndex((p) => p.pair === body.params[0]);
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: [buySigs[idx], creationSigs[idx]] }); // newest first
+      }
+      if (body.method === "getTransaction") {
+        const sig = body.params[0];
+        const cIdx = creationSigs.findIndex((s) => s.signature === sig);
+        if (cIdx !== -1) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: [creator] } }, blockTime: creationSigs[cIdx].blockTime } });
+        }
+        const bIdx = buySigs.findIndex((s) => s.signature === sig);
+        if (bIdx !== -1) {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              blockTime: buySigs[bIdx].blockTime,
+              meta: { preTokenBalances: [], postTokenBalances: [{ mint: pools[bIdx].mint, owner: buyers[bIdx], accountIndex: 0, uiTokenAmount: { amount: "1" } }] },
+            },
+          });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+
+    try {
+      const result = await runCollectionCycle({ dbPath: ":memory:", radarUrl: "http://fake-radar", limit: n });
+      assert.equal(result.fatalRadarError, true, "must abort after N consecutive RADAR_ERROR responses");
+      assert.equal(result.rows.length, n, `must have processed exactly ${n} pools before aborting`);
+      for (const row of result.rows) {
+        assert.equal(row.buyer, buyers[pools.findIndex((p) => p.mint === row.mint)], "buyer must have resolved for every row");
+        assert.equal(row.http_status, 503);
+        assert.equal(row.radar_verdict, null, "RADAR_ERROR must NEVER populate radar_verdict -- not a fabricated verdict");
+        assert.ok(row.radar_error, "radar_error must be populated instead");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // --- Task 2 (stage 7D): independent mint-metadata-fetched fixation, since
+  // /gate-copy's response never echoes back whether IT fetched mint metadata
+  // (verified by reading src/simulate.ts's simulatePayment return object and
+  // src/http-server.ts's toolGateCopy body -- neither contains `mintRisk`).
+
+  test("fetchMintStateAtT: fetched=true when getAccountInfo returns a real account value", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { info: { mintAuthority: null, freezeAuthority: "FreezeAuth111111111111111111111111111111" } } } } },
+      });
+    try {
+      const state = await fetchMintStateAtT("SomeMint1111111111111111111111111111111", null);
+      assert.equal(state.fetched, true);
+      assert.equal(state.freezeAuthority, "FreezeAuth111111111111111111111111111111");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("fetchMintStateAtT: fetched=false when getAccountInfo returns a null value (account not found)", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: null } });
+    try {
+      const state = await fetchMintStateAtT("SomeMint2222222222222222222222222222222", null);
+      assert.equal(state.fetched, false);
+      assert.equal(state.mintAuthority, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("fetchMintStateAtT: fetched=false (not throw) on RPC network failure", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("ECONNRESET");
+    };
+    try {
+      const state = await fetchMintStateAtT("SomeMint3333333333333333333333333333333", null);
+      assert.equal(state.fetched, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("runCollectionCycle: verdict_unconfirmed_mint_check is true when a real verdict came back but the collector's own mint fetch failed", async () => {
+    const pair = "PairUnconfirmed11111111111111111111111111";
+    const mint = "MintUnconfirmed11111111111111111111111111";
+    const creator = "CreatorUnconfirmed1111111111111111111111111";
+    const buyer = "BuyerUnconfirmed11111111111111111111111111";
+    const creationSig = { signature: "creationSigUC", blockTime: 5000 };
+    const buySig = { signature: "buySigUC", blockTime: 5010 };
+    const freshPoolCreatedAtIso = new Date(Date.now() - 60_000).toISOString(); // frozen before the mock runs -- see comment in the RADAR_ERROR abort test above
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("geckoterminal.com")) {
+        return jsonResponse({
+          data: [
+            {
+              attributes: { address: pair, pool_created_at: freshPoolCreatedAtIso },
+              relationships: { dex: { data: { id: "raydium" } }, base_token: { data: { id: `solana_${mint}` } } },
+            },
+          ],
+        });
+      }
+      if (url.includes("dexscreener.com")) {
+        return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] });
+      }
+      if (url.includes("/gate-copy")) {
+        return jsonResponse({ allow: true, action: "allow", riskScore: 5 }, 200); // a REAL verdict
+      }
+      const body = JSON.parse(init.body);
+      if (body.method === "getAccountInfo") {
+        const addr = body.params[0];
+        if (addr === mint) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: null } }); // mint fetch FAILS (task 2)
+        if (addr === buyer) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111", executable: false } } });
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: null } });
+      }
+      if (body.method === "getSignaturesForAddress") {
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: [buySig, creationSig] });
+      }
+      if (body.method === "getTransaction") {
+        const sig = body.params[0];
+        if (sig === creationSig.signature) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: [creator] } }, blockTime: creationSig.blockTime } });
+        }
+        if (sig === buySig.signature) {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { blockTime: buySig.blockTime, meta: { preTokenBalances: [], postTokenBalances: [{ mint, owner: buyer, accountIndex: 0, uiTokenAmount: { amount: "1" } }] } },
+          });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+
+    try {
+      const result = await runCollectionCycle({ dbPath: ":memory:", radarUrl: "http://fake-radar", limit: 1 });
+      assert.equal(result.rows.length, 1);
+      const row = result.rows[0];
+      assert.equal(row.http_status, 200, "a real verdict must have come back");
+      assert.ok(row.radar_verdict, "radar_verdict must be populated -- this was a real 200 response");
+      assert.equal(row.mint_metadata_fetched, false, "the collector's own getAccountInfo(mint) failed");
+      assert.equal(row.verdict_unconfirmed_mint_check, true, "a verdict exists but with no confirmed mint check backing it");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("runCollectionCycle: verdict_unconfirmed_mint_check is false when the collector's own mint fetch succeeded", async () => {
+    const pair = "PairConfirmed111111111111111111111111111";
+    const mint = "MintConfirmed111111111111111111111111111";
+    const creator = "CreatorConfirmed11111111111111111111111111";
+    const buyer = "BuyerConfirmed111111111111111111111111111";
+    const creationSig = { signature: "creationSigC", blockTime: 6000 };
+    const buySig = { signature: "buySigC", blockTime: 6010 };
+    const freshPoolCreatedAtIso = new Date(Date.now() - 60_000).toISOString(); // frozen before the mock runs -- see comment in the RADAR_ERROR abort test above
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("geckoterminal.com")) {
+        return jsonResponse({
+          data: [
+            {
+              attributes: { address: pair, pool_created_at: freshPoolCreatedAtIso },
+              relationships: { dex: { data: { id: "raydium" } }, base_token: { data: { id: `solana_${mint}` } } },
+            },
+          ],
+        });
+      }
+      if (url.includes("dexscreener.com")) {
+        return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] });
+      }
+      if (url.includes("/gate-copy")) {
+        return jsonResponse({ allow: true, action: "allow", riskScore: 5 }, 200);
+      }
+      const body = JSON.parse(init.body);
+      if (body.method === "getAccountInfo") {
+        const addr = body.params[0];
+        if (addr === mint) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { info: {} } } } } }); // mint fetch SUCCEEDS
+        }
+        if (addr === buyer) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111", executable: false } } });
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: null } });
+      }
+      if (body.method === "getSignaturesForAddress") {
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: [buySig, creationSig] });
+      }
+      if (body.method === "getTransaction") {
+        const sig = body.params[0];
+        if (sig === creationSig.signature) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: [creator] } }, blockTime: creationSig.blockTime } });
+        }
+        if (sig === buySig.signature) {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { blockTime: buySig.blockTime, meta: { preTokenBalances: [], postTokenBalances: [{ mint, owner: buyer, accountIndex: 0, uiTokenAmount: { amount: "1" } }] } },
+          });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+
+    try {
+      const result = await runCollectionCycle({ dbPath: ":memory:", radarUrl: "http://fake-radar", limit: 1 });
+      assert.equal(result.rows.length, 1);
+      const row = result.rows[0];
+      assert.equal(row.mint_metadata_fetched, true);
+      assert.equal(row.verdict_unconfirmed_mint_check, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("determineMintRiskFetched: true only on positive TOXIC_MINT/CONCENTRATION evidence, else NOT_DETERMINABLE", () => {
     assert.equal(determineMintRiskFetched({ details: { simulation: { wouldTrigger: ["TOXIC_MINT"] } } }), true);
     assert.equal(determineMintRiskFetched({ details: { simulation: { wouldTrigger: ["LARGE_PAYMENT"] } } }), "NOT_DETERMINABLE");
@@ -429,6 +702,8 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       http_status: 200,
       copy_amount_usd: COPY_AMOUNT_USD,
       mint_risk_fetched: true,
+      mint_metadata_fetched: true,
+      verdict_unconfirmed_mint_check: false,
       radar_verdict: { allow: true, action: "allow", riskScore: 12 },
       radar_code_version: "abc1234",
     });
@@ -444,6 +719,8 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     assert.equal(stored.buyer_tx_signature, "sigBuyerTx1111");
     assert.equal(stored.http_status, 200);
     assert.equal(stored.mint_risk_fetched, "true");
+    assert.equal(stored.mint_metadata_fetched, "true");
+    assert.equal(stored.verdict_unconfirmed_mint_check, "false");
     assert.ok(stored.radar_verdict.includes("allow"));
 
     const secondUpdate = db.prepare("UPDATE shadow_trades SET outcome = ? WHERE id = ? AND outcome IS NULL").run("DANGEROUS", pending[0].id);

@@ -266,22 +266,37 @@ export async function resolveBuyer(pairAddress, targetMint, poolCreation, db = n
   return { buyer: null, buyerTxSignature: null, t: null, rejectedCandidates };
 }
 
-/** Fetches mint state (mintAuthority, freezeAuthority, Token-2022 extensions). */
-export async function fetchMintStateAtT(mint, db = null) {
+/**
+ * Fetches mint state (mintAuthority, freezeAuthority, Token-2022 extensions)
+ * via the COLLECTOR'S OWN getAccountInfo call -- independent of whatever the
+ * radar does or does not fetch server-side for /gate-copy (task 2, stage 7D).
+ *
+ * `/gate-copy`'s response never echoes back whether it actually fetched mint
+ * metadata (verified by reading src/simulate.ts's simulatePayment return
+ * object and src/http-server.ts's toolGateCopy response body -- neither
+ * contains `mintRisk` or any derivative of it); `mint_risk_fetched`
+ * (determineMintRiskFetched) is only an INDIRECT inference from whether
+ * TOXIC_MINT/CONCENTRATION fired, which proves risk was found, never that a
+ * check was attempted on a clean mint. `fetched` here is a genuinely
+ * independent, direct signal: did OUR OWN RPC call for this mint's account
+ * succeed, right now, regardless of what the radar's response says.
+ */
+export async function fetchMintStateAtT(mint, db = null, fetchImpl = fetch) {
   try {
-    const accountInfo = await rpcCall("getAccountInfo", [mint, { encoding: "jsonParsed" }], db);
+    const accountInfo = await rpcCall("getAccountInfo", [mint, { encoding: "jsonParsed" }], db, 3, fetchImpl);
     const value = accountInfo?.value;
-    if (!value) return { mintAuthority: null, freezeAuthority: null, tokenProgram: null, extensions: [] };
+    if (!value) return { mintAuthority: null, freezeAuthority: null, tokenProgram: null, extensions: [], fetched: false };
     const info = value.data?.parsed?.info || {};
     return {
       mintAuthority: info.mintAuthority || null,
       freezeAuthority: info.freezeAuthority || null,
       tokenProgram: value.owner || null,
       extensions: info.extensions || [],
+      fetched: true,
     };
   } catch (err) {
     if (db) logError(db, "collect", "fetchMintStateAtT", err, { mint });
-    return { mintAuthority: null, freezeAuthority: null, tokenProgram: null, extensions: [] };
+    return { mintAuthority: null, freezeAuthority: null, tokenProgram: null, extensions: [], fetched: false };
   }
 }
 
@@ -478,6 +493,15 @@ export async function runCollectionCycle(opts = {}) {
         http_status: gateCopyRes.httpStatus,
         copy_amount_usd: COPY_AMOUNT_USD,
         mint_risk_fetched: mintRiskFetched,
+        // Independent of mint_risk_fetched (inferred from the radar's response, task 4 stage 7B):
+        // this is the collector's OWN getAccountInfo(mint) result, task 2 stage 7D.
+        mint_metadata_fetched: mintState.fetched,
+        // A real verdict was returned, but our own independent mint check failed -- we cannot
+        // vouch that ANY mint data (ours or the radar's own internal fetch) was available for
+        // this trade. Never set when there is no verdict at all (RADAR_ERROR/NO_BUYER already
+        // excluded elsewhere, task 4/5 stage 7B) -- this flag is specifically about a verdict
+        // that WAS produced without a confirmed mint check backing it.
+        verdict_unconfirmed_mint_check: Boolean(gateCopyRes.body) && !gateCopyRes.isRadarError && !mintState.fetched,
         radar_verdict: gateCopyRes.isRadarError ? null : gateCopyRes.body,
         radar_error: gateCopyRes.isRadarError ? gateCopyRes.body : null,
         radar_code_version: gitCommit,
