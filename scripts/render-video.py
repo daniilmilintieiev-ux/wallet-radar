@@ -30,7 +30,7 @@ def get_font(size, bold=False):
     except:
         return ImageFont.load_default()
 
-def draw_header(draw, title_right="SOLANA DEVNET // 628 TESTS PASS // 100% ACCURACY"):
+def draw_header(draw, title_right="SOLANA DEVNET // CI TEST SUITE PASSING"):
     draw.rectangle([0, 0, WIDTH, 60], fill=PANEL_COLOR)
     draw.line([0, 60, WIDTH, 60], fill=BORDER_COLOR, width=2)
     
@@ -176,7 +176,7 @@ def render_slide_3(lang="ru"):
         draw.text((x + 25, y + 25), title, fill=TEXT_WHITE, font=f_r_t)
         draw.text((x + 420, y + 25), f"[{badge}]", fill=bcol, font=f_r_b)
         draw.text((x + 25, y + 75), desc, fill=TEXT_MUTED, font=f_r_d)
-        draw.text((x + 25, y + 115), "Status: Zero False-Positive Verified", fill=TEXT_DIM, font=get_font(13))
+        draw.text((x + 25, y + 115), "Status: independent validation pending", fill=TEXT_DIM, font=get_font(13))
         
     sub = "Второе: девять детерминированных правил и ноль галлюцинаций. Полностью исключили нейросети..." if lang == "ru" else "Second: nine deterministic rules with zero hallucinations. LLMs completely removed from decision path..."
     draw_footer(draw, sub)
@@ -191,22 +191,22 @@ def render_slide_4(lang="ru"):
     f_tit = get_font(42, bold=True)
     f_desc = get_font(22)
     
-    draw.text((80, 110), "04 // EMPIRICAL PROOF & EDGE DEPLOYMENT", fill=AMBER, font=f_eye)
-    draw.text((80, 145), "100% Walk-Forward Accuracy · 24/7 Orange Pi Node", fill=TEXT_WHITE, font=f_tit)
-    draw.text((80, 205), "Tested on 71 real mainnet wallets without lookahead bias. Autonomous hardware node active.", fill=TEXT_MUTED, font=f_desc)
-    
+    draw.text((80, 110), "04 // EDGE DEPLOYMENT", fill=AMBER, font=f_eye)
+    draw.text((80, 145), "24/7 Orange Pi Node · Independent Validation Pending", fill=TEXT_WHITE, font=f_tit)
+    draw.text((80, 205), "Autonomous hardware node active. Walk-forward accuracy claim retracted pending ground-truth review (see ground-truth/PROTOCOL.md).", fill=TEXT_MUTED, font=f_desc)
+
     # 4 Stat Pillars
     f_num = get_font(56, bold=True)
     f_lbl = get_font(16, bold=True)
     f_sub = get_font(14)
-    
+
     stats = [
-        ("100.0%", "WALK-FORWARD ACCURACY", "71 of 71 mainnet wallets correctly classified", GREEN),
-        ("0", "FALSE BLOCKS ON DEX", "Jupiter, Raydium, Orca swaps verified clean", GREEN),
+        ("N/A", "WALK-FORWARD ACCURACY", "Retracted -- independent validation not yet complete", TEXT_MUTED),
+        ("N/A", "FALSE BLOCKS ON DEX", "Retracted -- independent validation not yet complete", TEXT_MUTED),
         ("62 MB", "EDGE NODE RAM FOOTPRINT", "Physical Orange Pi 3B (ARM64) 24/7 daemon", AMBER),
-        ("628", "PASSING UNIT TESTS", "0 failures · 12 adversarial attack suites", GREEN)
+        ("665", "PASSING UNIT TESTS", "0 failures · CI regression suite (not an accuracy claim)", GREEN)
     ]
-    
+
     for i, (val, lbl, subtext, col) in enumerate(stats):
         x = 80 + i * 445
         draw.rounded_rectangle([x, 280, x + 420, 600], radius=16, fill=PANEL_COLOR, outline=BORDER_COLOR, width=2)
@@ -214,7 +214,7 @@ def render_slide_4(lang="ru"):
         draw.text((x + 30, 420), lbl, fill=TEXT_WHITE, font=f_lbl)
         draw.text((x + 30, 460), subtext, fill=TEXT_MUTED, font=f_sub)
         draw.line([x + 30, 520, x + 390, 520], fill=BORDER_COLOR, width=1)
-        draw.text((x + 30, 545), "VERIFIED ON-CHAIN PROOF", fill=TEXT_DIM, font=get_font(12, bold=True))
+        draw.text((x + 30, 545), "SEE ground-truth/PROTOCOL.md", fill=TEXT_DIM, font=get_font(12, bold=True))
         
     # Bottom info box
     draw.rounded_rectangle([80, 640, 1840, 840], radius=16, fill=PANEL_COLOR, outline=BORDER_COLOR, width=2)
@@ -222,7 +222,7 @@ def render_slide_4(lang="ru"):
     draw.text((120, 725), "• Services active: radar-http, radar-watch (daily alert mode), x402server, canary-agent", fill=TEXT_WHITE, font=get_font(16))
     draw.text((120, 765), "• Daily Telegram Digest scheduled at 07:00 UTC+3 with rich HTML summary and zero day-time spam", fill=TEXT_MUTED, font=get_font(16))
     
-    sub = "Третье: верификация через History Machine — 100% точности на 71 кошельке. Orange Pi нода в 62 МБ RAM..." if lang == "ru" else "Third: validation via History Machine: 100% accuracy on 71 wallets. Orange Pi node in 62 MB RAM..."
+    sub = "Третье: независимая проверка точности History Machine ещё не завершена (см. ground-truth/PROTOCOL.md). Orange Pi нода в 62 МБ RAM..." if lang == "ru" else "Third: independent accuracy validation of History Machine is not yet complete (see ground-truth/PROTOCOL.md). Orange Pi node in 62 MB RAM..."
     draw_footer(draw, sub)
     return img
 

@@ -130,24 +130,17 @@ History      │             Zero ungrounded assumptions: fails safe            
 - **`block`**: Critical threat detected ($R > 70$ or high-severity anomaly). In Transfer Hook mode, transactions unconditionally revert.
 - **`manual_review`**: Unverified account type, unpriced tokens, or zero historical baseline. Escalates to human or falls back to conservative hold.
 
-### 3. Empirical Ground-Truth Benchmark & CI Regression Suite
+### 3. CI Regression Suite (synthetic fixtures, not an empirical benchmark)
 
-To eliminate the risk of synthetic overfit and verify detector behavior against real-world attack vectors, Wallet Radar is validated across two complementary evaluation frameworks:
+**Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: a zero-network, fully reproducible regression harness executed on every build, using 24 versioned, hand-authored test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing). Each fixture's expected outcome is defined by construction (the author writes a transaction sequence designed to trigger, or not trigger, a specific rule) — this is a **regression test against the ruleset itself**, not an independent measurement against real-world wallets. It currently passes 24/24 (100% precision/recall/accuracy on this fixture set). Run locally via `npm run radar -- benchmark`.
 
-| Metric | Labeled Exploit Replay (50) | Legitimate High-Volume DeFi (50) | Combined Replay Benchmark |
-|---|---|---|---|
-| **Sample Set** | Known drainers, rug deployers, phishing sweeps | Jupiter, Raydium, Drift, Squads multisigs | 100 Mainnet Wallets (Historical Replay) |
-| **Detection Rate (Sensitivity)** | **96.0% (48 / 50)** | — | — |
-| **Specificity (True Negative Rate)** | — | **98.0% (49 / 50)** | — |
-| **False Positive Rate** | — | **< 2.0% (1 / 50)** | < 1.0% overall |
-| **Verdicts Issued** | 48 Block / 2 Throttle (sparse history) | 49 Allow / 1 Throttle | 0 Uncaught Drainers |
-| **Mean Latency (Helius + Rules)** | 420 ms | 485 ms | 450 ms sub-second |
+This regression suite is a different kind of evidence than an empirical accuracy claim on real mainnet wallets, and should not be read as one. See **Статус независимой оценки** below for where that empirical validation currently stands.
 
-#### Dual-Validation Framework
-1. **Offline Labeled Historical Replay Benchmark (100 Wallets)**: Confirms high sensitivity (96.0%) and low false alarm rate (<2.0%) by executing the full `analyzeWallet` pipeline over historical transaction sequences of 50 confirmed malicious wallets and 50 established DeFi trading wallets.
-2. **Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: A zero-network, fully reproducible regression harness executed on every build:
-   - 24 versioned test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing).
-   - **100% Precision, 100% Recall, 100% Accuracy (24/24)** across all test runs. Run locally via `npm run radar -- benchmark`.
+---
+
+## Статус независимой оценки
+
+Независимая проверка качества детекции на реальных ончейн-данных ещё не завершена: первый прогон (архив: [archive/exp1](archive/exp1), тег `exp1-invalid`) признан невалидным (метки перезаписывались собственными вердиктами радара, датасет не в git, состояние mint бралось на момент запуска, а не на дату сделки) и не подтверждает никаких процентных показателей точности. Числа `96.0%` / `98.0%` / `71 wallets`, ранее приводившиеся в этом README и в демо-материалах, не подкреплены воспроизводимым артефактом в этом репозитории и были удалены; независимая методология переразметки разрабатывается в [ground-truth/PROTOCOL.md](ground-truth/PROTOCOL.md).
 
 ---
 
@@ -214,7 +207,7 @@ When a Token-22 mint enables Wallet Radar's hook, every `transfer_checked` instr
                                                               (CounterpartyFlagged)
 ```
 
-- **Devnet Battle-Tested**: Deployed and fully functional on Devnet (`wvN1ky...HwoV`), demonstrating live reverts with Anchor error code `0x1771` (`RadarHookError::DestinationHighRisk`). Mainnet deployment requires ~1.72 SOL rent-exemption for program account allocation and is scheduled alongside production token deployments.
+- **Deployed on Devnet**: Functional on Devnet (`wvN1ky...HwoV`), demonstrating live reverts with Anchor error code `0x1771` (`RadarHookError::DestinationHighRisk`). This is devnet functional testing, not adversarial testing at scale ("battle-tested" was an overstatement and has been removed). Mainnet deployment requires ~1.72 SOL rent-exemption for program account allocation and is scheduled alongside production token deployments.
 - **Two-Sided Counterparty Gate**: Evaluates remaining accounts for both destination AND sender, blocking transfers to compromised addresses and transfers out of drained wallets.
 - **Mint Authority Authentication**: Enforces that only the bona fide `mint_authority` can initialize configurations and register extra account metas, preventing front-running and hijacking.
 - **Deterministic Record PDAs**: Records derive from seeds `[b"radar_record", mint.key(), wallet.key()]` ensuring strict cross-mint isolation.

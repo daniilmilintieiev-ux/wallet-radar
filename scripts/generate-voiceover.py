@@ -62,7 +62,7 @@ SCENES_EN = [
         "id": 4,
         "start": 34.0,
         "rate": "+4%",
-        "text": "Third: real-world validation with our walk-forward History Machine: 100% accuracy across 71 mainnet wallets with zero false-positive blocks on DEX swaps. Running 24/7 on an Orange Pi node using just 62 megabytes of RAM."
+        "text": "Third: independent validation of our walk-forward History Machine is still in progress and not yet complete. Running 24/7 on an Orange Pi node using just 62 megabytes of RAM."
     },
     {
         "id": 5,
