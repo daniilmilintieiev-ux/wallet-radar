@@ -140,7 +140,7 @@ CI95 = [center - margin, center + margin]
 | Интервал опроса сборщика | `POLL_INTERVAL_MINUTES = 15` (по умолчанию; CLI-флаг `--interval=<мин>` в `collect.mjs`) | `docs/SHADOW-RUNBOOK.md` §2 |
 | Максимальный возраст пула на момент обнаружения | `POOL_MAX_AGE_MINUTES = 15` | `scripts/shadow/collect.mjs` |
 | `copyAmountUsd` (сумма, передаваемая в `/gate-copy`) | `COPY_AMOUNT_USD = 10` | `scripts/shadow/collect.mjs` |
-| Дневной потолок внешних запросов | **[МЕСТО ОСТАВЛЕНО — значение задаёт пользователь]** (`DAILY_REQUEST_CEILING`, по умолчанию в коде `1500`, `docs/SHADOW-RUNBOOK.md` §2) | — |
+| Дневной потолок внешних запросов | **`1500`** (`DAILY_REQUEST_CEILING`, значение задано пользователем на этапе 7F, совпадает со значением по умолчанию в коде — см. `shadow.env`, `docs/SHADOW-RUNBOOK.md` §2) | — |
 | Источник новых пулов | GeckoTerminal `new_pools` (network=solana), см. раздел 2 выше и `docs/SHADOW-COLLECTOR.md` §1 | — |
 | Минимальная версия Node.js | `22.13.0` (`node:sqlite` без флага, см. `docs/SHADOW-RUNBOOK.md` §0, https://nodejs.org/docs/latest-v22.x/api/sqlite.html) | — |
 
