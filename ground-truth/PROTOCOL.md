@@ -75,3 +75,32 @@
 
 ### Источник 7: Jupiter Token List API (`https://tokens.jup.ag/tokens`)
 * **Статус проверки:** 🔴 **НЕ ПРОВЕРЕНО / НЕДОСТУПЕН** (сбой разрешения DNS / сетевой таймаут). В разметке **НЕ ИСПОЛЬЗУЕТСЯ**.
+
+---
+
+## 5. Схема разметки (`labels.jsonl`) и правила верификации
+
+Каждая строка файла `ground-truth/labels.jsonl` представляет собой сериализованный JSON-объект следующей структуры:
+
+```json
+{
+  "address": "4vdC3J...",
+  "label": "DANGEROUS",
+  "source_url": "https://...",
+  "cutoff_date": "2026-09-23T00:00:00.000Z",
+  "event_date": "2026-09-24T12:00:00.000Z",
+  "evidence_quote": "wallet drained 15000 SOL from treasury",
+  "origin_source": "CertiK Incident Report #123",
+  "checked_at": "2026-09-29T10:00:00.000Z"
+}
+```
+
+### Требования к полям:
+1. `address`: валидный base58 Solana-адрес. Аккаунт должен быть System-owned (`11111111111111111111111111111111`) и `executable == false` для классов, утверждающих, что объект является кошельком.
+2. `label`: одно из значений `SAFE`, `DANGEROUS`, `UNCERTAIN`.
+3. `source_url`: публичный URL источника. Должен возвращать HTTP 200 без JS-рендеринга и содержать точную подстроку адреса.
+4. `cutoff_date` / `event_date`: для класса `DANGEROUS` обязательно `event_date > cutoff_date`.
+5. `evidence_quote`: дословная цитата из текста страницы `source_url` (до 15 слов), подтверждающая токсичный исход. Должна быть обнаружена в теле HTTP-ответа без изменений.
+6. Отсутствие пересечений с `archive/exp1/large-wallets.json` и отсутствие дубликатов внутри разметки.
+7. Любая запись без статуса `PASS` от инструмента `ground-truth/tools/verify-labels.mjs` **НЕ СЧИТАЕТСЯ ВАЛИДНОЙ МЕТКОЙ**.
+
