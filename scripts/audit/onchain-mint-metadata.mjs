@@ -22,14 +22,21 @@ import { PublicKey } from "@solana/web3.js";
 const RPC_URL = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
-async function rpc(method, params) {
-  const res = await fetch(RPC_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    signal: AbortSignal.timeout(15000),
-  });
-  return res.json();
+export async function rpc(method, params, retries = 5) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json();
+    if (data?.error?.code === 429 && attempt < retries) {
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      continue;
+    }
+    return data;
+  }
 }
 
 function metaplexPda(mint) {
@@ -152,7 +159,7 @@ async function main() {
       out.write(JSON.stringify(errRow) + "\n");
       console.log(`${mint}: ERROR ${errRow.error}`);
     }
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
   }
   out.end();
 }
