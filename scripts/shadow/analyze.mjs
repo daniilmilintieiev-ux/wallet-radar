@@ -72,6 +72,52 @@ export function classifyVerdictBucket(radarVerdictRaw) {
 }
 
 /**
+ * Task 1/2 (stage 7G): the finer-grained response FORM, distinguishing whether
+ * `details.simulation` ran, per docs/PREREGISTRATION.md section 12 -- descriptive only,
+ * never used to change the primary bucket/table logic above.
+ *   F1 = action "block", no details.simulation (http-server.ts:443-454, trust verdict "hold")
+ *   F2 = action "manual_review", no details.simulation (455-464, trust verdict "unknown")
+ *   F3 = action "block", WITH details.simulation (493-505, isBlocked)
+ *   F4 = action "throttle" (507-520, isThrottled -- always has simulation)
+ *   F5 = action "manual_review", WITH details.simulation (522-534, !safeToExecute)
+ *   F6 = action "allow" (538-548, final fallback)
+ * "UNCLASSIFIED" for the same defensive reasons as classifyVerdictBucket.
+ */
+export function classifyResponseForm(radarVerdictRaw) {
+  if (!radarVerdictRaw) return "UNCLASSIFIED";
+  let verdict;
+  try {
+    verdict = typeof radarVerdictRaw === "string" ? JSON.parse(radarVerdictRaw) : radarVerdictRaw;
+  } catch {
+    return "UNCLASSIFIED";
+  }
+  const action = verdict?.action;
+  const hasSimulation = Boolean(verdict?.details?.simulation);
+  if (action === "block" && !hasSimulation) return "F1";
+  if (action === "manual_review" && !hasSimulation) return "F2";
+  if (action === "block" && hasSimulation) return "F3";
+  if (action === "throttle") return "F4";
+  if (action === "manual_review" && hasSimulation) return "F5";
+  if (action === "allow") return "F6";
+  return "UNCLASSIFIED";
+}
+
+/**
+ * Counts ALL rows by response form, regardless of outcome -- never reads row.outcome
+ * at all. Used both by the descriptive full-mode tables (further filtered to RESOLVED
+ * rows by the caller) and, unfiltered, by --counters-only mode (task 1's "look-ahead
+ * rule": before collection stops and the final outcomes run, this script may only
+ * report record counts, never outcome-derived shares).
+ */
+export function countRowsByForm(rows) {
+  const counts = { F1: 0, F2: 0, F3: 0, F4: 0, F5: 0, F6: 0, UNCLASSIFIED: 0 };
+  for (const row of rows) {
+    counts[classifyResponseForm(row.radar_verdict)]++;
+  }
+  return counts;
+}
+
+/**
  * Classifies one shadow_trades row into exactly one reporting class.
  * Order matters only in that RADAR_ERROR/NO_BUYER are checked first because they
  * mean no real verdict/outcome pipeline ever ran for the row (PREREGISTRATION.md
@@ -113,6 +159,50 @@ export function splitTables(resolvedRowsWithBucket) {
 
 function dangerousCount(rows) {
   return rows.filter((r) => r.outcome === "DANGEROUS").length;
+}
+
+/**
+ * PREREGISTRATION.md section 12(a): per response form, over RESOLVED rows (DANGEROUS+SAFE)
+ * ONLY, combined across both strata (this secondary table is explicitly descriptive, "без
+ * агрегирования и без выводов" -- no conclusion is drawn from it, unlike section 4's
+ * stratum-separated primary tables). Record count, DANGEROUS count, and the Wilson interval
+ * for each form -- nothing aggregated across forms, nothing decided.
+ */
+export function dangerousShareByForm(resolvedRows) {
+  const byForm = { F1: [], F2: [], F3: [], F4: [], F5: [], F6: [], UNCLASSIFIED: [] };
+  for (const row of resolvedRows) {
+    byForm[classifyResponseForm(row.radar_verdict)].push(row);
+  }
+  const result = {};
+  for (const [form, formRows] of Object.entries(byForm)) {
+    const x = dangerousCount(formRows);
+    const n = formRows.length;
+    result[form] = { count: n, dangerous: x, ci: wilson95(x, n) };
+  }
+  return result;
+}
+
+/**
+ * PREREGISTRATION.md section 12(b): "simulation did not run" (F1, F2 -- toolGateCopy
+ * returned before ever reaching simulatePayment) vs "simulation ran" (F3-F6). UNCLASSIFIED
+ * rows go into neither group, same non-guessing policy as everywhere else in this file.
+ */
+export function simulationSplit(resolvedRows) {
+  const notRun = [];
+  const ran = [];
+  for (const row of resolvedRows) {
+    const form = classifyResponseForm(row.radar_verdict);
+    if (form === "F1" || form === "F2") notRun.push(row);
+    else if (form === "F3" || form === "F4" || form === "F5" || form === "F6") ran.push(row);
+  }
+  const xNot = dangerousCount(notRun);
+  const nNot = notRun.length;
+  const xRan = dangerousCount(ran);
+  const nRan = ran.length;
+  return {
+    simulationNotRun: { count: nNot, dangerous: xNot, ci: wilson95(xNot, nNot) },
+    simulationRan: { count: nRan, dangerous: xRan, ci: wilson95(xRan, nRan) },
+  };
 }
 
 /**
@@ -173,6 +263,34 @@ export function formatSkipCountersReport(skipCounterRows) {
   return reasons.map((r) => `  ${r}: ${byReason[r]}`).join("\n");
 }
 
+/** Reads error_logs's row count -- read-only. */
+export function countErrorLogs(db) {
+  return db.prepare("SELECT COUNT(*) AS cnt FROM error_logs").get().cnt;
+}
+
+/**
+ * PREREGISTRATION.md section 12, "правило подглядывания" (stage 7G): before collection
+ * stops and the final outcomes.mjs run, analyze.mjs may ONLY print this -- record count,
+ * error_logs count, skip_counters, and per-form RECORD COUNTS with no outcome/danger-rate
+ * information whatsoever. This function never reads row.outcome (countRowsByForm doesn't
+ * either) and prints nothing that classifyRow/dangerousCount/wilson95 would need.
+ */
+export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount) {
+  const lines = [];
+  lines.push(`[COUNTERS-ONLY] Всего строк в shadow_trades: ${rows.length}`);
+  lines.push(`[COUNTERS-ONLY] Записей в error_logs: ${errorLogCount}`);
+  lines.push("");
+  lines.push("[COUNTERS-ONLY] skip_counters (по всем датам суммарно):");
+  lines.push(formatSkipCountersReport(skipCounterRows));
+  lines.push("");
+  lines.push("[COUNTERS-ONLY] Число записей по формам ответа /gate-copy (F1..F6, без исходов и без долей опасных):");
+  const formCounts = countRowsByForm(rows);
+  for (const [form, count] of Object.entries(formCounts)) {
+    lines.push(`  ${form}: ${count}`);
+  }
+  return lines.join("\n");
+}
+
 export function analyze(rows) {
   const byClass = {
     RADAR_ERROR: [],
@@ -223,6 +341,12 @@ export function analyze(rows) {
   }
   result.radarTokenCheckMissing = rtcCounts;
 
+  // PREREGISTRATION.md section 12(a)/(b) (stage 7G) -- descriptive secondary tables,
+  // combined across strata (unlike section 4's tables, which are always per-stratum),
+  // no aggregation across forms, no "radar useful"-style conclusion drawn from either.
+  result.responseForms = dangerousShareByForm(byClass.RESOLVED);
+  result.simulationSplit = simulationSplit(byClass.RESOLVED);
+
   for (const strat of ["A", "B"]) {
     const resolvedInStrat = byClass.RESOLVED.filter((r) => r.strat === strat);
     const withBucket = resolvedInStrat.map((r) => ({ ...r, bucket: classifyVerdictBucket(r.radar_verdict) }));
@@ -264,6 +388,16 @@ export function formatReport(result) {
   for (const [k, v] of Object.entries(result.radarTokenCheckMissing)) {
     lines.push(`  ${k}: ${v}`);
   }
+  lines.push("");
+  lines.push("=== Формы ответа /gate-copy F1..F6 (PREREGISTRATION.md section 12a, описательно, обе страты вместе, без агрегирования и без выводов) ===");
+  for (const [form, s] of Object.entries(result.responseForms)) {
+    lines.push(`  ${form}: ${formatCI(s.ci)}`);
+  }
+  lines.push("");
+  lines.push("=== Симуляция не выполнялась (F1,F2) vs выполнялась (F3-F6) (PREREGISTRATION.md section 12b, описательно) ===");
+  lines.push(`  Симуляция НЕ выполнялась: ${formatCI(result.simulationSplit.simulationNotRun.ci)}`);
+  lines.push(`  Симуляция выполнялась:    ${formatCI(result.simulationSplit.simulationRan.ci)}`);
+  lines.push("  ВНИМАНИЕ (PREREGISTRATION.md section 12c): F1/F2 завершаются до проверки токена -- бакет BLOCKED в таблице 1 может состоять преимущественно из блокировок по доверию к покупателю, читать таблицу 1 нужно с учётом этого.");
   for (const strat of ["A", "B"]) {
     const s = result.strata[strat];
     lines.push("");
@@ -285,8 +419,10 @@ export function formatReport(result) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   let dbPath = DEFAULT_DB_PATH;
+  let countersOnly = false;
   for (const a of args) {
     if (a.startsWith("--db=")) dbPath = a.split("=")[1];
+    else if (a === "--counters-only") countersOnly = true;
   }
 
   let db;
@@ -300,11 +436,18 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 
   try {
     const rows = loadRows(db);
-    const result = analyze(rows);
-    console.log(formatReport(result));
-    console.log("");
-    console.log("=== skip_counters (task 3 stage 7F, по всем датам суммарно) ===");
-    console.log(formatSkipCountersReport(loadSkipCounters(db)));
+    if (countersOnly) {
+      // Look-ahead rule (PREREGISTRATION.md section 12, stage 7G): this branch never
+      // calls analyze() at all -- structurally, not just by convention, nothing
+      // outcome-derived can leak into the printed report while collection is still live.
+      console.log(formatCountersOnlyReport(rows, loadSkipCounters(db), countErrorLogs(db)));
+    } else {
+      const result = analyze(rows);
+      console.log(formatReport(result));
+      console.log("");
+      console.log("=== skip_counters (task 3 stage 7F, по всем датам суммарно) ===");
+      console.log(formatSkipCountersReport(loadSkipCounters(db)));
+    }
   } finally {
     db.close();
   }

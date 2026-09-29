@@ -4,16 +4,23 @@ import {
   wilson95,
   intervalsOverlap,
   classifyVerdictBucket,
+  classifyResponseForm,
+  countRowsByForm,
+  dangerousShareByForm,
+  simulationSplit,
   classifyRow,
   splitTables,
   evaluateSplit,
   analyze,
+  formatReport,
+  formatCountersOnlyReport,
+  countErrorLogs,
   MIN_DANGEROUS_FOR_PUBLICATION,
   loadSkipCounters,
   summarizeSkipCounters,
   formatSkipCountersReport,
 } from "../scripts/shadow/analyze.mjs";
-import { openDb, insertTrade, updateTradeOutcome, incrementSkipCounter, getSkipCounters } from "../scripts/shadow/db.mjs";
+import { openDb, insertTrade, updateTradeOutcome, incrementSkipCounter, getSkipCounters, logError } from "../scripts/shadow/db.mjs";
 
 describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
   // --- Wilson score interval, control values independently verified by hand
@@ -329,5 +336,128 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
     const summary = summarizeSkipCounters(rows);
     assert.equal(summary.RADAR_ERROR, 2);
     assert.equal(summary.PROCESSING_ERROR, 1);
+  });
+
+  // --- Task 1/2 (stage 7G): response forms F1..F6, simulation split, and the
+  // --counters-only "look-ahead rule" mode. Reuses the same real branch shapes
+  // toolGateCopy actually produces (src/http-server.ts), verified in stage 7F. ---
+
+  const FORM_BODIES = {
+    F1: { allow: false, action: "block", details: { trust: { verdict: "hold" } } },
+    F2: { allow: false, action: "manual_review", details: { trust: { verdict: "unknown" } } },
+    F3: { allow: false, action: "block", details: { trust: {}, simulation: { wouldTrigger: ["TOXIC_MINT"] } } },
+    F4: { allow: true, action: "throttle", details: { trust: {}, simulation: { wouldTrigger: [] } } },
+    F5: { allow: false, action: "manual_review", details: { trust: {}, simulation: { safeToExecute: false } } },
+    F6: { allow: true, action: "allow", details: { trust: {}, simulation: { wouldTrigger: [] } } },
+  };
+
+  test("classifyResponseForm: recognizes each of F1..F6 from its real toolGateCopy shape, else UNCLASSIFIED", () => {
+    for (const [form, body] of Object.entries(FORM_BODIES)) {
+      assert.equal(classifyResponseForm(body), form, `expected ${form}`);
+    }
+    assert.equal(classifyResponseForm(null), "UNCLASSIFIED");
+    assert.equal(classifyResponseForm("not json{"), "UNCLASSIFIED");
+    assert.equal(classifyResponseForm({ action: "something_new" }), "UNCLASSIFIED");
+  });
+
+  test("countRowsByForm: counts across all rows without ever reading row.outcome (rows here have no outcome property at all)", () => {
+    const rows = [
+      { radar_verdict: JSON.stringify(FORM_BODIES.F1) },
+      { radar_verdict: JSON.stringify(FORM_BODIES.F1) },
+      { radar_verdict: JSON.stringify(FORM_BODIES.F4) },
+      { radar_verdict: null }, // e.g. NO_BUYER/RADAR_ERROR row
+    ];
+    const counts = countRowsByForm(rows);
+    assert.equal(counts.F1, 2);
+    assert.equal(counts.F4, 1);
+    assert.equal(counts.UNCLASSIFIED, 1);
+    assert.equal(counts.F2 + counts.F3 + counts.F5 + counts.F6, 0);
+  });
+
+  test("dangerousShareByForm: per-form record count, DANGEROUS count, and Wilson CI, over RESOLVED rows only", () => {
+    const resolvedRows = [
+      { radar_verdict: JSON.stringify(FORM_BODIES.F1), outcome: "DANGEROUS" },
+      { radar_verdict: JSON.stringify(FORM_BODIES.F1), outcome: "SAFE" },
+      { radar_verdict: JSON.stringify(FORM_BODIES.F6), outcome: "SAFE" },
+      { radar_verdict: JSON.stringify(FORM_BODIES.F6), outcome: "SAFE" },
+    ];
+    const byForm = dangerousShareByForm(resolvedRows);
+    assert.equal(byForm.F1.count, 2);
+    assert.equal(byForm.F1.dangerous, 1);
+    assert.equal(byForm.F1.ci.p, 0.5);
+    assert.equal(byForm.F6.count, 2);
+    assert.equal(byForm.F6.dangerous, 0);
+    assert.equal(byForm.F2.count, 0, "forms with zero rows are still reported, not omitted");
+  });
+
+  test("simulationSplit: F1/F2 (no simulation) vs F3-F6 (simulation ran), DANGEROUS counts kept separate", () => {
+    const resolvedRows = [
+      { radar_verdict: JSON.stringify(FORM_BODIES.F1), outcome: "DANGEROUS" }, // not run
+      { radar_verdict: JSON.stringify(FORM_BODIES.F2), outcome: "SAFE" }, // not run
+      { radar_verdict: JSON.stringify(FORM_BODIES.F3), outcome: "DANGEROUS" }, // ran
+      { radar_verdict: JSON.stringify(FORM_BODIES.F6), outcome: "SAFE" }, // ran
+      { radar_verdict: JSON.stringify(FORM_BODIES.F6), outcome: "SAFE" }, // ran
+    ];
+    const split = simulationSplit(resolvedRows);
+    assert.equal(split.simulationNotRun.count, 2);
+    assert.equal(split.simulationNotRun.dangerous, 1);
+    assert.equal(split.simulationRan.count, 3);
+    assert.equal(split.simulationRan.dangerous, 1);
+  });
+
+  test("analyze()/formatReport(): section 12 tables are present, combined across strata, descriptive-only wording included", () => {
+    const db = openDb(":memory:");
+    const insertWithOutcome = (trade, outcome) => {
+      const { lastInsertRowid } = insertTrade(db, trade);
+      updateTradeOutcome(db, lastInsertRowid, outcome, null);
+    };
+    let t = 5000;
+    const base = (overrides) => ({ mint: `M${t}`, pair: `P${t}`, t: t++, strat: "A", recorded_at: new Date().toISOString(), ...overrides });
+    insertWithOutcome(base({ buyer: "B1", radar_verdict: FORM_BODIES.F1 }), "DANGEROUS");
+    insertWithOutcome(base({ buyer: "B2", strat: "B", radar_verdict: FORM_BODIES.F6 }), "SAFE");
+
+    const result = analyze(db.prepare("SELECT * FROM shadow_trades").all());
+    assert.equal(result.responseForms.F1.count, 1);
+    assert.equal(result.responseForms.F1.dangerous, 1);
+    assert.equal(result.responseForms.F6.count, 1);
+    assert.equal(result.simulationSplit.simulationNotRun.count, 1);
+    assert.equal(result.simulationSplit.simulationRan.count, 1);
+
+    const report = formatReport(result);
+    assert.match(report, /F1..F6/);
+    assert.match(report, /section 12a/);
+    assert.match(report, /section 12b/);
+    assert.match(report, /section 12c/);
+    assert.match(report, /завершаются до проверки токена/);
+  });
+
+  test("--counters-only: formatCountersOnlyReport never mentions outcome/DANGEROUS/SAFE/BLOCKED/bucket names, only counts", () => {
+    const db = openDb(":memory:");
+    const insertWithOutcome = (trade, outcome) => {
+      const { lastInsertRowid } = insertTrade(db, trade);
+      updateTradeOutcome(db, lastInsertRowid, outcome, null);
+    };
+    insertWithOutcome({ mint: "M1", pair: "P1", t: 1, strat: "A", buyer: "B1", recorded_at: new Date().toISOString(), radar_verdict: FORM_BODIES.F1 }, "DANGEROUS");
+    insertWithOutcome({ mint: "M2", pair: "P2", t: 2, strat: "B", buyer: "B2", recorded_at: new Date().toISOString(), radar_verdict: FORM_BODIES.F6 }, "SAFE");
+    incrementSkipCounter(db, "TOKEN_TOO_OLD", 3);
+    logError(db, "collect", "processPool:x", new Error("boom"));
+
+    const rows = db.prepare("SELECT * FROM shadow_trades").all();
+    const report = formatCountersOnlyReport(rows, loadSkipCounters(db), countErrorLogs(db));
+
+    assert.match(report, /Всего строк в shadow_trades: 2/);
+    assert.match(report, /Записей в error_logs: 1/);
+    assert.match(report, /TOKEN_TOO_OLD: 3/);
+    assert.match(report, /F1: 1/);
+    assert.match(report, /F6: 1/);
+
+    // The look-ahead rule: no outcome/danger-rate vocabulary anywhere in the text.
+    assert.doesNotMatch(report, /outcome/i);
+    assert.doesNotMatch(report, /DANGEROUS/);
+    assert.doesNotMatch(report, /\bSAFE\b/);
+    assert.doesNotMatch(report, /BLOCKED/);
+    assert.doesNotMatch(report, /VERIFIED_SAFE/);
+    assert.doesNotMatch(report, /LOW_TRUST_WARMING/);
+    assert.doesNotMatch(report, /Wilson|CI95|доля/i);
   });
 });
