@@ -150,6 +150,61 @@ systemctl status wallet-radar-shadow-collect.service
 systemctl list-timers wallet-radar-shadow-outcomes.timer
 ```
 
+### 4.5. Проверка перед запуском на Orange Pi (preflight, stage 7C)
+
+Перед КАЖДЫМ (пере)запуском сервисов на Orange Pi выполнить по порядку. Ни один шаг не пропускать молча — если preflight показывает `FAIL`, юниты не включать, пока причина не устранена.
+
+```bash
+# 1. Обновить код до актуального состояния ветки
+cd /home/orangepi/wallet-radar
+git pull
+
+# 2. Проверить версию Node (минимум 22.13.0 для node:sqlite, см. раздел 0)
+node -v
+
+# 3. Задать ключ в окружении ТЕКУЩЕЙ оболочки (значение никогда не печатать/не логировать)
+export HELIUS_API_KEY="..."
+
+# 4. Запустить preflight -- он проверяет всё, что нужно для запуска юнитов,
+#    и не падает исключением при отсутствии сети (печатает FAIL вместо краша)
+node scripts/shadow/preflight.mjs
+echo "exit code: $?"
+```
+
+`scripts/shadow/preflight.mjs` проверяет (PASS/FAIL с причиной по каждому пункту, ненулевой код выхода при любом FAIL):
+1. версия Node + импортируемость `node:sqlite`;
+2. установлен ли `HELIUS_API_KEY` (только да/нет, без значения);
+3. доступность RPC через ключ и через публичный узел (`getSlot`, время ответа);
+4. `GET {RADAR_URL}/health` — HTTP 200 и `env.heliusConfigured=true`;
+5. тестовый `POST {RADAR_URL}/gate-copy` — HTTP 200 (не 503);
+6. источник новых пулов (GeckoTerminal `new_pools`, выбор task 1 этапа 7B) отвечает и отдаёт пулы моложе `POOL_MAX_AGE_MINUTES`;
+7. каталог `shadow/` доступен на запись, свободно ≥ 500 МБ;
+8. расхождение системных часов с заголовком `Date` внешнего сервера ≤ 5 секунд.
+
+**Только если preflight завершился с кодом `0` (все пункты `PASS`)**, переходить к запуску юнитов — порядок важен:
+
+```bash
+# 5. Перечитать unit-файлы (если менялись .service/.timer)
+sudo systemctl daemon-reload
+
+# 6. Сначала сборщик -- он единственный источник записей в shadow_trades
+sudo systemctl enable --now wallet-radar-shadow-collect.service
+systemctl status wallet-radar-shadow-collect.service --no-pager
+
+# 7. Только после того, как сборщик подтверждённо работает (status: active,
+#    в journalctl видны "[COLLECT] Cycle completed"), включать таймер исходов.
+#    Запускать outcomes раньше бессмысленно: getPendingTrades отбирает записи
+#    не моложе t + OUTCOME_HORIZON_DAYS (3 дня), их физически ещё не будет.
+sudo systemctl enable --now wallet-radar-shadow-outcomes.timer
+systemctl list-timers wallet-radar-shadow-outcomes.timer --no-pager
+
+# 8. Проверить логи обоих сервисов
+journalctl -u wallet-radar-shadow-collect.service -n 50 --no-pager
+journalctl -u wallet-radar-shadow-outcomes.service -n 50 --no-pager
+```
+
+Если preflight упал на пункте 4/5 (`heliusConfigured=false` / `gate-copy` вернул не 200) — это означает, что `HELIUS_API_KEY` не виден процессу самого радара (`http-server.ts`), не только сборщику; проверить `EnvironmentFile=-/etc/default/wallet-radar-shadow` у ЮНИТА РАДАРА (не сборщика) и перезапустить его до включения юнитов сборщика.
+
 ---
 
 ## 5. SQL-запросы для мониторинга и отчётов
