@@ -9,7 +9,8 @@ import { maxOf, minOf } from "./stats.js";
 import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions, ENHANCED_TX_SCHEMA } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
-import { fetchSwapMintRisk } from "./mint.js";
+import { fetchSwapMintRisk, fetchMintMetadata } from "./mint.js";
+import { isValidBase58 } from "./config.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment } from "./simulate.js";
@@ -47,6 +48,7 @@ export interface McpServerOptions {
   fetchTxs?: typeof fetchWalletTransactions;
   fetchPrices?: typeof fetchSwapPrices;
   fetchMintRisk?: typeof fetchSwapMintRisk;
+  fetchMintMetadata?: typeof fetchMintMetadata;
 }
 
 export function buildServer(options: McpServerOptions = {}): McpServer {
@@ -395,6 +397,13 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
 
         let simRes: any;
         if (copyAmountUsd !== undefined && copyAmountUsd > 0) {
+          let mintRisk = null;
+          if (mint && isValidBase58(mint)) {
+            try {
+              const fetchMintMetadataFn = options.fetchMintMetadata ?? fetchMintMetadata;
+              mintRisk = await fetchMintMetadataFn(mint, { apiKey, store: options.store });
+            } catch {}
+          }
           simRes = simulatePayment({
             wallet: targetWallet,
             amountUsd: copyAmountUsd,
@@ -407,6 +416,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             maxRisk,
             minLiquidityUsd,
             mint,
+            mintRisk,
           });
 
           const simAction = (simRes.decision as any)?.action ?? (simRes.decision as any)?.verdict;

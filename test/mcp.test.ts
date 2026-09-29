@@ -152,6 +152,101 @@ test("MCP radar_scan: reports error when HELIUS_API_KEY is not set", async () =>
   }
 });
 
+test("MCP radar_gate_copy: fetches mintRisk for body.mint and blocks on freezeAuthority (mirrors http-server.ts toolGateCopy)", async () => {
+  const originalFetch = globalThis.fetch;
+  const savedApiKey = process.env.HELIUS_API_KEY;
+  process.env.HELIUS_API_KEY = "test_api_key";
+  const targetWallet = "WappetTest1111111111111111111111111111";
+  const toxicMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    // Helius history: clean wallet, no anomalies -> runTrustCheck resolves "safe".
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([
+          { signature: "sigHist1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (urlStr.includes("jup.ag")) {
+      return new Response(JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 150 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (bodyStr) {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(bodyStr);
+      } catch {
+        parsed = null;
+      }
+      if (parsed?.method === "getBalance") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 50 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (parsed?.method === "getAsset") {
+        // DAS lookup fails -> fetchMintMetadata falls back to plain getAccountInfo below.
+        return new Response(JSON.stringify({ error: "DAS not available in test" }), { status: 500 });
+      }
+      if (parsed?.method === "getAccountInfo") {
+        const address = parsed.params?.[0];
+        if (address === toxicMint) {
+          // Mint account: active freezeAuthority, no supply field -> fetchMintMetadata
+          // skips the top10Pct/getTokenLargestAccounts call entirely.
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { type: "mint", info: { freezeAuthority: "FreezeAuth1111111111111111111111111111111", mintAuthority: null, isInitialized: true } } } } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        // Wallet account-authority check (trust.ts fetchAccountOwner) -> plain System account.
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111" } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  const client = await createTestClient();
+  try {
+    const res = await client.request("tools/call", {
+      name: "radar_gate_copy",
+      arguments: { targetWallet, copyAmountUsd: 50, mint: toxicMint },
+    });
+    assert.equal(res.result.isError, undefined);
+    const parsed = JSON.parse(res.result.content[0].text);
+    assert.equal(parsed.allow, false, "should be blocked because the mint has an active freezeAuthority");
+    assert.equal(parsed.action, "block");
+    assert.ok(
+      parsed.details?.simulation?.wouldTrigger?.includes("TOXIC_MINT"),
+      `expected wouldTrigger to include TOXIC_MINT, got ${JSON.stringify(parsed.details?.simulation?.wouldTrigger)}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedApiKey !== undefined) process.env.HELIUS_API_KEY = savedApiKey;
+    else delete process.env.HELIUS_API_KEY;
+    await client.close();
+  }
+});
+
 test("MCP radar_batch: reports error when HELIUS_API_KEY is not set", async () => {
   const saved = process.env.HELIUS_API_KEY;
   delete process.env.HELIUS_API_KEY;
