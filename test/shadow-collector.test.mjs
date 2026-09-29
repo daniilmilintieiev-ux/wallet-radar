@@ -15,7 +15,10 @@ import {
   MAX_CONSECUTIVE_RADAR_ERRORS,
   runCollectionCycle,
   fetchMintStateAtT,
+  determineRadarTokenCheckMissing,
 } from "../scripts/shadow/collect.mjs";
+import { MAJOR_MINTS } from "../dist/src/types.js";
+import { KNOWN_SAFE_MINTS } from "../dist/src/mint.js";
 import {
   classifyOutcome,
   loadIssuerControlledMints,
@@ -545,6 +548,124 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       const row = result.rows[0];
       assert.equal(row.mint_metadata_fetched, true);
       assert.equal(row.verdict_unconfirmed_mint_check, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // --- Task 3 (stage 7E): radar_token_check_missing ---
+  // Determined by reading src/simulate.ts (wouldTrigger, TOXIC_MINT fires only on
+  // freezeAuthority, simulate.ts:324) and src/http-server.ts's toolGateCopy (431-548):
+  // details.simulation is absent entirely when trustResult.verdict is "hold"/"unknown"
+  // (simulatePayment never runs) -- that case must be NOT_DETERMINABLE, never a guess.
+
+  test("determineRadarTokenCheckMissing: false when mint has no authority at all (nothing for TOXIC_MINT to fire on)", () => {
+    const res = determineRadarTokenCheckMissing({ mintAuthority: null, freezeAuthority: null }, "SomeMint1111111111111111111111111111111", { details: { simulation: { wouldTrigger: [] } } });
+    assert.equal(res, false);
+  });
+
+  test("determineRadarTokenCheckMissing: false for a MAJOR_MINTS/KNOWN_SAFE_MINTS mint even with authority (correctly whitelisted)", () => {
+    assert.ok(MAJOR_MINTS.length > 0, "sanity: real MAJOR_MINTS imported from dist/src/types.js");
+    const usdc = MAJOR_MINTS[1]; // USDC -- has no live authority in reality, but we force one here to isolate the whitelist branch
+    const res = determineRadarTokenCheckMissing({ mintAuthority: null, freezeAuthority: "SomeFreezeAuth111111111111111111111111111" }, usdc, { details: { simulation: { wouldTrigger: [] } } });
+    assert.equal(res, false);
+    assert.ok(KNOWN_SAFE_MINTS.has(usdc), "sanity: also present in KNOWN_SAFE_MINTS");
+  });
+
+  test("determineRadarTokenCheckMissing: false when TOXIC_MINT actually fired (check happened and worked)", () => {
+    const res = determineRadarTokenCheckMissing(
+      { mintAuthority: null, freezeAuthority: "FreezeAuth111111111111111111111111111111" },
+      "RiskyMint1111111111111111111111111111111",
+      { details: { simulation: { wouldTrigger: ["TOXIC_MINT"] } } }
+    );
+    assert.equal(res, false);
+  });
+
+  test("determineRadarTokenCheckMissing: true when mint has active freeze/mint authority, isn't whitelisted, and TOXIC_MINT did NOT fire", () => {
+    const res = determineRadarTokenCheckMissing(
+      { mintAuthority: null, freezeAuthority: "FreezeAuth222222222222222222222222222222" },
+      "RiskyMint2222222222222222222222222222222",
+      { details: { simulation: { wouldTrigger: [] } } }
+    );
+    assert.equal(res, true);
+  });
+
+  test("determineRadarTokenCheckMissing: NOT_DETERMINABLE when details.simulation is absent (trust check blocked before simulatePayment ran)", () => {
+    // Exactly the shape toolGateCopy returns for verdict==="hold" or "unknown" (http-server.ts:444-461) -- no `simulation` key at all.
+    const blockedEarly = { allow: false, reason: "BLOCKED by pre-trade firewall: ...", action: "block", riskScore: 80, maxSafeAmountUsd: 0, details: { trust: { verdict: "hold" } } };
+    const res = determineRadarTokenCheckMissing({ mintAuthority: null, freezeAuthority: "FreezeAuth333333333333333333333333333333" }, "RiskyMint3333333333333333333333333333333", blockedEarly);
+    assert.equal(res, "NOT_DETERMINABLE");
+  });
+
+  test("runCollectionCycle: radar_token_check_missing populated end-to-end with mocked network (TOXIC_MINT absent despite active freezeAuthority)", async () => {
+    const pair = "PairTokenCheck111111111111111111111111111";
+    const mint = "MintTokenCheck111111111111111111111111111";
+    const creator = "CreatorTokenCheck11111111111111111111111111";
+    const buyer = "BuyerTokenCheck111111111111111111111111111";
+    const creationSig = { signature: "creationSigTC", blockTime: 7000 };
+    const buySig = { signature: "buySigTC", blockTime: 7010 };
+    const freshPoolCreatedAtIso = new Date(Date.now() - 60_000).toISOString();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("geckoterminal.com")) {
+        return jsonResponse({
+          data: [
+            {
+              attributes: { address: pair, pool_created_at: freshPoolCreatedAtIso },
+              relationships: { dex: { data: { id: "raydium" } }, base_token: { data: { id: `solana_${mint}` } } },
+            },
+          ],
+        });
+      }
+      if (url.includes("dexscreener.com")) {
+        return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] });
+      }
+      if (url.includes("/gate-copy")) {
+        // A real 200 verdict where simulation ran but TOXIC_MINT did not fire.
+        return jsonResponse({ allow: true, action: "allow", riskScore: 10, details: { simulation: { wouldTrigger: [] } } }, 200);
+      }
+      const body = JSON.parse(init.body);
+      if (body.method === "getAccountInfo") {
+        const addr = body.params[0];
+        if (addr === mint) {
+          // Mint HAS an active freezeAuthority -- strat B, and a candidate for radar_token_check_missing.
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { info: { freezeAuthority: "FreezeAuthTC1111111111111111111111111111" } } } } },
+          });
+        }
+        if (addr === buyer) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111", executable: false } } });
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: null } });
+      }
+      if (body.method === "getSignaturesForAddress") {
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: [buySig, creationSig] });
+      }
+      if (body.method === "getTransaction") {
+        const sig = body.params[0];
+        if (sig === creationSig.signature) {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: [creator] } }, blockTime: creationSig.blockTime } });
+        }
+        if (sig === buySig.signature) {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { blockTime: buySig.blockTime, meta: { preTokenBalances: [], postTokenBalances: [{ mint, owner: buyer, accountIndex: 0, uiTokenAmount: { amount: "1" } }] } },
+          });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+
+    try {
+      const result = await runCollectionCycle({ dbPath: ":memory:", radarUrl: "http://fake-radar", limit: 1 });
+      assert.equal(result.rows.length, 1);
+      const row = result.rows[0];
+      assert.equal(row.strat, "B", "active freezeAuthority -> strat B");
+      assert.equal(row.radar_token_check_missing, true, "TOXIC_MINT should have been checkable and didn't fire -- flagged missing");
     } finally {
       globalThis.fetch = originalFetch;
     }

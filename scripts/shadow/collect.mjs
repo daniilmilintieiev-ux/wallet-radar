@@ -31,6 +31,12 @@ import {
   DEFAULT_DB_PATH,
   DEFAULT_DAILY_CEILING,
 } from "./db.mjs";
+// Imported from the actual compiled radar code (dist/src/, built via `npm run build`),
+// not copied literals -- same pattern already used by scripts/audit/pilot-scan-candidates.mjs.
+// Stage 7E task 3: radar_token_check_missing must whitelist exactly what the radar itself
+// whitelists, not a hand-maintained duplicate that can drift out of sync with src/.
+import { MAJOR_MINTS } from "../../dist/src/types.js";
+import { KNOWN_SAFE_MINTS } from "../../dist/src/mint.js";
 
 const HELIUS_KEY = process.env.HELIUS_API_KEY;
 const RPC_URL = HELIUS_KEY
@@ -347,6 +353,46 @@ export function determineMintRiskFetched(radarResponseBody) {
 }
 
 /**
+ * Task 3 (stage 7E): where /gate-copy lists which anomalies/rules fired.
+ *
+ * Read by walking src/simulate.ts and src/http-server.ts's toolGateCopy:
+ * - src/simulate.ts:246,319-330 -- simulatePayment's return field `wouldTrigger`
+ *   (a SimulateAnomaly[]) is the ONLY place fired rules are listed. TOXIC_MINT
+ *   fires ONLY on `input.mintRisk.freezeAuthority` truthy (src/simulate.ts:324) --
+ *   NOT on mintAuthority alone. This is a real asymmetry: a mint with an active
+ *   mintAuthority but freezeAuthority === null can never trigger TOXIC_MINT no
+ *   matter what the radar fetched, which is a structural gap in the RULE, not
+ *   evidence the mint wasn't checked -- kept honest below by only flagging
+ *   `radar_token_check_missing` on mints that have SOME active authority,
+ *   exactly as instructed, while documenting the asymmetry here rather than
+ *   silently treating freeze-only and mint-only authority the same way.
+ * - src/http-server.ts's toolGateCopy (431-548): `wouldTrigger` reaches the
+ *   client ONLY inside `details.simulation.wouldTrigger`, and `details.simulation`
+ *   is populated ONLY when execution reaches the simulatePayment call
+ *   (copyAmountUsd > 0, which the collector always sends). When
+ *   `trustResult.verdict` is `"hold"` (444-452) or `"unknown"` (453-461), the
+ *   function returns EARLY with `details: { trust: trustResult }` only --
+ *   `simulatePayment` never runs, so whether TOXIC_MINT would have fired is
+ *   genuinely unknown, not "no". Those cases return NOT_DETERMINABLE below,
+ *   never a guessed boolean.
+ *
+ * Whitelists (MAJOR_MINTS, KNOWN_SAFE_MINTS) are imported from the actual
+ * compiled radar code, not copied, so this can't silently drift from src/.
+ */
+export function determineRadarTokenCheckMissing(mintState, mint, radarResponseBody) {
+  const hasAuthority = Boolean(mintState?.mintAuthority) || Boolean(mintState?.freezeAuthority);
+  if (!hasAuthority) return false; // nothing that TOXIC_MINT could structurally fire on
+  if (MAJOR_MINTS.includes(mint) || KNOWN_SAFE_MINTS.has(mint)) return false; // correctly whitelisted
+
+  const simulation = radarResponseBody?.details?.simulation;
+  if (!simulation) return "NOT_DETERMINABLE"; // simulatePayment never ran (early trust-check block) -- can't tell
+
+  const wouldTrigger = simulation.wouldTrigger;
+  const toxicMintFired = Array.isArray(wouldTrigger) && wouldTrigger.includes("TOXIC_MINT");
+  return !toxicMintFired;
+}
+
+/**
  * Queries POST /gate-copy. Returns { httpStatus, body, isRadarError }.
  * A non-200 response (or a network failure reaching the radar) is
  * RADAR_ERROR and is NEVER treated as a verdict (task 4/5).
@@ -477,6 +523,10 @@ export async function runCollectionCycle(opts = {}) {
       }
 
       const mintRiskFetched = buyerRes.buyer && !gateCopyRes.isRadarError ? determineMintRiskFetched(gateCopyRes.body) : "NOT_DETERMINABLE";
+      // Only meaningful when a real verdict exists (task 3 stage 7E) -- no buyer or a
+      // RADAR_ERROR means there is no response body to inspect at all, not "not missing".
+      const radarTokenCheckMissing =
+        buyerRes.buyer && !gateCopyRes.isRadarError ? determineRadarTokenCheckMissing(mintState, mint, gateCopyRes.body) : null;
 
       const record = {
         mint,
@@ -502,6 +552,8 @@ export async function runCollectionCycle(opts = {}) {
         // excluded elsewhere, task 4/5 stage 7B) -- this flag is specifically about a verdict
         // that WAS produced without a confirmed mint check backing it.
         verdict_unconfirmed_mint_check: Boolean(gateCopyRes.body) && !gateCopyRes.isRadarError && !mintState.fetched,
+        // true/false/"NOT_DETERMINABLE"/null (task 3 stage 7E) -- see determineRadarTokenCheckMissing.
+        radar_token_check_missing: radarTokenCheckMissing,
         radar_verdict: gateCopyRes.isRadarError ? null : gateCopyRes.body,
         radar_error: gateCopyRes.isRadarError ? gateCopyRes.body : null,
         radar_code_version: gitCommit,

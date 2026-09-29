@@ -49,6 +49,7 @@ export function initSchema(db) {
       mint_risk_fetched TEXT,
       mint_metadata_fetched TEXT,
       verdict_unconfirmed_mint_check TEXT,
+      radar_token_check_missing TEXT,
       radar_verdict TEXT,
       radar_error TEXT,
       radar_code_version TEXT,
@@ -142,9 +143,9 @@ export function insertTrade(db, trade) {
       mint, pair, t, liquidity_usd, mint_authority, freeze_authority,
       token_program, token_2022_extensions, strat, buyer, buyer_tx_signature,
       http_status, copy_amount_usd, mint_risk_fetched, mint_metadata_fetched,
-      verdict_unconfirmed_mint_check,
+      verdict_unconfirmed_mint_check, radar_token_check_missing,
       radar_verdict, radar_error, radar_code_version, recorded_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   // Both booleans below are stored as TEXT "true"/"false" for the same reason as
@@ -170,6 +171,8 @@ export function insertTrade(db, trade) {
     typeof trade.mint_risk_fetched === "boolean" ? String(trade.mint_risk_fetched) : (trade.mint_risk_fetched ?? null),
     typeof trade.mint_metadata_fetched === "boolean" ? String(trade.mint_metadata_fetched) : (trade.mint_metadata_fetched ?? null),
     typeof trade.verdict_unconfirmed_mint_check === "boolean" ? String(trade.verdict_unconfirmed_mint_check) : (trade.verdict_unconfirmed_mint_check ?? null),
+    // true | false | "NOT_DETERMINABLE" | null (task 3 stage 7E) -- same TEXT-boolean convention.
+    typeof trade.radar_token_check_missing === "boolean" ? String(trade.radar_token_check_missing) : (trade.radar_token_check_missing ?? null),
     trade.radar_verdict ? (typeof trade.radar_verdict === "string" ? trade.radar_verdict : JSON.stringify(trade.radar_verdict)) : null,
     trade.radar_error ? (typeof trade.radar_error === "string" ? trade.radar_error : JSON.stringify(trade.radar_error)) : null,
     trade.radar_code_version ?? null,
