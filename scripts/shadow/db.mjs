@@ -42,8 +42,13 @@ export function initSchema(db) {
       token_program TEXT,
       token_2022_extensions TEXT,
       strat TEXT NOT NULL,
-      buyer TEXT NOT NULL,
+      buyer TEXT,
+      buyer_tx_signature TEXT,
+      http_status INTEGER,
+      copy_amount_usd REAL,
+      mint_risk_fetched TEXT,
       radar_verdict TEXT,
+      radar_error TEXT,
       radar_code_version TEXT,
       recorded_at TEXT NOT NULL,
       outcome TEXT,
@@ -133,9 +138,10 @@ export function insertTrade(db, trade) {
   const stmt = db.prepare(`
     INSERT INTO shadow_trades (
       mint, pair, t, liquidity_usd, mint_authority, freeze_authority,
-      token_program, token_2022_extensions, strat, buyer,
-      radar_verdict, radar_code_version, recorded_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      token_program, token_2022_extensions, strat, buyer, buyer_tx_signature,
+      http_status, copy_amount_usd, mint_risk_fetched,
+      radar_verdict, radar_error, radar_code_version, recorded_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   return stmt.run(
@@ -148,8 +154,16 @@ export function insertTrade(db, trade) {
     trade.token_program ?? null,
     trade.token_2022_extensions ? JSON.stringify(trade.token_2022_extensions) : null,
     trade.strat,
-    trade.buyer,
+    trade.buyer ?? null,
+    trade.buyer_tx_signature ?? null,
+    trade.http_status ?? null,
+    trade.copy_amount_usd ?? null,
+    // mint_risk_fetched is a 3-state TEXT field: "true" | "false" | "NOT_DETERMINABLE" (never a
+    // numeric 0/1 -- SQLite's TEXT affinity casting on a bound REAL parameter produces "1.0"/"0.0",
+    // which is not a boolean-safe round trip).
+    typeof trade.mint_risk_fetched === "boolean" ? String(trade.mint_risk_fetched) : (trade.mint_risk_fetched ?? null),
     trade.radar_verdict ? (typeof trade.radar_verdict === "string" ? trade.radar_verdict : JSON.stringify(trade.radar_verdict)) : null,
+    trade.radar_error ? (typeof trade.radar_error === "string" ? trade.radar_error : JSON.stringify(trade.radar_error)) : null,
     trade.radar_code_version ?? null,
     trade.recorded_at ?? new Date().toISOString()
   );
