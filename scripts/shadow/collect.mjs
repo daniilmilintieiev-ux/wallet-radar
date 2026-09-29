@@ -508,7 +508,11 @@ export async function fetchFreshPools(db = null, fetchImpl = fetch, maxPages = 5
         const baseTokenId = p.relationships?.base_token?.data?.id || "";
         const mint = baseTokenId.startsWith("solana_") ? baseTokenId.slice("solana_".length) : null;
         if (!mint) continue;
-        pools.push({ pair: address, mint, dexId, poolCreatedAtMs: createdAtMs, poolCreatedAtIso: createdAtStr });
+        // Stage 7J task 1: capture GeckoTerminal's own reserve_in_usd here -- it already
+        // arrives in this same response, no extra request needed to get liquidity at t.
+        const reserveRaw = p.attributes?.reserve_in_usd;
+        const reserveInUsd = reserveRaw != null && Number.isFinite(Number(reserveRaw)) ? Number(reserveRaw) : null;
+        pools.push({ pair: address, mint, dexId, poolCreatedAtMs: createdAtMs, poolCreatedAtIso: createdAtStr, reserveInUsd });
       }
     }
     // Pages are newest-first; once a page has no fresh entries, older pages are all stale too.
@@ -675,11 +679,24 @@ export async function runCollectionCycle(opts = {}) {
         const radarTokenCheckMissing =
           buyerRes.buyer && !gateCopyRes.isRadarError ? determineRadarTokenCheckMissing(mintState, mint, gateCopyRes.body) : null;
 
+        // Liquidity at t (task 1 stage 7J): GeckoTerminal's own reserve_in_usd, already
+        // captured in fetchFreshPools -- no extra request. Missing is recorded honestly
+        // (never defaulted to 0, per the stage 7I finding that a defaulted 0 makes
+        // outcomes.mjs's drop calculation fabricate a 100% loss) -- the record is still
+        // saved, just with liquidity_usd/liquidity_source both NULL, and a skip_counters
+        // entry so the gap is visible without inspecting every row.
+        const liquidityUsd = p.reserveInUsd ?? null;
+        const liquiditySource = liquidityUsd !== null ? "geckoterminal:reserve_in_usd" : null;
+        if (liquidityUsd === null) {
+          incrementSkipCounter(db, "LIQUIDITY_T_MISSING");
+        }
+
         const record = {
           mint,
           pair,
           t: buyerRes.t ?? Math.floor((p.poolCreatedAtMs || Date.now()) / 1000),
-          liquidity_usd: null,
+          liquidity_usd: liquidityUsd,
+          liquidity_source: liquiditySource,
           mint_authority: mintState.mintAuthority,
           freeze_authority: mintState.freezeAuthority,
           token_program: mintState.tokenProgram,

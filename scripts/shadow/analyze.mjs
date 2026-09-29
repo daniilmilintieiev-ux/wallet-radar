@@ -129,7 +129,13 @@ export function classifyRow(row) {
   if (!row.buyer) return "NO_BUYER"; // PREREGISTRATION.md section 5
   if (row.outcome === "ISSUER_CONTROLLED") return "ISSUER_CONTROLLED"; // section 5
   if (row.outcome === "PAIR_MISSING") return "PAIR_MISSING"; // section 5
-  if (typeof row.outcome === "string" && row.outcome.startsWith("невосстановимо")) return "IRRECOVERABLE"; // section 5, "невосстановимо"
+  // Stage 7J task 2: the two new irrecoverable classes get their OWN lines (exact match,
+  // checked BEFORE the generic "невосстановимо" prefix below) rather than being silently
+  // folded into the old IRRECOVERABLE bucket alongside "ATA закрыт"/"NO_BUYER".
+  if (row.outcome === "невосстановимо (нет ликвидности на t)") return "IRRECOVERABLE_NO_LIQUIDITY_AT_T";
+  if (row.outcome === "невосстановимо (ликвидность недоступна)") return "IRRECOVERABLE_LIQUIDITY_T3_UNAVAILABLE";
+  if (row.outcome === "миграция не определена") return "MIGRATION_UNDETERMINED"; // task 2 stage 7J -- successor candidate(s) missing a liquidity field, never guessed
+  if (typeof row.outcome === "string" && row.outcome.startsWith("невосстановимо")) return "IRRECOVERABLE"; // section 5, "невосстановимо" (ATA closed / NO_BUYER variants)
   if (row.outcome === "миграция, не исход") return "MIGRATION_NOT_AN_OUTCOME"; // outcomes.mjs classifyOutcome -- explicitly "не исход", excluded from DANGEROUS/SAFE the same way, not separately named in section 5 but excluded by the same logic
   if (row.outcome === null) return "PENDING"; // outcome not yet computed (too young, or outcomes.mjs hasn't run) -- not an exclusion class from section 5, just not resolved yet
   if (row.outcome === "DANGEROUS" || row.outcome === "SAFE") return "RESOLVED"; // enters the primary metric (section 4)
@@ -397,7 +403,10 @@ export function analyze(rows) {
     ISSUER_CONTROLLED: [],
     PAIR_MISSING: [],
     IRRECOVERABLE: [],
+    IRRECOVERABLE_NO_LIQUIDITY_AT_T: [],
+    IRRECOVERABLE_LIQUIDITY_T3_UNAVAILABLE: [],
     MIGRATION_NOT_AN_OUTCOME: [],
+    MIGRATION_UNDETERMINED: [],
     PENDING: [],
     RESOLVED: [],
     UNKNOWN_OUTCOME: [],
@@ -409,7 +418,19 @@ export function analyze(rows) {
   const stratTotals = { A: {}, B: {} };
   const result = { totalRows: rows.length, separateLines: {}, strata: {}, radarTokenCheckMissing: {} };
 
-  for (const cls of ["ISSUER_CONTROLLED", "PAIR_MISSING", "IRRECOVERABLE", "NO_BUYER", "RADAR_ERROR", "MIGRATION_NOT_AN_OUTCOME", "PENDING", "UNKNOWN_OUTCOME"]) {
+  for (const cls of [
+    "ISSUER_CONTROLLED",
+    "PAIR_MISSING",
+    "IRRECOVERABLE",
+    "IRRECOVERABLE_NO_LIQUIDITY_AT_T",
+    "IRRECOVERABLE_LIQUIDITY_T3_UNAVAILABLE",
+    "NO_BUYER",
+    "RADAR_ERROR",
+    "MIGRATION_NOT_AN_OUTCOME",
+    "MIGRATION_UNDETERMINED",
+    "PENDING",
+    "UNKNOWN_OUTCOME",
+  ]) {
     result.separateLines[cls] = byClass[cls].length;
   }
   // PAIR_MISSING: two bounds (PREREGISTRATION.md section 5 / SHADOW-RUNBOOK.md 5.4a).
