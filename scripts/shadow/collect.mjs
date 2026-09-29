@@ -353,19 +353,23 @@ export function determineMintRiskFetched(radarResponseBody) {
 }
 
 /**
- * Task 3 (stage 7E): where /gate-copy lists which anomalies/rules fired.
+ * Task 3 (stage 7E) / task 2 (stage 7F): where /gate-copy lists which
+ * anomalies/rules fired, and a four-state result that keeps the TOXIC_MINT
+ * asymmetry honest instead of collapsing it into a boolean.
  *
  * Read by walking src/simulate.ts and src/http-server.ts's toolGateCopy:
  * - src/simulate.ts:246,319-330 -- simulatePayment's return field `wouldTrigger`
  *   (a SimulateAnomaly[]) is the ONLY place fired rules are listed. TOXIC_MINT
  *   fires ONLY on `input.mintRisk.freezeAuthority` truthy (src/simulate.ts:324) --
- *   NOT on mintAuthority alone. This is a real asymmetry: a mint with an active
- *   mintAuthority but freezeAuthority === null can never trigger TOXIC_MINT no
- *   matter what the radar fetched, which is a structural gap in the RULE, not
- *   evidence the mint wasn't checked -- kept honest below by only flagging
- *   `radar_token_check_missing` on mints that have SOME active authority,
- *   exactly as instructed, while documenting the asymmetry here rather than
- *   silently treating freeze-only and mint-only authority the same way.
+ *   NOT on mintAuthority alone. A mint with an active mintAuthority but
+ *   freezeAuthority === null can never trigger TOXIC_MINT no matter what the
+ *   radar fetched -- that is a structural gap in the RULE, not evidence the
+ *   mint wasn't checked. Stage 7E's first version flagged such mints
+ *   `true` ("missing"), which was misleading: it isn't that the check is
+ *   missing, it's that the rule was never applicable to begin with. Fixed in
+ *   stage 7F by returning NOT_APPLICABLE for exactly this case (and for the
+ *   whitelist), so `true`/`false` are reserved for mints where TOXIC_MINT
+ *   COULD have fired (freezeAuthority present, not whitelisted).
  * - src/http-server.ts's toolGateCopy (431-548): `wouldTrigger` reaches the
  *   client ONLY inside `details.simulation.wouldTrigger`, and `details.simulation`
  *   is populated ONLY when execution reaches the simulatePayment call
@@ -373,16 +377,27 @@ export function determineMintRiskFetched(radarResponseBody) {
  *   `trustResult.verdict` is `"hold"` (444-452) or `"unknown"` (453-461), the
  *   function returns EARLY with `details: { trust: trustResult }` only --
  *   `simulatePayment` never runs, so whether TOXIC_MINT would have fired is
- *   genuinely unknown, not "no". Those cases return NOT_DETERMINABLE below,
+ *   genuinely unknown, not "no". Those cases return NOT_DETERMINABLE,
  *   never a guessed boolean.
+ *
+ * Four possible results:
+ * - NOT_APPLICABLE: no freezeAuthority at all (mintAuthority-only counts here
+ *   too -- TOXIC_MINT structurally cannot fire on it), OR the mint is in
+ *   MAJOR_MINTS/KNOWN_SAFE_MINTS (correctly whitelisted, suppression intended).
+ * - NOT_DETERMINABLE: freezeAuthority present, not whitelisted, but
+ *   details.simulation is absent (simulatePayment never ran) -- can't tell.
+ * - true: freezeAuthority present, not whitelisted, details.simulation
+ *   present, but TOXIC_MINT did NOT fire -- the check that should have run
+ *   apparently didn't confirm anything (missing).
+ * - false: same setup, but TOXIC_MINT DID fire -- confirmed working.
  *
  * Whitelists (MAJOR_MINTS, KNOWN_SAFE_MINTS) are imported from the actual
  * compiled radar code, not copied, so this can't silently drift from src/.
  */
 export function determineRadarTokenCheckMissing(mintState, mint, radarResponseBody) {
-  const hasAuthority = Boolean(mintState?.mintAuthority) || Boolean(mintState?.freezeAuthority);
-  if (!hasAuthority) return false; // nothing that TOXIC_MINT could structurally fire on
-  if (MAJOR_MINTS.includes(mint) || KNOWN_SAFE_MINTS.has(mint)) return false; // correctly whitelisted
+  const hasFreezeAuthority = Boolean(mintState?.freezeAuthority);
+  if (!hasFreezeAuthority) return "NOT_APPLICABLE"; // includes mintAuthority-only mints -- TOXIC_MINT can't fire on those
+  if (MAJOR_MINTS.includes(mint) || KNOWN_SAFE_MINTS.has(mint)) return "NOT_APPLICABLE"; // correctly whitelisted
 
   const simulation = radarResponseBody?.details?.simulation;
   if (!simulation) return "NOT_DETERMINABLE"; // simulatePayment never ran (early trust-check block) -- can't tell

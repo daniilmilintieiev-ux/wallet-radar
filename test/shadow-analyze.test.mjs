@@ -148,14 +148,15 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
     insertWithOutcome(baseTrade({ strat: "A", buyer: "B10", radar_verdict: { action: "allow" } }), "невосстановимо (ATA закрыт)");
     insertWithOutcome(baseTrade({ strat: "A", buyer: "B11", radar_verdict: { action: "allow" } }), "миграция, не исход");
     insertTrade(db, baseTrade({ strat: "A", buyer: "B12", radar_verdict: { action: "allow" } })); // PENDING (too young), outcome stays NULL
-    // radar_token_check_missing distribution
+    // radar_token_check_missing distribution (four states, stage 7F task 2)
     insertWithOutcome(baseTrade({ strat: "B", buyer: "B13", radar_verdict: { action: "allow" }, radar_token_check_missing: true }), "SAFE");
     insertWithOutcome(baseTrade({ strat: "B", buyer: "B14", radar_verdict: { action: "allow" }, radar_token_check_missing: false }), "SAFE");
+    insertWithOutcome(baseTrade({ strat: "B", buyer: "B15", radar_verdict: { action: "allow" }, radar_token_check_missing: "NOT_APPLICABLE" }), "SAFE");
 
     const rows = db.prepare("SELECT * FROM shadow_trades").all();
     const result = analyze(rows);
 
-    assert.equal(result.totalRows, 15);
+    assert.equal(result.totalRows, 16);
     assert.equal(result.separateLines.NO_BUYER, 1);
     assert.equal(result.separateLines.RADAR_ERROR, 1);
     assert.equal(result.separateLines.ISSUER_CONTROLLED, 1);
@@ -178,7 +179,8 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
 
     assert.equal(result.radarTokenCheckMissing.true, 1);
     assert.equal(result.radarTokenCheckMissing.false, 1);
-    assert.equal(result.radarTokenCheckMissing["null/not applicable"], 13);
+    assert.equal(result.radarTokenCheckMissing.NOT_APPLICABLE, 1);
+    assert.equal(result.radarTokenCheckMissing["null (no verdict)"], 13);
   });
 
   test(`MIN_DANGEROUS_FOR_PUBLICATION constant is 30, per PREREGISTRATION.md section 4.6`, () => {

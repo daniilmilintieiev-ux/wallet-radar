@@ -178,14 +178,19 @@ export function analyze(rows) {
   // so this line is honestly reported as unavailable rather than guessed as 0.
   result.separateLines.TOKEN_TOO_OLD = "NOT AVAILABLE IN DB (collect.mjs does not persist this counter as of shadow-v1 -- see stage 7E report)";
 
-  // radar_token_check_missing distribution (task 3) -- informational, not part of section 4's metric.
-  const rtcCounts = { true: 0, false: 0, NOT_DETERMINABLE: 0, "null/not applicable": 0 };
+  // radar_token_check_missing distribution (task 3 stage 7E, four-state task 2 stage 7F)
+  // -- informational, not part of section 4's metric. NOT_APPLICABLE (a real verdict
+  // exists, but TOXIC_MINT structurally can't apply -- no freezeAuthority or whitelisted)
+  // is a distinct stored string value, never conflated with "no verdict at all" (null,
+  // e.g. NO_BUYER/RADAR_ERROR rows where the column was never set).
+  const rtcCounts = { true: 0, false: 0, NOT_DETERMINABLE: 0, NOT_APPLICABLE: 0, "null (no verdict)": 0 };
   for (const row of rows) {
     const v = row.radar_token_check_missing;
     if (v === "true") rtcCounts.true++;
     else if (v === "false") rtcCounts.false++;
     else if (v === "NOT_DETERMINABLE") rtcCounts.NOT_DETERMINABLE++;
-    else rtcCounts["null/not applicable"]++;
+    else if (v === "NOT_APPLICABLE") rtcCounts.NOT_APPLICABLE++;
+    else rtcCounts["null (no verdict)"]++;
   }
   result.radarTokenCheckMissing = rtcCounts;
 

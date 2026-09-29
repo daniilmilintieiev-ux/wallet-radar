@@ -171,7 +171,8 @@ export function insertTrade(db, trade) {
     typeof trade.mint_risk_fetched === "boolean" ? String(trade.mint_risk_fetched) : (trade.mint_risk_fetched ?? null),
     typeof trade.mint_metadata_fetched === "boolean" ? String(trade.mint_metadata_fetched) : (trade.mint_metadata_fetched ?? null),
     typeof trade.verdict_unconfirmed_mint_check === "boolean" ? String(trade.verdict_unconfirmed_mint_check) : (trade.verdict_unconfirmed_mint_check ?? null),
-    // true | false | "NOT_DETERMINABLE" | null (task 3 stage 7E) -- same TEXT-boolean convention.
+    // true | false | "NOT_DETERMINABLE" | "NOT_APPLICABLE" | null (task 3 stage 7E,
+    // four-state task 2 stage 7F) -- same TEXT-boolean convention.
     typeof trade.radar_token_check_missing === "boolean" ? String(trade.radar_token_check_missing) : (trade.radar_token_check_missing ?? null),
     trade.radar_verdict ? (typeof trade.radar_verdict === "string" ? trade.radar_verdict : JSON.stringify(trade.radar_verdict)) : null,
     trade.radar_error ? (typeof trade.radar_error === "string" ? trade.radar_error : JSON.stringify(trade.radar_error)) : null,

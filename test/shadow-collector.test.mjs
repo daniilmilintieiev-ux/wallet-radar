@@ -553,22 +553,33 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     }
   });
 
-  // --- Task 3 (stage 7E): radar_token_check_missing ---
+  // --- Task 3 (stage 7E) / task 2 (stage 7F): radar_token_check_missing, four states ---
   // Determined by reading src/simulate.ts (wouldTrigger, TOXIC_MINT fires only on
   // freezeAuthority, simulate.ts:324) and src/http-server.ts's toolGateCopy (431-548):
   // details.simulation is absent entirely when trustResult.verdict is "hold"/"unknown"
   // (simulatePayment never runs) -- that case must be NOT_DETERMINABLE, never a guess.
+  // NOT_APPLICABLE (stage 7F fix) covers no-freezeAuthority (including mintAuthority-only,
+  // which stage 7E's first version wrongly called "missing") and the whitelist.
 
-  test("determineRadarTokenCheckMissing: false when mint has no authority at all (nothing for TOXIC_MINT to fire on)", () => {
+  test("determineRadarTokenCheckMissing: NOT_APPLICABLE when mint has no authority at all (nothing for TOXIC_MINT to fire on)", () => {
     const res = determineRadarTokenCheckMissing({ mintAuthority: null, freezeAuthority: null }, "SomeMint1111111111111111111111111111111", { details: { simulation: { wouldTrigger: [] } } });
-    assert.equal(res, false);
+    assert.equal(res, "NOT_APPLICABLE");
   });
 
-  test("determineRadarTokenCheckMissing: false for a MAJOR_MINTS/KNOWN_SAFE_MINTS mint even with authority (correctly whitelisted)", () => {
+  test("determineRadarTokenCheckMissing: NOT_APPLICABLE when mint has ONLY mintAuthority, no freezeAuthority (TOXIC_MINT structurally can't fire on it -- stage 7F fix)", () => {
+    const res = determineRadarTokenCheckMissing(
+      { mintAuthority: "MintAuth1111111111111111111111111111111", freezeAuthority: null },
+      "MintOnlyMint111111111111111111111111111",
+      { details: { simulation: { wouldTrigger: [] } } }
+    );
+    assert.equal(res, "NOT_APPLICABLE");
+  });
+
+  test("determineRadarTokenCheckMissing: NOT_APPLICABLE for a MAJOR_MINTS/KNOWN_SAFE_MINTS mint even with freezeAuthority (correctly whitelisted)", () => {
     assert.ok(MAJOR_MINTS.length > 0, "sanity: real MAJOR_MINTS imported from dist/src/types.js");
     const usdc = MAJOR_MINTS[1]; // USDC -- has no live authority in reality, but we force one here to isolate the whitelist branch
     const res = determineRadarTokenCheckMissing({ mintAuthority: null, freezeAuthority: "SomeFreezeAuth111111111111111111111111111" }, usdc, { details: { simulation: { wouldTrigger: [] } } });
-    assert.equal(res, false);
+    assert.equal(res, "NOT_APPLICABLE");
     assert.ok(KNOWN_SAFE_MINTS.has(usdc), "sanity: also present in KNOWN_SAFE_MINTS");
   });
 
@@ -581,7 +592,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     assert.equal(res, false);
   });
 
-  test("determineRadarTokenCheckMissing: true when mint has active freeze/mint authority, isn't whitelisted, and TOXIC_MINT did NOT fire", () => {
+  test("determineRadarTokenCheckMissing: true when mint has active freezeAuthority, isn't whitelisted, and TOXIC_MINT did NOT fire (genuinely missing)", () => {
     const res = determineRadarTokenCheckMissing(
       { mintAuthority: null, freezeAuthority: "FreezeAuth222222222222222222222222222222" },
       "RiskyMint2222222222222222222222222222222",
