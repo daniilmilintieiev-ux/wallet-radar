@@ -30,6 +30,8 @@ AUDIT.md
 # Local benchmarks, datasets, and history machine replays
 benchmarks/
 data/
+/shadow/
+/shadow/shadow.db
 *.bench.json
 replay-*.json
 
