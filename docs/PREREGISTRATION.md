@@ -170,3 +170,34 @@ CI95 = [center - margin, center + margin]
 | `false` | То же самое, но `TOXIC_MINT` **сработал** — проверка подтверждена. |
 
 `analyze.mjs` выводит распределение по всем четырём значениям плюс `"null (no verdict)"` (строки без вердикта вообще — `NO_BUYER`/`RADAR_ERROR`, поле не устанавливалось) отдельной справочной секцией, не смешивая её ни с одной из метрик раздела 4.
+
+---
+
+## 11. Формы ответа `/gate-copy` и их маппинг в бакеты (приложение, этап 7F)
+
+Полный перечень всех `return` из `toolGateCopy` (`src/http-server.ts:431-549`), по коду. Все шесть — единственные существующие сегодня формы; седьмая строка (6a) — тот же `return`, что и 6, но с другим фактическим составом `details` в зависимости от того, вызывался ли `simulatePayment`.
+
+| № | Условие | Файл:строка | `allow` | `action` | `details` |
+|---|---|---|---|---|---|
+| 1 | `trustResult.verdict === "hold"` | `http-server.ts:443-454` | `false` | `"block"` | `{ trust }` — **без** `simulation` |
+| 2 | `trustResult.verdict === "unknown"` | `http-server.ts:455-464` | `false` | `"manual_review"` | `{ trust }` — **без** `simulation` |
+| 3 | `isBlocked` (внутри симуляции) | `http-server.ts:493-505` | `false` | `"block"` | `{ trust, simulation }` |
+| 4 | `isThrottled` | `http-server.ts:507-520` | `true` | `"throttle"` | `{ trust, simulation }` |
+| 5 | `!simRes.safeToExecute` | `http-server.ts:522-534` | `false` | `"manual_review"` | `{ trust, simulation }` |
+| 6 | Финальный fallback, симуляция отработала и ничего не сработало | `http-server.ts:538-548` | `true` | `"allow"` | `{ trust, simulation }` |
+| 6a | Тот же `return` 538-548, но `copyAmountUsd` не задан/≤0 — блок симуляции (467-535) целиком пропущен, `simRes` остаётся `undefined` | `http-server.ts:538-548` | `true` | `"allow"` | `{ trust, simulation: undefined }` |
+
+Сборщик (`collect.mjs`, `queryGateCopy`) всегда шлёт `copyAmountUsd: COPY_AMOUNT_USD` (фиксированная положительная константа) — ветка 6a структурно недостижима из теневого прогона, но задокументирована здесь для полноты перечисления по коду.
+
+### Маппинг в бакеты (раздел 4.1)
+
+| Форма | Бакет |
+|---|---|
+| 1 | `BLOCKED` |
+| 2 | `BLOCKED` |
+| 3 | `BLOCKED` |
+| 4 | `LOW_TRUST_WARMING` |
+| 5 | `BLOCKED` |
+| 6 / 6a | `VERIFIED_SAFE` |
+
+Все шесть реально существующих форм укладываются в три бакета раздела 4.1 через поле `action` — ни разу не потребовалось угадывание. **`UNCLASSIFIED`** (`scripts/shadow/analyze.mjs`, `classifyVerdictBucket`) — защитный бакет на случай формы, которой в коде сегодня нет (отсутствующий/непарсящийся `radar_verdict`, или `action` со значением вне текущих четырёх литералов `block`/`manual_review`/`throttle`/`allow`). Не входит ни в одну из метрик раздела 4 (`x_block`/`x_pass`/`n_block`/`n_pass`) — публикуется отдельной строкой по каждому страту, как и остальные классы раздела 5.

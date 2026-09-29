@@ -51,16 +51,24 @@ const ACTION_TO_BUCKET = {
   allow: "VERIFIED_SAFE",
 };
 
-/** Parses shadow_trades.radar_verdict (JSON text or already-parsed) and returns a bucket name, or null if undeterminable. */
+/**
+ * Parses shadow_trades.radar_verdict (JSON text or already-parsed) and returns a bucket
+ * name. All 6 of toolGateCopy's actual return branches (src/http-server.ts:443-548, see
+ * docs/PREREGISTRATION.md section 11 for the full enumeration) use one of exactly four
+ * `action` values, all covered by ACTION_TO_BUCKET -- "UNCLASSIFIED" is a defensive
+ * fallback for a response shape that doesn't exist in the code today (missing/unparseable
+ * body, or an `action` value not in the current four), per task 4 stage 7F: never guess a
+ * bucket for a form that doesn't fit, report it as its own explicit class instead.
+ */
 export function classifyVerdictBucket(radarVerdictRaw) {
-  if (!radarVerdictRaw) return null;
+  if (!radarVerdictRaw) return "UNCLASSIFIED";
   let verdict;
   try {
     verdict = typeof radarVerdictRaw === "string" ? JSON.parse(radarVerdictRaw) : radarVerdictRaw;
   } catch {
-    return null;
+    return "UNCLASSIFIED";
   }
-  return ACTION_TO_BUCKET[verdict?.action] ?? null;
+  return ACTION_TO_BUCKET[verdict?.action] ?? "UNCLASSIFIED";
 }
 
 /**
@@ -218,7 +226,7 @@ export function analyze(rows) {
   for (const strat of ["A", "B"]) {
     const resolvedInStrat = byClass.RESOLVED.filter((r) => r.strat === strat);
     const withBucket = resolvedInStrat.map((r) => ({ ...r, bucket: classifyVerdictBucket(r.radar_verdict) }));
-    const undeterminedBucket = withBucket.filter((r) => r.bucket === null).length;
+    const unclassifiedCount = withBucket.filter((r) => r.bucket === "UNCLASSIFIED").length;
     const { table1, table2 } = splitTables(withBucket);
     const totalDangerous = dangerousCount(resolvedInStrat);
 
@@ -227,7 +235,7 @@ export function analyze(rows) {
     result.strata[strat] = {
       resolvedCount: resolvedInStrat.length,
       totalDangerous,
-      undeterminedBucketCount: undeterminedBucket,
+      unclassifiedCount,
       noBuyerInStratum: noBuyerInStrat,
       table1: evaluateSplit(table1.block, table1.pass, totalDangerous),
       table2: evaluateSplit(table2.block, table2.pass, totalDangerous),
@@ -262,7 +270,7 @@ export function formatReport(result) {
     lines.push(`=== Страт ${strat} ===`);
     lines.push(`  RESOLVED (DANGEROUS+SAFE): ${s.resolvedCount}, из них DANGEROUS: ${s.totalDangerous}`);
     lines.push(`  NO_BUYER в этом страте: ${s.noBuyerInStratum}`);
-    if (s.undeterminedBucketCount > 0) lines.push(`  ВНИМАНИЕ: ${s.undeterminedBucketCount} строк с неопознаваемым action в radar_verdict (не попали ни в один бакет)`);
+    lines.push(`  UNCLASSIFIED (форма ответа не укладывается в бакеты §4.1, docs/PREREGISTRATION.md section 11): ${s.unclassifiedCount}`);
     for (const [tableName, t] of [["Таблица 1 (throttle=пропущено)", s.table1], ["Таблица 2 (throttle=блок)", s.table2]]) {
       lines.push(`  ${tableName}: ${t.status}${t.reason ? " -- " + t.reason : ""}`);
       lines.push(`    Заблокировано: ${formatCI(t.ciBlock)}`);

@@ -52,14 +52,98 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
 
   // --- Bucket classification (PREREGISTRATION.md section 4.1) ---
 
-  test("classifyVerdictBucket: block/manual_review -> BLOCKED, throttle -> LOW_TRUST_WARMING, allow -> VERIFIED_SAFE", () => {
+  test("classifyVerdictBucket: block/manual_review -> BLOCKED, throttle -> LOW_TRUST_WARMING, allow -> VERIFIED_SAFE, else UNCLASSIFIED (never null, task 4 stage 7F)", () => {
     assert.equal(classifyVerdictBucket(JSON.stringify({ action: "block" })), "BLOCKED");
     assert.equal(classifyVerdictBucket(JSON.stringify({ action: "manual_review" })), "BLOCKED");
     assert.equal(classifyVerdictBucket(JSON.stringify({ action: "throttle" })), "LOW_TRUST_WARMING");
     assert.equal(classifyVerdictBucket(JSON.stringify({ action: "allow" })), "VERIFIED_SAFE");
-    assert.equal(classifyVerdictBucket(null), null);
-    assert.equal(classifyVerdictBucket("not json{"), null);
-    assert.equal(classifyVerdictBucket(JSON.stringify({ action: "something_new" })), null);
+    assert.equal(classifyVerdictBucket(null), "UNCLASSIFIED");
+    assert.equal(classifyVerdictBucket("not json{"), "UNCLASSIFIED");
+    assert.equal(classifyVerdictBucket(JSON.stringify({ action: "something_new" })), "UNCLASSIFIED");
+  });
+
+  // --- Task 4 (stage 7F): one test per actual toolGateCopy return branch (src/http-server.ts),
+  // using the real field shape each branch produces, cited by line range. ---
+
+  test("classifyVerdictBucket: branch 1, trustResult.verdict==='hold' (http-server.ts:443-454) -> BLOCKED, no details.simulation", () => {
+    const body = { allow: false, reason: "BLOCKED by pre-trade firewall: ...", action: "block", riskScore: 80, maxSafeAmountUsd: 0, executionTier: "blocked", details: { trust: { verdict: "hold", riskScore: 80 } } };
+    assert.equal(classifyVerdictBucket(body), "BLOCKED");
+    assert.equal(body.details.simulation, undefined, "sanity: this branch never populates details.simulation");
+  });
+
+  test("classifyVerdictBucket: branch 2, trustResult.verdict==='unknown' (http-server.ts:455-464) -> BLOCKED, no details.simulation", () => {
+    const body = { allow: false, reason: "HOLD: insufficient historical data...", action: "manual_review", riskScore: 0, maxSafeAmountUsd: 0, details: { trust: { verdict: "unknown" } } };
+    assert.equal(classifyVerdictBucket(body), "BLOCKED");
+    assert.equal(body.details.simulation, undefined);
+  });
+
+  test("classifyVerdictBucket: branch 3, isBlocked (http-server.ts:493-505) -> BLOCKED, details.simulation present", () => {
+    const body = {
+      allow: false,
+      reason: "BLOCKED: simulated payment exceeds risk capacity (...)",
+      action: "block",
+      riskScore: 90,
+      maxSafeAmountUsd: 0,
+      executionTier: "blocked",
+      slippageToleranceBps: 0,
+      cooldownSec: 300,
+      details: { trust: { verdict: "safe" }, simulation: { wouldTrigger: ["TOXIC_MINT"], decision: { action: "block" } } },
+    };
+    assert.equal(classifyVerdictBucket(body), "BLOCKED");
+  });
+
+  test("classifyVerdictBucket: branch 4, isThrottled (http-server.ts:507-520) -> LOW_TRUST_WARMING, allow:true", () => {
+    const body = {
+      allow: true,
+      reason: "THROTTLED: payment permitted up to tiered limit",
+      action: "throttle",
+      riskScore: 40,
+      maxSafeAmountUsd: 25,
+      executionTier: "guarded",
+      slippageToleranceBps: 50,
+      cooldownSec: 60,
+      details: { trust: { verdict: "safe" }, simulation: { wouldTrigger: [], decision: { action: "throttle" } } },
+    };
+    assert.equal(classifyVerdictBucket(body), "LOW_TRUST_WARMING");
+    assert.equal(body.allow, true, "sanity: throttled trades DO execute, per PREREGISTRATION.md section 4.1's table");
+  });
+
+  test("classifyVerdictBucket: branch 5, !simRes.safeToExecute (http-server.ts:522-534) -> BLOCKED (folded from manual_review), allow:false", () => {
+    const body = {
+      allow: false,
+      reason: "HOLD: simulated payment cannot be safely executed as requested",
+      action: "manual_review",
+      riskScore: 55,
+      maxSafeAmountUsd: 0,
+      executionTier: "standard",
+      slippageToleranceBps: 50,
+      cooldownSec: 60,
+      details: { trust: { verdict: "safe" }, simulation: { wouldTrigger: [], safeToExecute: false } },
+    };
+    assert.equal(classifyVerdictBucket(body), "BLOCKED");
+  });
+
+  test("classifyVerdictBucket: branch 6, final VERIFIED_SAFE fallback (http-server.ts:538-548) -> VERIFIED_SAFE, allow:true", () => {
+    const body = {
+      allow: true,
+      reason: "VERIFIED_SAFE: risk 5 <= 30, liquidity $500 >= $50",
+      action: "allow",
+      riskScore: 5,
+      maxSafeAmountUsd: 10,
+      executionTier: "instant",
+      slippageToleranceBps: 100,
+      cooldownSec: 0,
+      details: { trust: { verdict: "safe" }, simulation: { wouldTrigger: [] } },
+    };
+    assert.equal(classifyVerdictBucket(body), "VERIFIED_SAFE");
+  });
+
+  test("classifyVerdictBucket: branch 6a, final fallback WITHOUT simulation ever running (copyAmountUsd falsy) -> still VERIFIED_SAFE from action alone", () => {
+    // toolGateCopy's `let simRes: any;` is declared but never assigned when
+    // copyAmountUsd is undefined/<=0 -- details.simulation is `undefined` in this
+    // specific sub-case of the same branch 6 return statement (http-server.ts:538-548).
+    const body = { allow: true, reason: "VERIFIED_SAFE: ...", action: "allow", riskScore: 5, maxSafeAmountUsd: 100, executionTier: "instant", slippageToleranceBps: 100, cooldownSec: 0, details: { trust: { verdict: "safe" }, simulation: undefined } };
+    assert.equal(classifyVerdictBucket(body), "VERIFIED_SAFE");
   });
 
   // --- Row classification (PREREGISTRATION.md section 5) ---
