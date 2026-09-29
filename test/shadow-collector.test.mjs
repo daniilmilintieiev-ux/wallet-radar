@@ -16,6 +16,11 @@ import {
   runCollectionCycle,
   fetchMintStateAtT,
   determineRadarTokenCheckMissing,
+  getTransactionWithVersionRetry,
+  GETTRANSACTION_MAX_SUPPORTED_VERSION,
+  computeBudgetPools,
+  selectCandidatesPseudoRandom,
+  REQUESTS_PER_POOL,
 } from "../scripts/shadow/collect.mjs";
 import { MAJOR_MINTS } from "../dist/src/types.js";
 import { KNOWN_SAFE_MINTS } from "../dist/src/mint.js";
@@ -34,6 +39,7 @@ import {
   incrementRequestCounter,
   logError,
   getSkipCounters,
+  getPoolCandidates,
 } from "../scripts/shadow/db.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -247,6 +253,188 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     assert.equal(result.buyer, null, "with no post-creation transactions, there is no buyer to resolve");
   });
 
+  // --- Task 1 (stage 7H): getTransaction -32015 (unsupported transaction version).
+  // Confirmed live against pair JtfZS5Pc3C63xRer87yhPqjJAM4bReRhsskuRqxqKe1 (stage 7H
+  // report): real RPC error "RPC Error [-32015]: Transaction version (1) is not
+  // supported by the requesting client. Please try the request again with the
+  // following configuration parameter: \"maxSupportedTransactionVersion\": 1" --
+  // maxSupportedTransactionVersion bumped 0->1 fixed that specific case outright;
+  // the one-time parse-and-retry below is a forward-looking fallback for a future
+  // version beyond GETTRANSACTION_MAX_SUPPORTED_VERSION.
+
+  test("getTransactionWithVersionRetry: first attempt succeeds -> returns directly, only one fetch call", async () => {
+    let callCount = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      callCount++;
+      const body = JSON.parse(init.body);
+      assert.equal(body.params[1].maxSupportedTransactionVersion, GETTRANSACTION_MAX_SUPPORTED_VERSION);
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: { blockTime: 123, meta: {} } });
+    };
+    try {
+      const tx = await getTransactionWithVersionRetry("sigOk", null);
+      assert.equal(tx.blockTime, 123);
+      assert.equal(callCount, 1, "no retry needed when the first attempt succeeds");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("getTransactionWithVersionRetry: -32015 with a parseable version -> retries once with that version, succeeds", async () => {
+    let callCount = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      callCount++;
+      const body = JSON.parse(init.body);
+      if (callCount === 1) {
+        assert.equal(body.params[1].maxSupportedTransactionVersion, GETTRANSACTION_MAX_SUPPORTED_VERSION);
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id: 1,
+          error: { code: -32015, message: 'Transaction version (2) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 2' },
+        });
+      }
+      assert.equal(callCount, 2);
+      assert.equal(body.params[1].maxSupportedTransactionVersion, 2, "retry must use the version parsed out of the error message");
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: { blockTime: 456, meta: {} } });
+    };
+    try {
+      const tx = await getTransactionWithVersionRetry("sigRetry", null);
+      assert.equal(tx.blockTime, 456);
+      assert.equal(callCount, 2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("getTransactionWithVersionRetry: a non-32015 RPC error is never retried, rethrown as-is (becomes PROCESSING_ERROR upstream)", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => jsonResponse({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "Invalid params" } });
+    try {
+      await assert.rejects(() => getTransactionWithVersionRetry("sigBad", null), /RPC Error \[-32602\]/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("getTransactionWithVersionRetry: -32015 without a parseable version number rethrows instead of guessing", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => jsonResponse({ jsonrpc: "2.0", id: 1, error: { code: -32015, message: "Transaction version is not supported (no configuration hint here)" } });
+    try {
+      await assert.rejects(() => getTransactionWithVersionRetry("sigUnparseable", null), /RPC Error \[-32015\]/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // --- Task 3 (stage 7H): time-of-day budget spreading ---
+
+  test("computeBudgetPools: matches the formula max(1, floor(ceiling / cycles_per_day / requestsPerPool))", () => {
+    // 1500 ceiling, 15-minute interval -> 96 cycles/day, 7 requests/pool -> floor(1500/96/7) = 2
+    assert.equal(computeBudgetPools({ dailyCeiling: 1500, pollIntervalMinutes: 15, requestsPerPool: 7 }), 2);
+    // Never below 1, even for a tiny ceiling.
+    assert.equal(computeBudgetPools({ dailyCeiling: 10, pollIntervalMinutes: 15, requestsPerPool: 7 }), 1);
+    // A generous ceiling with a long interval (few cycles/day) allows a bigger per-cycle budget.
+    assert.equal(computeBudgetPools({ dailyCeiling: 20000, pollIntervalMinutes: 60, requestsPerPool: REQUESTS_PER_POOL }), Math.floor(20000 / 24 / REQUESTS_PER_POOL));
+  });
+
+  test("selectCandidatesPseudoRandom: the selected SET is identical regardless of input array order, for the same seed", () => {
+    const candidates = Array.from({ length: 20 }, (_, i) => ({ pair: `Pair${i}`, mint: `Mint${i}` }));
+    const shuffled = [...candidates].reverse();
+    const seed = 1234567890;
+
+    const a = selectCandidatesPseudoRandom(candidates, 5, seed);
+    const b = selectCandidatesPseudoRandom(shuffled, 5, seed);
+
+    const selectedA = new Set(a.filter((c) => c.__selected).map((c) => c.pair));
+    const selectedB = new Set(b.filter((c) => c.__selected).map((c) => c.pair));
+    assert.deepEqual([...selectedA].sort(), [...selectedB].sort(), "same seed + same candidate set -> same selection, regardless of order");
+    assert.equal(selectedA.size, 5);
+  });
+
+  test("selectCandidatesPseudoRandom: a different seed generally selects a different set (sanity -- not literally guaranteed, but true for this fixture)", () => {
+    const candidates = Array.from({ length: 20 }, (_, i) => ({ pair: `Pair${i}`, mint: `Mint${i}` }));
+    const a = selectCandidatesPseudoRandom(candidates, 5, 1);
+    const b = selectCandidatesPseudoRandom(candidates, 5, 2);
+    const selectedA = new Set(a.filter((c) => c.__selected).map((c) => c.pair));
+    const selectedB = new Set(b.filter((c) => c.__selected).map((c) => c.pair));
+    assert.notDeepEqual([...selectedA].sort(), [...selectedB].sort());
+  });
+
+  test("selectCandidatesPseudoRandom: budget is respected (never selects more than budgetPools), and never drops a candidate from the returned array", () => {
+    const candidates = Array.from({ length: 10 }, (_, i) => ({ pair: `Pair${i}`, mint: `Mint${i}` }));
+    const result = selectCandidatesPseudoRandom(candidates, 3, 42);
+    assert.equal(result.length, 10, "every candidate is still present, just flagged");
+    assert.equal(result.filter((c) => c.__selected).length, 3);
+  });
+
+  test("selectCandidatesPseudoRandom: budgetPools >= candidate count selects everyone (no-op)", () => {
+    const candidates = Array.from({ length: 3 }, (_, i) => ({ pair: `Pair${i}`, mint: `Mint${i}` }));
+    const result = selectCandidatesPseudoRandom(candidates, 100, 1);
+    assert.equal(result.filter((c) => c.__selected).length, 3);
+  });
+
+  test("runCollectionCycle: budget-selected pools are recorded in pool_candidates (seen vs selected -- all 6 seen, only budgetPools processed)", async () => {
+    const tmpDbPath = path.join(os.tmpdir(), `shadow-budget-test-${process.pid}-${Date.now()}.db`);
+    const pools = Array.from({ length: 6 }, (_, i) => ({
+      pair: `PairBudget${i}1111111111111111111111111111`,
+      mint: `MintBudget${i}1111111111111111111111111111`,
+      dexId: "raydium",
+      poolCreatedAtMs: Date.now() - 60_000,
+      poolCreatedAtIso: new Date(Date.now() - 60_000).toISOString(),
+    }));
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("dexscreener.com")) return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] });
+      const body = JSON.parse(init.body);
+      if (body.method === "getSignaturesForAddress") return jsonResponse({ jsonrpc: "2.0", id: 1, result: [{ signature: "sig1", blockTime: 1 }] });
+      if (body.method === "getTransaction") return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: ["Creator1111111111111111111111111111111111"] } }, blockTime: 1 } });
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+
+    try {
+      // budgetPools:2 out of 6 seen candidates -- deliberately small to prove selection
+      // and pool_candidates recording without needing the real ceiling/interval formula.
+      const result = await runCollectionCycle({ dbPath: tmpDbPath, radarUrl: "http://fake-radar", pools, budgetPools: 2, cycleTs: 999 });
+      assert.equal(result.fatalRadarError, false, "must complete the cycle without throwing, even under a tight budget");
+
+      const db = openDb(tmpDbPath);
+      try {
+        const candidateRows = getPoolCandidates(db);
+        assert.equal(candidateRows.length, 6, "every seen candidate is recorded, not just the selected ones");
+        assert.equal(candidateRows.filter((r) => r.selected).length, 2, "exactly budgetPools rows are marked selected");
+        assert.ok(candidateRows.every((r) => r.cycle_ts === 999), "all rows tagged with this cycle's seed/timestamp");
+      } finally {
+        db.close();
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(tmpDbPath, { force: true });
+    }
+  });
+
+  test("runCollectionCycle: does not throw when the daily ceiling is already exhausted before the cycle starts", async () => {
+    const tmpDbPath = path.join(os.tmpdir(), `shadow-ceiling-test-${process.pid}-${Date.now()}.db`);
+    const db = openDb(tmpDbPath);
+    incrementRequestCounter(db, 999999, "collect"); // far above any realistic ceiling
+    db.close();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("should never be called -- ceiling must short-circuit before any network call");
+    };
+    try {
+      const result = await runCollectionCycle({ dbPath: tmpDbPath, radarUrl: "http://fake-radar" });
+      assert.equal(result.ceilingReached, true);
+      assert.equal(result.collected, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(tmpDbPath, { force: true });
+    }
+  });
+
   // --- Task 4: RADAR_ERROR is never recorded as a verdict ---
 
   test("queryGateCopy: non-200 response is flagged isRadarError, body is not treated as a verdict", async () => {
@@ -360,7 +548,9 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     };
 
     try {
-      const result = await runCollectionCycle({ dbPath: ":memory:", radarUrl: "http://fake-radar", limit: n });
+      // budgetPools override: this test needs all n injected pools processed regardless
+      // of the real-world budget formula (task 3 stage 7H) -- not what's under test here.
+      const result = await runCollectionCycle({ dbPath: ":memory:", radarUrl: "http://fake-radar", limit: n, budgetPools: n });
       assert.equal(result.fatalRadarError, true, "must abort after N consecutive RADAR_ERROR responses");
       assert.equal(result.rows.length, n, `must have processed exactly ${n} pools before aborting`);
       for (const row of result.rows) {
@@ -739,7 +929,9 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     };
 
     try {
-      const result = await runCollectionCycle({ dbPath: tmpDbPath, radarUrl: "http://fake-radar", pools: injectedPools });
+      // budgetPools override: all 3 injected pools must be processed to exercise each
+      // skip reason -- not the real-world budget formula (task 3 stage 7H).
+      const result = await runCollectionCycle({ dbPath: tmpDbPath, radarUrl: "http://fake-radar", pools: injectedPools, budgetPools: injectedPools.length });
       assert.equal(result.poolTooOldCount, 1, "the artificially-aged pool must be caught by the POOL_TOO_OLD re-check");
       assert.equal(result.tokenTooOldCount, 1);
       assert.equal(result.noBuyerCount, 1);
@@ -883,15 +1075,37 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
 
   test("Resilience: daily ceiling tracking and error logging in SQLite", () => {
     const db = openDb(":memory:");
-    const check1 = checkDailyCeiling(db, 5);
+    const check1 = checkDailyCeiling(db, 5, "collect");
     assert.equal(check1.allowed, true);
-    incrementRequestCounter(db, 3);
-    incrementRequestCounter(db, 3);
-    const check3 = checkDailyCeiling(db, 5);
+    incrementRequestCounter(db, 3, "collect");
+    incrementRequestCounter(db, 3, "collect");
+    const check3 = checkDailyCeiling(db, 5, "collect");
     assert.equal(check3.allowed, false);
     logError(db, "test_script", "test_action", "Test error message", { extra: 123 });
     const logRow = db.prepare("SELECT * FROM error_logs WHERE script = ?").get("test_script");
     assert.ok(logRow);
+  });
+
+  // Task 2 (stage 7H): request_counters keyed by (date, script) -- collect.mjs hitting
+  // its ceiling must never block outcomes.mjs's, and vice versa (previously shared by
+  // date alone: the 03:00 UTC outcomes run could find the day's ceiling already
+  // exhausted by collect.mjs's own cycles and compute zero outcomes).
+  test("checkDailyCeiling/incrementRequestCounter: collect's ceiling and outcomes' ceiling are fully independent", () => {
+    const db = openDb(":memory:");
+    incrementRequestCounter(db, 5, "collect");
+    const collectStatus = checkDailyCeiling(db, 5, "collect");
+    assert.equal(collectStatus.allowed, false, "collect is now at its own ceiling");
+
+    const outcomesStatus = checkDailyCeiling(db, 5, "outcomes");
+    assert.equal(outcomesStatus.allowed, true, "outcomes must be unaffected by collect's usage");
+    assert.equal(outcomesStatus.current, 0);
+
+    incrementRequestCounter(db, 5, "outcomes");
+    const outcomesStatusAfter = checkDailyCeiling(db, 5, "outcomes");
+    assert.equal(outcomesStatusAfter.allowed, false, "outcomes now at its own ceiling too");
+
+    const collectStatusAfter = checkDailyCeiling(db, 5, "collect");
+    assert.equal(collectStatusAfter.current, 5, "collect's own counter is unaffected by outcomes' usage");
   });
 
   test("Database lifecycle: append-only verdict at t, outcome written at t+N without verdict leakage, buyer_tx_signature/http_status/mint_risk_fetched persisted", () => {

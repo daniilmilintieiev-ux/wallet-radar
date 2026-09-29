@@ -29,8 +29,9 @@ import {
   logError,
   insertTrade,
   incrementSkipCounter,
+  recordPoolCandidate,
   DEFAULT_DB_PATH,
-  DEFAULT_DAILY_CEILING,
+  DEFAULT_DAILY_CEILING_COLLECT,
 } from "./db.mjs";
 // Imported from the actual compiled radar code (dist/src/, built via `npm run build`),
 // not copied literals -- same pattern already used by scripts/audit/pilot-scan-candidates.mjs.
@@ -45,7 +46,10 @@ const RPC_URL = HELIUS_KEY
   : (process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
 
 const RADAR_URL = (process.env.RADAR_URL || "http://localhost:7690").replace(/\/+$/, "");
-const DAILY_CEILING = parseInt(process.env.DAILY_REQUEST_CEILING || String(DEFAULT_DAILY_CEILING), 10);
+// Stage 7H task 2: own ceiling/counter key ("collect"), separate from outcomes.mjs's --
+// DAILY_REQUEST_CEILING (shared, unscoped) is no longer read.
+const DAILY_CEILING = parseInt(process.env.DAILY_REQUEST_CEILING_COLLECT || String(DEFAULT_DAILY_CEILING_COLLECT), 10);
+const REQUEST_COUNTER_SCRIPT = "collect";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 
 // --- Config constants (task 1/2/4) ---
@@ -55,6 +59,13 @@ export const COPY_AMOUNT_USD = 10; // fixed, recorded verbatim per trade (task 4
 export const MAX_CONSECUTIVE_RADAR_ERRORS = 5;
 const DEX_ID_REGEX = /^(raydium|pump-?fun|pumpswap)/i;
 const BUYER_CANDIDATE_SCAN_LIMIT = 20; // how many post-creation signatures to try before giving up
+
+// --- Task 3 (stage 7H): time-of-day budget spreading ---
+// Without a per-cycle budget, a cycle greedily processes every fresh pool
+// fetchFreshPools returns and exhausts the whole day's DAILY_REQUEST_CEILING_COLLECT
+// within the first 1-2 hours, leaving zero collection for the rest of the day.
+export const REQUESTS_PER_POOL = 7; // measured in the 20-pool dry run: 138 requests / 20 pools = 6.9, rounded up
+export const DEFAULT_POLL_INTERVAL_MINUTES = 15;
 
 /**
  * Determine sampling stratum (docs/TESTER-SPEC.md v2.1 section 1).
@@ -73,14 +84,14 @@ export function sleep(ms) {
 /** Fetches JSON from URL with retry on 429 and network errors. */
 export async function fetchWithRetry(url, opts = {}, db = null, retries = 3, fetchImpl = fetch) {
   if (db) {
-    const status = checkDailyCeiling(db, DAILY_CEILING);
+    const status = checkDailyCeiling(db, DAILY_CEILING, REQUEST_COUNTER_SCRIPT);
     if (!status.allowed) {
       throw new Error(`Daily request ceiling (${status.ceiling}) reached for ${status.date}`);
     }
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (db) incrementRequestCounter(db, 1);
+    if (db) incrementRequestCounter(db, 1, REQUEST_COUNTER_SCRIPT);
     try {
       const res = await fetchImpl(url, {
         ...opts,
@@ -113,14 +124,14 @@ export async function fetchWithRetry(url, opts = {}, db = null, retries = 3, fet
 /** Executes a Solana JSON-RPC call with 429 backoff and ceiling tracking. */
 export async function rpcCall(method, params, db = null, retries = 3, fetchImpl = fetch) {
   if (db) {
-    const status = checkDailyCeiling(db, DAILY_CEILING);
+    const status = checkDailyCeiling(db, DAILY_CEILING, REQUEST_COUNTER_SCRIPT);
     if (!status.allowed) {
       throw new Error(`Daily request ceiling (${status.ceiling}) reached for ${status.date}`);
     }
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (db) incrementRequestCounter(db, 1);
+    if (db) incrementRequestCounter(db, 1, REQUEST_COUNTER_SCRIPT);
     try {
       const res = await fetchImpl(RPC_URL, {
         method: "POST",
@@ -212,6 +223,32 @@ function txFeePayer(tx) {
   return typeof first === "string" ? first : first?.pubkey ?? null;
 }
 
+// Stage 7H task 1: was 0, bumped to 1 after a real dry-run failure (RPC error -32015,
+// "Transaction version (1) is not supported") on pair JtfZS5Pc3C63xRer87yhPqjJAM4bReRhsskuRqxqKe1
+// -- confirmed live that maxSupportedTransactionVersion:1 alone resolves that specific case.
+export const GETTRANSACTION_MAX_SUPPORTED_VERSION = 1;
+const VERSION_ERROR_RE = /^RPC Error \[-32015\]:.*maxSupportedTransactionVersion["']?\s*:\s*(\d+)/;
+
+/**
+ * getTransaction with a ONE-TIME retry on RPC error -32015: parses the version number
+ * Solana's own error message names ("...following configuration parameter:
+ * \"maxSupportedTransactionVersion\": N") and retries once with that exact N, in case a
+ * future transaction version (2, 3, ...) appears beyond GETTRANSACTION_MAX_SUPPORTED_VERSION.
+ * Any other error, or a second failure, is rethrown -- the caller's per-pool catch block
+ * (runCollectionCycle) already turns that into PROCESSING_ERROR + skip_counters, so this
+ * function does not duplicate that bookkeeping.
+ */
+export async function getTransactionWithVersionRetry(signature, db = null, fetchImpl = fetch) {
+  try {
+    return await rpcCall("getTransaction", [signature, { maxSupportedTransactionVersion: GETTRANSACTION_MAX_SUPPORTED_VERSION, encoding: "jsonParsed" }], db, 3, fetchImpl);
+  } catch (err) {
+    const match = VERSION_ERROR_RE.exec(err.message);
+    if (!match) throw err;
+    const retryVersion = parseInt(match[1], 10);
+    return await rpcCall("getTransaction", [signature, { maxSupportedTransactionVersion: retryVersion, encoding: "jsonParsed" }], db, 3, fetchImpl);
+  }
+}
+
 /**
  * Resolves the pool-creation transaction for a pair: the OLDEST signature
  * returned for the pair address (a pool this fresh cannot plausibly exceed
@@ -221,7 +258,7 @@ export async function resolvePoolCreationTx(pairAddress, db = null) {
   const sigs = await rpcCall("getSignaturesForAddress", [pairAddress, { limit: 1000 }], db);
   if (!Array.isArray(sigs) || sigs.length === 0) return null;
   const oldest = sigs[sigs.length - 1];
-  const tx = await rpcCall("getTransaction", [oldest.signature, { maxSupportedTransactionVersion: 0, encoding: "jsonParsed" }], db);
+  const tx = await getTransactionWithVersionRetry(oldest.signature, db);
   return { signature: oldest.signature, blockTime: oldest.blockTime, tx, allSignaturesNewestFirst: sigs };
 }
 
@@ -251,7 +288,7 @@ export async function resolveBuyer(pairAddress, targetMint, poolCreation, db = n
   const rejectedCandidates = [];
 
   for (const sigInfo of candidatesOldestFirst) {
-    const tx = await rpcCall("getTransaction", [sigInfo.signature, { maxSupportedTransactionVersion: 0, encoding: "jsonParsed" }], db);
+    const tx = await getTransactionWithVersionRetry(sigInfo.signature, db);
     const candidate = extractBuyerFromTx(tx, targetMint, pairAddress);
     if (!candidate) continue;
 
@@ -481,12 +518,56 @@ export async function fetchFreshPools(db = null, fetchImpl = fetch, maxPages = 5
   return pools;
 }
 
+/**
+ * Deterministic 32-bit FNV-1a hash of a string. Used only to score candidates for
+ * pseudo-random selection (below) -- NOT for anything security-sensitive.
+ */
+function fnv1aHash(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * How many pools a single cycle may process without exceeding the daily ceiling,
+ * spread evenly across the day's cycles (task 3 stage 7H).
+ * budget_pools = max(1, floor(ceiling / cycles_per_day / requestsPerPool))
+ */
+export function computeBudgetPools({ dailyCeiling, pollIntervalMinutes = DEFAULT_POLL_INTERVAL_MINUTES, requestsPerPool = REQUESTS_PER_POOL } = {}) {
+  const cyclesPerDay = 1440 / pollIntervalMinutes;
+  return Math.max(1, Math.floor(dailyCeiling / cyclesPerDay / requestsPerPool));
+}
+
+/**
+ * Selects up to `budgetPools` candidates pseudo-randomly, seeded by `seed` (the cycle
+ * timestamp, task 3 stage 7H). Each candidate's selection score is fnv1aHash(`${seed}:${pair}`)
+ * -- a function of the candidate's OWN identity and the seed, never of its position in
+ * the input array -- so sorting by score and taking the lowest `budgetPools` always
+ * yields the same SET of selected pools for a given (seed, candidate set), regardless of
+ * what order `candidates` is passed in. Returns every candidate with a `__selected` flag
+ * (never drops any -- callers that need to record "seen" candidates still see them all).
+ */
+export function selectCandidatesPseudoRandom(candidates, budgetPools, seed) {
+  const scored = candidates.map((c) => ({ candidate: c, score: fnv1aHash(`${seed}:${c.pair}`) }));
+  scored.sort((a, b) => a.score - b.score);
+  const selectedPairs = new Set(scored.slice(0, budgetPools).map((s) => s.candidate.pair));
+  return candidates.map((c) => ({ ...c, __selected: selectedPairs.has(c.pair) }));
+}
+
 /** Runs a single collection cycle. */
 export async function runCollectionCycle(opts = {}) {
   const dbPath = opts.dbPath || DEFAULT_DB_PATH;
   const radarUrl = opts.radarUrl || RADAR_URL;
   const limit = opts.limit || null;
   const dryRun = Boolean(opts.dryRun);
+  const pollIntervalMinutes = opts.pollIntervalMinutes || DEFAULT_POLL_INTERVAL_MINUTES;
+  // Seed for pseudo-random candidate selection (task 3 stage 7H) -- the cycle's own
+  // timestamp, recorded into pool_candidates.cycle_ts so the choice is reproducible
+  // from the database alone, not just from in-memory state.
+  const cycleTs = opts.cycleTs ?? Date.now();
 
   const db = openDb(dbPath);
   // Everything below is wrapped in try/finally (stage 7F fix): runCollectionCycle
@@ -499,7 +580,7 @@ export async function runCollectionCycle(opts = {}) {
 
     console.log(`[COLLECT] Starting cycle. DB: ${dbPath}, Radar: ${radarUrl}, Commit: ${gitCommit}`);
 
-    const ceilingStatus = checkDailyCeiling(db, DAILY_CEILING);
+    const ceilingStatus = checkDailyCeiling(db, DAILY_CEILING, REQUEST_COUNTER_SCRIPT);
     if (!ceilingStatus.allowed) {
       console.warn(`[COLLECT] Daily ceiling reached (${ceilingStatus.current}/${ceilingStatus.ceiling}). Skipping cycle.`);
       return { collected: 0, ceilingReached: true };
@@ -511,7 +592,24 @@ export async function runCollectionCycle(opts = {}) {
     const rawPools = opts.pools || (await fetchFreshPools(db));
     console.log(`[COLLECT] Fetched ${rawPools.length} fresh Solana candidate pools (<= ${POOL_MAX_AGE_MINUTES} min old) from GeckoTerminal.`);
 
-    const candidatePools = limit ? rawPools.slice(0, limit) : rawPools;
+    // Task 3 (stage 7H): budget the cycle instead of greedily processing every fresh
+    // pool seen (which used to exhaust DAILY_REQUEST_CEILING_COLLECT in 1-2 hours).
+    // opts.budgetPools overrides the formula outright (test-only escape hatch, e.g. for
+    // tests that inject a small, deliberately-crafted pool list and need every one of
+    // them processed regardless of the real-world ceiling/interval math).
+    const budgetPools = opts.budgetPools ?? computeBudgetPools({ dailyCeiling: DAILY_CEILING, pollIntervalMinutes, requestsPerPool: opts.requestsPerPool || REQUESTS_PER_POOL });
+    const withSelection = selectCandidatesPseudoRandom(rawPools, budgetPools, cycleTs);
+    console.log(`[COLLECT] Budget: ${budgetPools} pools/cycle (seed=${cycleTs}). Selected ${withSelection.filter((p) => p.__selected).length}/${rawPools.length} seen candidates.`);
+
+    // Record EVERY seen candidate (task 3), selected or not -- purely local writes, no
+    // additional external requests.
+    const seenAt = new Date().toISOString();
+    for (const p of withSelection) {
+      recordPoolCandidate(db, { cycleTs, pool: p.pair, mint: p.mint, seenAt, selected: p.__selected });
+    }
+
+    const selectedPools = withSelection.filter((p) => p.__selected);
+    const candidatePools = limit ? selectedPools.slice(0, limit) : selectedPools;
     let savedCount = 0;
     let tokenTooOldCount = 0;
     let noBuyerCount = 0;
@@ -667,7 +765,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     else if (a.startsWith("--db=")) customDb = a.split("=")[1];
   }
 
-  const opts = { dbPath: customDb, limit, dryRun };
+  const opts = { dbPath: customDb, limit, dryRun, pollIntervalMinutes: intervalMin };
   const runOnce = () =>
     runCollectionCycle(opts).then((res) => {
       if (res.fatalRadarError) process.exit(1);

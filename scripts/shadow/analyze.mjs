@@ -161,6 +161,73 @@ function dangerousCount(rows) {
   return rows.filter((r) => r.outcome === "DANGEROUS").length;
 }
 
+// --- Task 5 (stage 7H): independence of observations ---
+
+/** Number of distinct buyer wallets among (typically RESOLVED) rows. */
+export function countDistinctBuyers(rows) {
+  return new Set(rows.map((r) => r.buyer).filter(Boolean)).size;
+}
+
+/** Top-N buyers by record count -- descriptive only, no threshold or verdict attached. */
+export function topBuyers(rows, n = 10) {
+  const counts = new Map();
+  for (const r of rows) {
+    if (!r.buyer) continue;
+    counts.set(r.buyer, (counts.get(r.buyer) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([buyer, count]) => ({ buyer, count }));
+}
+
+/**
+ * Reduces RESOLVED rows to one record per buyer -- the EARLIEST by `t` (purchase time).
+ * Checks whether the primary metric is dominated by a handful of highly active buyers
+ * (snipers/bots repeatedly appearing across many records -- confirmed live in stage 7H
+ * task 1's real-pool check, where the same buyer address resolved for two different
+ * pools), which would violate the independent-observations assumption the Wilson
+ * interval (section 4.4) relies on.
+ */
+export function oneRecordPerBuyer(resolvedRows) {
+  const earliestByBuyer = new Map();
+  for (const r of resolvedRows) {
+    if (!r.buyer) continue;
+    const existing = earliestByBuyer.get(r.buyer);
+    if (!existing || r.t < existing.t) earliestByBuyer.set(r.buyer, r);
+  }
+  return [...earliestByBuyer.values()];
+}
+
+/**
+ * PREREGISTRATION.md section 14(г) (stage 7H): "radar useful" only holds if BOTH the
+ * main (all-trades) table AND the one-record-per-buyer table independently say
+ * RADAR_USEFUL for the same table/stratum -- otherwise "insufficient data", regardless
+ * of what either one says individually (a useful-looking result that evaporates once
+ * repeat buyers are collapsed to one observation each is not evidence of anything).
+ */
+export function evaluateClusteredUsefulness(mainStatus, dedupedStatus) {
+  if (mainStatus === "RADAR_USEFUL" && dedupedStatus === "RADAR_USEFUL") return "RADAR_USEFUL";
+  return "INSUFFICIENT_DATA";
+}
+
+/** Computes table1/table2 (+ resolvedCount/totalDangerous/unclassifiedCount) for a set
+ * of RESOLVED rows already filtered to one stratum. Shared by the main per-stratum loop
+ * and the one-record-per-buyer secondary tables (task 5 stage 7H) so both use identical logic. */
+function computeStratumTables(resolvedInStrat) {
+  const withBucket = resolvedInStrat.map((r) => ({ ...r, bucket: classifyVerdictBucket(r.radar_verdict) }));
+  const unclassifiedCount = withBucket.filter((r) => r.bucket === "UNCLASSIFIED").length;
+  const { table1, table2 } = splitTables(withBucket);
+  const totalDangerous = dangerousCount(resolvedInStrat);
+  return {
+    resolvedCount: resolvedInStrat.length,
+    totalDangerous,
+    unclassifiedCount,
+    table1: evaluateSplit(table1.block, table1.pass, totalDangerous),
+    table2: evaluateSplit(table2.block, table2.pass, totalDangerous),
+  };
+}
+
 /**
  * PREREGISTRATION.md section 12(a): per response form, over RESOLVED rows (DANGEROUS+SAFE)
  * ONLY, combined across both strata (this secondary table is explicitly descriptive, "без
@@ -268,6 +335,35 @@ export function countErrorLogs(db) {
   return db.prepare("SELECT COUNT(*) AS cnt FROM error_logs").get().cnt;
 }
 
+/** Reads pool_candidates (cycle_ts, pool, mint, seen_at, selected) -- task 3 stage 7H. Read-only. */
+export function loadPoolCandidates(db) {
+  return db.prepare("SELECT cycle_ts, pool, mint, seen_at, selected FROM pool_candidates ORDER BY seen_at").all();
+}
+
+/**
+ * Groups pool_candidates rows by UTC hour of seen_at, counting seen vs selected --
+ * task 3 stage 7H, to check whether collection is spread across the day (the bug this
+ * whole task fixes) or still bunched into a couple of hours.
+ */
+export function summarizePoolCandidatesByHour(poolCandidateRows) {
+  const byHour = {};
+  for (let h = 0; h < 24; h++) byHour[String(h).padStart(2, "0")] = { seen: 0, selected: 0 };
+  for (const r of poolCandidateRows) {
+    const hour = new Date(r.seen_at).getUTCHours();
+    const key = String(hour).padStart(2, "0");
+    byHour[key].seen++;
+    if (r.selected) byHour[key].selected++;
+  }
+  return byHour;
+}
+
+export function formatPoolCandidatesByHourReport(poolCandidateRows) {
+  const byHour = summarizePoolCandidatesByHour(poolCandidateRows);
+  return Object.entries(byHour)
+    .map(([hour, s]) => `  ${hour}:00 UTC -- увидено: ${s.seen}, выбрано: ${s.selected}`)
+    .join("\n");
+}
+
 /**
  * PREREGISTRATION.md section 12, "правило подглядывания" (stage 7G): before collection
  * stops and the final outcomes.mjs run, analyze.mjs may ONLY print this -- record count,
@@ -275,7 +371,7 @@ export function countErrorLogs(db) {
  * information whatsoever. This function never reads row.outcome (countRowsByForm doesn't
  * either) and prints nothing that classifyRow/dangerousCount/wilson95 would need.
  */
-export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount) {
+export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount, poolCandidateRows = []) {
   const lines = [];
   lines.push(`[COUNTERS-ONLY] Всего строк в shadow_trades: ${rows.length}`);
   lines.push(`[COUNTERS-ONLY] Записей в error_logs: ${errorLogCount}`);
@@ -288,6 +384,9 @@ export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount) {
   for (const [form, count] of Object.entries(formCounts)) {
     lines.push(`  ${form}: ${count}`);
   }
+  lines.push("");
+  lines.push("[COUNTERS-ONLY] pool_candidates -- увидено/выбрано по часам UTC (task 3 stage 7H, только счётчики):");
+  lines.push(formatPoolCandidatesByHourReport(poolCandidateRows));
   return lines.join("\n");
 }
 
@@ -347,23 +446,41 @@ export function analyze(rows) {
   result.responseForms = dangerousShareByForm(byClass.RESOLVED);
   result.simulationSplit = simulationSplit(byClass.RESOLVED);
 
+  // PREREGISTRATION.md section 14(д) (stage 7H) -- mandatory: the share of form F1
+  // ("незнакомые покупатели" -- blocked outright on the trust check, before simulation
+  // ever ran, http-server.ts:443-454) among ALL rows (not just RESOLVED -- countRowsByForm
+  // never reads outcome, so this is safe to compute even under the look-ahead rule if
+  // this field is ever surfaced from a counters-only-style caller in the future).
+  const allFormCounts = countRowsByForm(rows);
+  result.f1Share = { count: allFormCounts.F1, totalRows: rows.length, share: rows.length > 0 ? allFormCounts.F1 / rows.length : null };
+
   for (const strat of ["A", "B"]) {
     const resolvedInStrat = byClass.RESOLVED.filter((r) => r.strat === strat);
-    const withBucket = resolvedInStrat.map((r) => ({ ...r, bucket: classifyVerdictBucket(r.radar_verdict) }));
-    const unclassifiedCount = withBucket.filter((r) => r.bucket === "UNCLASSIFIED").length;
-    const { table1, table2 } = splitTables(withBucket);
-    const totalDangerous = dangerousCount(resolvedInStrat);
-
     const noBuyerInStrat = byClass.NO_BUYER.filter((r) => r.strat === strat).length; // NO_BUYER share is per-stratum too (TESTER-SPEC.md v2.2, stage 7D task 4)
+    result.strata[strat] = { ...computeStratumTables(resolvedInStrat), noBuyerInStratum: noBuyerInStrat };
+  }
 
-    result.strata[strat] = {
-      resolvedCount: resolvedInStrat.length,
-      totalDangerous,
-      unclassifiedCount,
-      noBuyerInStratum: noBuyerInStrat,
-      table1: evaluateSplit(table1.block, table1.pass, totalDangerous),
-      table2: evaluateSplit(table2.block, table2.pass, totalDangerous),
-    };
+  // Task 5 (stage 7H): independence of observations -- distinct buyers, top-10 by
+  // record count, and the same table1/table2 recomputed over one record per buyer
+  // (earliest by t). Section 14(г): "radar useful" requires BOTH the main table above
+  // AND this deduplicated one to independently say so (evaluateClusteredUsefulness).
+  const dedupedResolved = oneRecordPerBuyer(byClass.RESOLVED);
+  result.buyerIndependence = {
+    distinctBuyers: countDistinctBuyers(byClass.RESOLVED),
+    topBuyers: topBuyers(byClass.RESOLVED, 10),
+    oneRecordPerBuyerStrata: {},
+  };
+  for (const strat of ["A", "B"]) {
+    const dedupedInStrat = dedupedResolved.filter((r) => r.strat === strat);
+    result.buyerIndependence.oneRecordPerBuyerStrata[strat] = computeStratumTables(dedupedInStrat);
+  }
+  for (const strat of ["A", "B"]) {
+    for (const tableKey of ["table1", "table2"]) {
+      result.strata[strat][tableKey].clusteredStatus = evaluateClusteredUsefulness(
+        result.strata[strat][tableKey].status,
+        result.buyerIndependence.oneRecordPerBuyerStrata[strat][tableKey].status
+      );
+    }
   }
 
   return result;
@@ -394,6 +511,8 @@ export function formatReport(result) {
     lines.push(`  ${form}: ${formatCI(s.ci)}`);
   }
   lines.push("");
+  lines.push(`  Доля формы F1 («незнакомые покупатели», заблокированы до проверки токена, PREREGISTRATION.md section 14д) от ВСЕХ записей: ${result.f1Share.count}/${result.f1Share.totalRows}${result.f1Share.share !== null ? ` (${(result.f1Share.share * 100).toFixed(2)}%)` : ""}`);
+  lines.push("");
   lines.push("=== Симуляция не выполнялась (F1,F2) vs выполнялась (F3-F6) (PREREGISTRATION.md section 12b, описательно) ===");
   lines.push(`  Симуляция НЕ выполнялась: ${formatCI(result.simulationSplit.simulationNotRun.ci)}`);
   lines.push(`  Симуляция выполнялась:    ${formatCI(result.simulationSplit.simulationRan.ci)}`);
@@ -410,6 +529,26 @@ export function formatReport(result) {
       lines.push(`    Заблокировано: ${formatCI(t.ciBlock)}`);
       lines.push(`    Пропущено:     ${formatCI(t.ciPass)}`);
       if (t.ratio !== null && t.ratio !== undefined) lines.push(`    Отношение долей (block/pass): ${t.ratio === Infinity ? "∞ (pass=0%)" : t.ratio.toFixed(2) + "x"}`);
+      lines.push(`    Кластеризация (PREREGISTRATION.md section 14г, требует того же статуса во вторичной таблице «одна запись на покупателя»): ${t.clusteredStatus}`);
+    }
+  }
+
+  lines.push("");
+  lines.push("=== Независимость наблюдений (PREREGISTRATION.md section 14в/г, task 5 stage 7H) ===");
+  lines.push(`  Различных покупателей (RESOLVED, обе страты): ${result.buyerIndependence.distinctBuyers}`);
+  lines.push("  Топ-10 покупателей по числу записей:");
+  for (const b of result.buyerIndependence.topBuyers) {
+    lines.push(`    ${b.buyer}: ${b.count}`);
+  }
+  for (const strat of ["A", "B"]) {
+    const s = result.buyerIndependence.oneRecordPerBuyerStrata[strat];
+    lines.push("");
+    lines.push(`  --- Одна запись на покупателя (самая ранняя), страт ${strat} ---`);
+    lines.push(`  RESOLVED (DANGEROUS+SAFE): ${s.resolvedCount}, из них DANGEROUS: ${s.totalDangerous}`);
+    for (const [tableName, t] of [["Таблица 1", s.table1], ["Таблица 2", s.table2]]) {
+      lines.push(`  ${tableName}: ${t.status}${t.reason ? " -- " + t.reason : ""}`);
+      lines.push(`    Заблокировано: ${formatCI(t.ciBlock)}`);
+      lines.push(`    Пропущено:     ${formatCI(t.ciPass)}`);
     }
   }
   return lines.join("\n");
@@ -440,13 +579,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       // Look-ahead rule (PREREGISTRATION.md section 12, stage 7G): this branch never
       // calls analyze() at all -- structurally, not just by convention, nothing
       // outcome-derived can leak into the printed report while collection is still live.
-      console.log(formatCountersOnlyReport(rows, loadSkipCounters(db), countErrorLogs(db)));
+      console.log(formatCountersOnlyReport(rows, loadSkipCounters(db), countErrorLogs(db), loadPoolCandidates(db)));
     } else {
       const result = analyze(rows);
       console.log(formatReport(result));
       console.log("");
       console.log("=== skip_counters (task 3 stage 7F, по всем датам суммарно) ===");
       console.log(formatSkipCountersReport(loadSkipCounters(db)));
+      console.log("");
+      console.log("=== pool_candidates -- увидено/выбрано по часам UTC (task 3 stage 7H) ===");
+      console.log(formatPoolCandidatesByHourReport(loadPoolCandidates(db)));
     }
   } finally {
     db.close();

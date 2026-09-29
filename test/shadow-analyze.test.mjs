@@ -19,8 +19,15 @@ import {
   loadSkipCounters,
   summarizeSkipCounters,
   formatSkipCountersReport,
+  loadPoolCandidates,
+  summarizePoolCandidatesByHour,
+  formatPoolCandidatesByHourReport,
+  countDistinctBuyers,
+  topBuyers,
+  oneRecordPerBuyer,
+  evaluateClusteredUsefulness,
 } from "../scripts/shadow/analyze.mjs";
-import { openDb, insertTrade, updateTradeOutcome, incrementSkipCounter, getSkipCounters, logError } from "../scripts/shadow/db.mjs";
+import { openDb, insertTrade, updateTradeOutcome, incrementSkipCounter, getSkipCounters, logError, recordPoolCandidate } from "../scripts/shadow/db.mjs";
 
 describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
   // --- Wilson score interval, control values independently verified by hand
@@ -459,5 +466,122 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
     assert.doesNotMatch(report, /VERIFIED_SAFE/);
     assert.doesNotMatch(report, /LOW_TRUST_WARMING/);
     assert.doesNotMatch(report, /Wilson|CI95|доля/i);
+  });
+
+  // --- Task 3 (stage 7H): pool_candidates seen/selected by UTC hour ---
+
+  test("summarizePoolCandidatesByHour: buckets by the UTC hour of seen_at, seen vs selected kept separate", () => {
+    const rows = [
+      { seen_at: "2026-09-29T03:15:00.000Z", selected: 1 },
+      { seen_at: "2026-09-29T03:45:00.000Z", selected: 0 },
+      { seen_at: "2026-09-29T14:05:00.000Z", selected: 1 },
+    ];
+    const byHour = summarizePoolCandidatesByHour(rows);
+    assert.equal(byHour["03"].seen, 2);
+    assert.equal(byHour["03"].selected, 1);
+    assert.equal(byHour["14"].seen, 1);
+    assert.equal(byHour["14"].selected, 1);
+    assert.equal(byHour["00"].seen, 0, "hours with no candidates are still present, reported as 0");
+  });
+
+  test("formatPoolCandidatesByHourReport: prints all 24 UTC hours, seen and selected counts", () => {
+    const report = formatPoolCandidatesByHourReport([{ seen_at: "2026-09-29T09:00:00.000Z", selected: 1 }]);
+    assert.match(report, /09:00 UTC -- увидено: 1, выбрано: 1/);
+    assert.match(report, /00:00 UTC -- увидено: 0, выбрано: 0/);
+    assert.equal(report.split("\n").length, 24, "all 24 hours printed, not just the ones with data");
+  });
+
+  test("loadPoolCandidates: read-only query against a real (in-memory) database round-trips correctly", () => {
+    const db = openDb(":memory:");
+    recordPoolCandidate(db, { cycleTs: 1, pool: "Pair1", mint: "Mint1", seenAt: "2026-09-29T05:00:00.000Z", selected: true });
+    recordPoolCandidate(db, { cycleTs: 1, pool: "Pair2", mint: "Mint2", seenAt: "2026-09-29T05:01:00.000Z", selected: false });
+    const rows = loadPoolCandidates(db);
+    assert.equal(rows.length, 2);
+    assert.equal(rows.filter((r) => r.selected).length, 1);
+  });
+
+  test("formatCountersOnlyReport: includes the pool_candidates-by-hour section without leaking outcome data", () => {
+    const report = formatCountersOnlyReport([], [], 0, [{ seen_at: "2026-09-29T11:00:00.000Z", selected: 1 }]);
+    assert.match(report, /11:00 UTC -- увидено: 1, выбрано: 1/);
+    assert.doesNotMatch(report, /outcome/i);
+    assert.doesNotMatch(report, /DANGEROUS/);
+  });
+
+  // --- Task 5 (stage 7H): independence of observations ---
+
+  test("countDistinctBuyers: counts unique buyer addresses, ignores rows with no buyer", () => {
+    const rows = [{ buyer: "B1" }, { buyer: "B1" }, { buyer: "B2" }, { buyer: null }];
+    assert.equal(countDistinctBuyers(rows), 2);
+  });
+
+  test("topBuyers: sorted descending by record count, capped at n", () => {
+    const rows = [
+      ...Array(5).fill({ buyer: "Sniper1" }),
+      ...Array(2).fill({ buyer: "Sniper2" }),
+      { buyer: "Occasional1" },
+    ];
+    const top = topBuyers(rows, 2);
+    assert.equal(top.length, 2);
+    assert.deepEqual(top[0], { buyer: "Sniper1", count: 5 });
+    assert.deepEqual(top[1], { buyer: "Sniper2", count: 2 });
+  });
+
+  test("oneRecordPerBuyer: keeps the EARLIEST record (by t) per buyer, drops the rest", () => {
+    const rows = [
+      { buyer: "B1", t: 300, outcome: "SAFE" },
+      { buyer: "B1", t: 100, outcome: "DANGEROUS" }, // earlier -- this one should win
+      { buyer: "B1", t: 200, outcome: "SAFE" },
+      { buyer: "B2", t: 150, outcome: "SAFE" },
+    ];
+    const deduped = oneRecordPerBuyer(rows);
+    assert.equal(deduped.length, 2);
+    const b1 = deduped.find((r) => r.buyer === "B1");
+    assert.equal(b1.t, 100);
+    assert.equal(b1.outcome, "DANGEROUS");
+  });
+
+  test("evaluateClusteredUsefulness: RADAR_USEFUL only when BOTH the main and deduplicated tables say so", () => {
+    assert.equal(evaluateClusteredUsefulness("RADAR_USEFUL", "RADAR_USEFUL"), "RADAR_USEFUL");
+    assert.equal(evaluateClusteredUsefulness("RADAR_USEFUL", "INSUFFICIENT_DATA"), "INSUFFICIENT_DATA");
+    assert.equal(evaluateClusteredUsefulness("RADAR_USEFUL", "DIFFERENCE_NOT_ESTABLISHED"), "INSUFFICIENT_DATA");
+    assert.equal(evaluateClusteredUsefulness("DIFFERENCE_NOT_ESTABLISHED", "RADAR_USEFUL"), "INSUFFICIENT_DATA");
+    assert.equal(evaluateClusteredUsefulness("INSUFFICIENT_DATA", "INSUFFICIENT_DATA"), "INSUFFICIENT_DATA");
+  });
+
+  test("analyze()/formatReport(): buyer independence section present, F1 share reported, clusteredStatus wired into strata tables", () => {
+    const db = openDb(":memory:");
+    const insertWithOutcome = (trade, outcome) => {
+      const { lastInsertRowid } = insertTrade(db, trade);
+      updateTradeOutcome(db, lastInsertRowid, outcome, null);
+    };
+    let t = 9000;
+    const base = (overrides) => ({ mint: `M${t}`, pair: `P${t}`, t: t++, strat: "A", recorded_at: new Date().toISOString(), ...overrides });
+    // Same buyer ("Sniper") shows up twice -- should collapse to 1 in the deduplicated table.
+    insertWithOutcome(base({ buyer: "Sniper", radar_verdict: FORM_BODIES.F1 }), "DANGEROUS");
+    insertWithOutcome(base({ buyer: "Sniper", radar_verdict: FORM_BODIES.F1 }), "SAFE");
+    insertWithOutcome(base({ buyer: "Occasional", radar_verdict: FORM_BODIES.F6 }), "SAFE");
+    insertTrade(db, base({ buyer: null })); // NO_BUYER -- not counted in F1 share denominator exclusion, but IS in totalRows
+
+    const rows = db.prepare("SELECT * FROM shadow_trades").all();
+    const result = analyze(rows);
+
+    assert.equal(result.buyerIndependence.distinctBuyers, 2);
+    assert.equal(result.buyerIndependence.topBuyers[0].buyer, "Sniper");
+    assert.equal(result.buyerIndependence.topBuyers[0].count, 2);
+    assert.equal(result.buyerIndependence.oneRecordPerBuyerStrata.A.resolvedCount, 2, "Sniper's 2 records collapse to 1 -- 2 distinct buyers total in strat A");
+
+    assert.equal(result.f1Share.count, 2);
+    assert.equal(result.f1Share.totalRows, 4);
+    assert.ok(Math.abs(result.f1Share.share - 0.5) < 1e-9);
+
+    assert.ok("clusteredStatus" in result.strata.A.table1);
+
+    const report = formatReport(result);
+    assert.match(report, /Независимость наблюдений/);
+    assert.match(report, /Различных покупателей.*: 2/);
+    assert.match(report, /Топ-10 покупателей/);
+    assert.match(report, /одна запись на покупателя/i);
+    assert.match(report, /Доля формы F1/);
+    assert.match(report, /section 14г/);
   });
 });

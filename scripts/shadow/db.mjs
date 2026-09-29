@@ -7,7 +7,13 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export const DEFAULT_DB_PATH = path.resolve("shadow/shadow.db");
-export const DEFAULT_DAILY_CEILING = 1500;
+// Stage 7H task 2: request_counters used to be keyed by date alone, shared between
+// collect.mjs and outcomes.mjs -- one script hitting its ceiling blocked the other
+// (concretely: the outcomes run at 03:00 UTC could find the ceiling already exhausted
+// by the day's collection cycles and never compute a single outcome). Now keyed by
+// (date, script) with separate ceilings; DAILY_REQUEST_CEILING is no longer read anywhere.
+export const DEFAULT_DAILY_CEILING_COLLECT = 1500;
+export const DEFAULT_DAILY_CEILING_OUTCOMES = 1500;
 
 /**
  * Initializes and opens the SQLite database.
@@ -61,8 +67,10 @@ export function initSchema(db) {
     );
 
     CREATE TABLE IF NOT EXISTS request_counters (
-      date TEXT PRIMARY KEY,
-      request_count INTEGER NOT NULL DEFAULT 0
+      date TEXT NOT NULL,
+      script TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (date, script)
     );
 
     CREATE TABLE IF NOT EXISTS error_logs (
@@ -81,6 +89,15 @@ export function initSchema(db) {
       PRIMARY KEY (date, reason)
     );
 
+    CREATE TABLE IF NOT EXISTS pool_candidates (
+      cycle_ts INTEGER NOT NULL,
+      pool TEXT NOT NULL,
+      mint TEXT NOT NULL,
+      seen_at TEXT NOT NULL,
+      selected INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (cycle_ts, pool)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_trades_t ON shadow_trades(t);
     CREATE INDEX IF NOT EXISTS idx_trades_outcome ON shadow_trades(outcome);
     CREATE INDEX IF NOT EXISTS idx_trades_strat ON shadow_trades(strat);
@@ -95,30 +112,34 @@ export function getTodayDateString() {
 }
 
 /**
- * Checks if the daily request ceiling has been reached.
+ * Checks if the daily request ceiling has been reached, per (date, script) --
+ * stage 7H task 2: collect.mjs and outcomes.mjs each pass their own `script` name
+ * ("collect" / "outcomes") so one script's usage never blocks the other's.
  */
-export function checkDailyCeiling(db, ceiling = DEFAULT_DAILY_CEILING) {
+export function checkDailyCeiling(db, ceiling, script) {
   const dateStr = getTodayDateString();
-  const row = db.prepare("SELECT request_count FROM request_counters WHERE date = ?").get(dateStr);
+  const row = db.prepare("SELECT request_count FROM request_counters WHERE date = ? AND script = ?").get(dateStr, script);
   const current = row ? row.request_count : 0;
   return {
     allowed: current < ceiling,
     current,
     ceiling,
     date: dateStr,
+    script,
   };
 }
 
 /**
- * Increments today's request counter.
+ * Increments today's request counter for the given script (see checkDailyCeiling).
  */
-export function incrementRequestCounter(db, count = 1) {
+export function incrementRequestCounter(db, count = 1, script) {
   const dateStr = getTodayDateString();
-  db.exec(`
-    INSERT INTO request_counters (date, request_count)
-    VALUES ('${dateStr}', ${count})
-    ON CONFLICT(date) DO UPDATE SET request_count = request_count + ${count};
+  const stmt = db.prepare(`
+    INSERT INTO request_counters (date, script, request_count)
+    VALUES (?, ?, ?)
+    ON CONFLICT(date, script) DO UPDATE SET request_count = request_count + excluded.request_count
   `);
+  stmt.run(dateStr, script, count);
 }
 
 /**
@@ -142,6 +163,31 @@ export function getSkipCounters(db, sinceDate = null) {
     return db.prepare("SELECT date, reason, count FROM skip_counters WHERE date >= ? ORDER BY date, reason").all(sinceDate);
   }
   return db.prepare("SELECT date, reason, count FROM skip_counters ORDER BY date, reason").all();
+}
+
+/**
+ * Records one seen pool candidate for a cycle -- task 3 stage 7H. Called for EVERY
+ * candidate fetchFreshPools returns, whether or not it was budget-selected for actual
+ * processing, so analyze.mjs can later see the full discovery volume, not just what got
+ * processed. Purely a local write -- costs no external request. `selected` is set once,
+ * at record time (the caller already knows selection status by then, no separate update
+ * pass needed).
+ */
+export function recordPoolCandidate(db, { cycleTs, pool, mint, seenAt, selected }) {
+  const stmt = db.prepare(`
+    INSERT INTO pool_candidates (cycle_ts, pool, mint, seen_at, selected)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(cycle_ts, pool) DO UPDATE SET selected = excluded.selected
+  `);
+  stmt.run(cycleTs, pool, mint, seenAt, selected ? 1 : 0);
+}
+
+/** Reads all pool_candidates rows, optionally filtered to cycle_ts >= sinceCycleTs. */
+export function getPoolCandidates(db, sinceCycleTs = null) {
+  if (sinceCycleTs) {
+    return db.prepare("SELECT cycle_ts, pool, mint, seen_at, selected FROM pool_candidates WHERE cycle_ts >= ? ORDER BY seen_at").all(sinceCycleTs);
+  }
+  return db.prepare("SELECT cycle_ts, pool, mint, seen_at, selected FROM pool_candidates ORDER BY seen_at").all();
 }
 
 /**

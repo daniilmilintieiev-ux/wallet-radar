@@ -28,7 +28,7 @@ import {
   incrementRequestCounter,
   logError,
   DEFAULT_DB_PATH,
-  DEFAULT_DAILY_CEILING,
+  DEFAULT_DAILY_CEILING_OUTCOMES,
 } from "./db.mjs";
 
 const HELIUS_KEY = process.env.HELIUS_API_KEY;
@@ -37,7 +37,11 @@ const RPC_URL = HELIUS_KEY
   : (process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
 
 const DEFAULT_ISSUER_FILE = path.resolve("ground-truth/issuer-controlled-mints.jsonl");
-const DAILY_CEILING = parseInt(process.env.DAILY_REQUEST_CEILING || String(DEFAULT_DAILY_CEILING), 10);
+// Stage 7H task 2: own ceiling/counter key ("outcomes"), separate from collect.mjs's --
+// previously shared (date)-only counter meant the 03:00 UTC outcomes run could find the
+// day's ceiling already exhausted by collect.mjs's own cycles and compute zero outcomes.
+const DAILY_CEILING = parseInt(process.env.DAILY_REQUEST_CEILING_OUTCOMES || String(DEFAULT_DAILY_CEILING_OUTCOMES), 10);
+const REQUEST_COUNTER_SCRIPT = "outcomes";
 export const OUTCOME_HORIZON_DAYS = 3; // unified N for (a) and (b), docs/TESTER-SPEC.md v2.1 section 8
 
 /** Loads pre-registered issuer controlled mints into a Map. */
@@ -63,14 +67,14 @@ export function sleep(ms) {
 /** Fetches JSON from URL with retry on 429 and network errors. `fetchImpl` is injectable for tests. */
 export async function fetchWithRetry(url, opts = {}, db = null, retries = 3, fetchImpl = fetch) {
   if (db) {
-    const status = checkDailyCeiling(db, DAILY_CEILING);
+    const status = checkDailyCeiling(db, DAILY_CEILING, REQUEST_COUNTER_SCRIPT);
     if (!status.allowed) {
       throw new Error(`Daily request ceiling (${status.ceiling}) reached for ${status.date}`);
     }
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (db) incrementRequestCounter(db, 1);
+    if (db) incrementRequestCounter(db, 1, REQUEST_COUNTER_SCRIPT);
     try {
       const res = await fetchImpl(url, {
         ...opts,
@@ -102,14 +106,14 @@ export async function fetchWithRetry(url, opts = {}, db = null, retries = 3, fet
 /** Executes a Solana JSON-RPC call with 429 backoff and ceiling tracking. `fetchImpl` is injectable for tests. */
 export async function rpcCall(method, params, db = null, retries = 3, fetchImpl = fetch) {
   if (db) {
-    const status = checkDailyCeiling(db, DAILY_CEILING);
+    const status = checkDailyCeiling(db, DAILY_CEILING, REQUEST_COUNTER_SCRIPT);
     if (!status.allowed) {
       throw new Error(`Daily request ceiling (${status.ceiling}) reached for ${status.date}`);
     }
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (db) incrementRequestCounter(db, 1);
+    if (db) incrementRequestCounter(db, 1, REQUEST_COUNTER_SCRIPT);
     try {
       const res = await fetchImpl(RPC_URL, {
         method: "POST",

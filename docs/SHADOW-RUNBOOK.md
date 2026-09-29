@@ -22,7 +22,7 @@
    - Пропажа пары из DexScreener на момент `t+N` — отдельный класс `PAIR_MISSING`, не `DANGEROUS` и не `SAFE`. В отчётах (§5.7 ниже) считается **двумя границами**: нижней (пара пропала = не опасно, исключить из числителя FN) и верхней (пара пропала = опасно, включить в числитель FN) — публиковать обе, не выбирать одну произвольно.
    - Пул-преемник при миграции засчитывается только если его `pairCreatedAt` СТРОГО ПОЗЖЕ `t` покупки — пул, существовавший ДО покупки, не «преемник», даже при высокой ликвидности.
 3. **Безопасность и квоты:**
-   - Суточный потолок внешних запросов (`DAILY_REQUEST_CEILING = 1500`).
+   - Суточный потолок внешних запросов — раздельно для `collect.mjs` и `outcomes.mjs` (`DAILY_REQUEST_CEILING_COLLECT = 1500`, `DAILY_REQUEST_CEILING_OUTCOMES = 1500`, этап 7H task 2; общий ключ `(date)` раньше давал сборщику блокировать расчёт исходов на 03:00 UTC — теперь ключ `(date, script)`, `DAILY_REQUEST_CEILING` не читается нигде).
    - Ретраи с экспоненциальным бэкоффом при HTTP 429.
    - Ключ `HELIUS_API_KEY` берётся только из окружения и никогда не логируется; `radar.env` сборщик не читает.
    - `--force-all` (обнуляет минимальный возраст записи в `outcomes.mjs`) разрешён **только** вместе с `--db=<путь>`, указывающим на ОТДЕЛЬНУЮ от продовой базу — иначе сборщик отказывается запускаться (ненулевой код выхода).
@@ -38,7 +38,8 @@
 | `RADAR_URL` | `http://localhost:7690` | URL локального HTTP-сервера Wallet Radar для вызова `POST /gate-copy`. |
 | `SHADOW_DB_PATH` | `shadow/shadow.db` | Путь к файлу базы данных SQLite (добавлен в `.gitignore`). |
 | `POLL_INTERVAL_MINUTES` | `15` | Интервал между прогонами сборщика (в минутах) при постоянной работе. |
-| `DAILY_REQUEST_CEILING` | `1500` | Максимальное количество внешних запросов (RPC + GeckoTerminal + DexScreener) в сутки. |
+| `DAILY_REQUEST_CEILING_COLLECT` | `1500` | Максимальное количество внешних запросов `collect.mjs` (RPC + GeckoTerminal + DexScreener) в сутки. |
+| `DAILY_REQUEST_CEILING_OUTCOMES` | `1500` | Максимальное количество внешних запросов `outcomes.mjs` в сутки — отдельный счётчик, не делится со сборщиком (этап 7H). |
 
 ### 2.1. Константы конфигурации (в коде, не env-переменные)
 
@@ -85,7 +86,7 @@ WorkingDirectory=/home/orangepi/wallet-radar
 Environment=NODE_ENV=production
 Environment=RADAR_URL=http://127.0.0.1:7690
 Environment=SHADOW_DB_PATH=/home/orangepi/wallet-radar/shadow/shadow.db
-Environment=DAILY_REQUEST_CEILING=1500
+Environment=DAILY_REQUEST_CEILING_COLLECT=1500
 Environment=POLL_INTERVAL_MINUTES=15
 # Ключ RPC задаётся в файле окружения с ограниченными правами (chmod 600)
 EnvironmentFile=-/etc/default/wallet-radar-shadow
@@ -113,6 +114,7 @@ User=orangepi
 WorkingDirectory=/home/orangepi/wallet-radar
 Environment=NODE_ENV=production
 Environment=SHADOW_DB_PATH=/home/orangepi/wallet-radar/shadow/shadow.db
+Environment=DAILY_REQUEST_CEILING_OUTCOMES=1500
 EnvironmentFile=-/etc/default/wallet-radar-shadow
 ExecStart=/usr/bin/node scripts/shadow/outcomes.mjs --min-age-days=3
 StandardOutput=journal
