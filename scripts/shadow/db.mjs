@@ -74,6 +74,13 @@ export function initSchema(db) {
       details TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS skip_counters (
+      date TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (date, reason)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_trades_t ON shadow_trades(t);
     CREATE INDEX IF NOT EXISTS idx_trades_outcome ON shadow_trades(outcome);
     CREATE INDEX IF NOT EXISTS idx_trades_strat ON shadow_trades(strat);
@@ -112,6 +119,29 @@ export function incrementRequestCounter(db, count = 1) {
     VALUES ('${dateStr}', ${count})
     ON CONFLICT(date) DO UPDATE SET request_count = request_count + ${count};
   `);
+}
+
+/**
+ * Increments today's (or dateStr's) skip counter for a rejection reason
+ * (TOKEN_TOO_OLD, NO_BUYER, POOL_TOO_OLD, RADAR_ERROR, PROCESSING_ERROR, ...).
+ * Stage 7F task 3 -- collect.mjs's per-cycle in-memory counters are lost when the
+ * process exits; this makes them queryable by analyze.mjs across the whole run.
+ */
+export function incrementSkipCounter(db, reason, count = 1, dateStr = getTodayDateString()) {
+  const stmt = db.prepare(`
+    INSERT INTO skip_counters (date, reason, count)
+    VALUES (?, ?, ?)
+    ON CONFLICT(date, reason) DO UPDATE SET count = count + excluded.count
+  `);
+  stmt.run(dateStr, reason, count);
+}
+
+/** Reads all skip_counters rows, optionally filtered to date >= sinceDate. */
+export function getSkipCounters(db, sinceDate = null) {
+  if (sinceDate) {
+    return db.prepare("SELECT date, reason, count FROM skip_counters WHERE date >= ? ORDER BY date, reason").all(sinceDate);
+  }
+  return db.prepare("SELECT date, reason, count FROM skip_counters ORDER BY date, reason").all();
 }
 
 /**

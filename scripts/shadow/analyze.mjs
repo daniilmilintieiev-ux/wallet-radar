@@ -144,6 +144,27 @@ function loadRows(db) {
   return db.prepare("SELECT * FROM shadow_trades").all();
 }
 
+/** Reads skip_counters (date, reason, count) -- task 3 stage 7F. Read-only, no writes. */
+export function loadSkipCounters(db) {
+  return db.prepare("SELECT date, reason, count FROM skip_counters ORDER BY date, reason").all();
+}
+
+/** Aggregates skip_counters rows across all dates, by reason. */
+export function summarizeSkipCounters(skipCounterRows) {
+  const byReason = {};
+  for (const r of skipCounterRows) {
+    byReason[r.reason] = (byReason[r.reason] || 0) + r.count;
+  }
+  return byReason;
+}
+
+export function formatSkipCountersReport(skipCounterRows) {
+  const byReason = summarizeSkipCounters(skipCounterRows);
+  const reasons = Object.keys(byReason).sort();
+  if (reasons.length === 0) return "  (нет записей в skip_counters -- сборщик ещё не запускался, или все причины отбраковки отсутствовали)";
+  return reasons.map((r) => `  ${r}: ${byReason[r]}`).join("\n");
+}
+
 export function analyze(rows) {
   const byClass = {
     RADAR_ERROR: [],
@@ -171,12 +192,12 @@ export function analyze(rows) {
   // as dangerous (included). Both published, neither chosen unilaterally.
   result.pairMissingBounds = { count: byClass.PAIR_MISSING.length, note: "lower bound = treated as not-dangerous (excluded), upper bound = treated as dangerous (included) -- both reported, see PREREGISTRATION.md section 5" };
 
-  // TOKEN_TOO_OLD: NOT persisted anywhere in shadow_trades or any other table by
-  // collect.mjs as of shadow-v1 -- checkTokenAge rejects the pool BEFORE a row is
-  // ever created, and the per-cycle counter is only console-logged, never written
-  // to request_counters/error_logs/any table. This script reads ONLY the database,
-  // so this line is honestly reported as unavailable rather than guessed as 0.
-  result.separateLines.TOKEN_TOO_OLD = "NOT AVAILABLE IN DB (collect.mjs does not persist this counter as of shadow-v1 -- see stage 7E report)";
+  // TOKEN_TOO_OLD (and POOL_TOO_OLD/NO_BUYER/RADAR_ERROR/PROCESSING_ERROR) used to be
+  // unrecoverable from the database (stage 7E: checkTokenAge rejects the pool BEFORE a
+  // row is ever created, and the per-cycle counter was only console-logged). Fixed in
+  // stage 7F task 3 via the skip_counters table -- see formatSkipCountersReport /
+  // the CLI entry point below, which reads it separately from shadow_trades. analyze()
+  // itself only ever sees shadow_trades rows, so it does not report TOKEN_TOO_OLD here.
 
   // radar_token_check_missing distribution (task 3 stage 7E, four-state task 2 stage 7F)
   // -- informational, not part of section 4's metric. NOT_APPLICABLE (a real verdict
@@ -273,6 +294,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const rows = loadRows(db);
     const result = analyze(rows);
     console.log(formatReport(result));
+    console.log("");
+    console.log("=== skip_counters (task 3 stage 7F, по всем датам суммарно) ===");
+    console.log(formatSkipCountersReport(loadSkipCounters(db)));
   } finally {
     db.close();
   }

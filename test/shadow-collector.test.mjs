@@ -33,7 +33,11 @@ import {
   checkDailyCeiling,
   incrementRequestCounter,
   logError,
+  getSkipCounters,
 } from "../scripts/shadow/db.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -679,6 +683,80 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       assert.equal(row.radar_token_check_missing, true, "TOXIC_MINT should have been checkable and didn't fire -- flagged missing");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  // --- Task 3 (stage 7F): skip_counters -- persisted so analyze.mjs can recover
+  // TOKEN_TOO_OLD/POOL_TOO_OLD, which (unlike NO_BUYER/RADAR_ERROR) never create a
+  // shadow_trades row at all and were previously lost the moment the process exited.
+
+  test("runCollectionCycle: TOKEN_TOO_OLD, POOL_TOO_OLD, and NO_BUYER each increment skip_counters, queryable after the run via a real file-backed db", async () => {
+    // :memory: databases are private per connection -- runCollectionCycle opens its own
+    // handle internally, so this test needs a real temp file to reopen and inspect after.
+    const tmpDbPath = path.join(os.tmpdir(), `shadow-skip-counters-test-${process.pid}-${Date.now()}.db`);
+
+    const oldPair = "PairOldPool1111111111111111111111111111111";
+    const oldMint = "MintOldPool1111111111111111111111111111111";
+    const tokenTooOldPair = "PairTokenTooOld11111111111111111111111111";
+    const tokenTooOldMint = "MintTokenTooOld11111111111111111111111111";
+    const noBuyerPair = "PairNoBuyer111111111111111111111111111111";
+    const noBuyerMint = "MintNoBuyer111111111111111111111111111111";
+    const creationSig = { signature: "creationSigSK", blockTime: 8000 };
+
+    // Injected directly via opts.pools (bypassing fetchFreshPools, already tested on its
+    // own) -- oldPair's poolCreatedAtMs is set deliberately stale so the POOL_TOO_OLD
+    // re-check inside the loop catches it deterministically, without racing a real
+    // 15-minute wall-clock window across a mocked network round trip.
+    const injectedPools = [
+      { pair: oldPair, mint: oldMint, dexId: "raydium", poolCreatedAtMs: Date.now() - 20 * 60 * 1000, poolCreatedAtIso: new Date(Date.now() - 20 * 60 * 1000).toISOString() },
+      { pair: tokenTooOldPair, mint: tokenTooOldMint, dexId: "raydium", poolCreatedAtMs: Date.now() - 60_000, poolCreatedAtIso: new Date(Date.now() - 60_000).toISOString() },
+      { pair: noBuyerPair, mint: noBuyerMint, dexId: "raydium", poolCreatedAtMs: Date.now() - 60_000, poolCreatedAtIso: new Date(Date.now() - 60_000).toISOString() },
+    ];
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("dexscreener.com")) {
+        // The URL embeds the mint -- token-too-old mint gets an ancient pairCreatedAt.
+        if (url.includes(tokenTooOldMint)) return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 30 * 86400 * 1000 }] });
+        return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] });
+      }
+      if (url.includes("/gate-copy")) {
+        return jsonResponse({ allow: true, action: "allow", riskScore: 5 }, 200);
+      }
+      const body = JSON.parse(init.body);
+      if (body.method === "getAccountInfo") {
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { info: {} } } } } });
+      }
+      if (body.method === "getSignaturesForAddress") {
+        // Only the creation signature exists -- no buyer will ever resolve (NO_BUYER case).
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: [creationSig] });
+      }
+      if (body.method === "getTransaction") {
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: ["SomeCreator11111111111111111111111111111"] } }, blockTime: creationSig.blockTime } });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+
+    try {
+      const result = await runCollectionCycle({ dbPath: tmpDbPath, radarUrl: "http://fake-radar", pools: injectedPools });
+      assert.equal(result.poolTooOldCount, 1, "the artificially-aged pool must be caught by the POOL_TOO_OLD re-check");
+      assert.equal(result.tokenTooOldCount, 1);
+      assert.equal(result.noBuyerCount, 1);
+
+      const db = openDb(tmpDbPath);
+      try {
+        const skipRows = getSkipCounters(db);
+        const byReason = Object.fromEntries(skipRows.map((r) => [r.reason, r.count]));
+        assert.equal(byReason.POOL_TOO_OLD, 1);
+        assert.equal(byReason.TOKEN_TOO_OLD, 1);
+        assert.equal(byReason.NO_BUYER, 1);
+      } finally {
+        db.close();
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(tmpDbPath, { force: true });
     }
   });
 

@@ -1,7 +1,19 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { wilson95, intervalsOverlap, classifyVerdictBucket, classifyRow, splitTables, evaluateSplit, analyze, MIN_DANGEROUS_FOR_PUBLICATION } from "../scripts/shadow/analyze.mjs";
-import { openDb, insertTrade, updateTradeOutcome } from "../scripts/shadow/db.mjs";
+import {
+  wilson95,
+  intervalsOverlap,
+  classifyVerdictBucket,
+  classifyRow,
+  splitTables,
+  evaluateSplit,
+  analyze,
+  MIN_DANGEROUS_FOR_PUBLICATION,
+  loadSkipCounters,
+  summarizeSkipCounters,
+  formatSkipCountersReport,
+} from "../scripts/shadow/analyze.mjs";
+import { openDb, insertTrade, updateTradeOutcome, incrementSkipCounter, getSkipCounters } from "../scripts/shadow/db.mjs";
 
 describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
   // --- Wilson score interval, control values independently verified by hand
@@ -164,7 +176,7 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
     assert.equal(result.separateLines.IRRECOVERABLE, 1);
     assert.equal(result.separateLines.MIGRATION_NOT_AN_OUTCOME, 1);
     assert.equal(result.separateLines.PENDING, 1);
-    assert.equal(result.separateLines.TOKEN_TOO_OLD, "NOT AVAILABLE IN DB (collect.mjs does not persist this counter as of shadow-v1 -- see stage 7E report)");
+    assert.equal(result.separateLines.TOKEN_TOO_OLD, undefined, "TOKEN_TOO_OLD is not in shadow_trades at all -- now reported via skip_counters, not analyze()");
 
     assert.equal(result.strata.A.resolvedCount, 6); // the 6 DANGEROUS/SAFE rows only
     assert.equal(result.strata.A.totalDangerous, 3);
@@ -185,5 +197,53 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
 
   test(`MIN_DANGEROUS_FOR_PUBLICATION constant is 30, per PREREGISTRATION.md section 4.6`, () => {
     assert.equal(MIN_DANGEROUS_FOR_PUBLICATION, 30);
+  });
+
+  // --- skip_counters (task 3 stage 7F): TOKEN_TOO_OLD/POOL_TOO_OLD/NO_BUYER/RADAR_ERROR/
+  // PROCESSING_ERROR, persisted so analyze.mjs can recover them (previously impossible
+  // for TOKEN_TOO_OLD, which never creates a shadow_trades row at all). ---
+
+  test("incrementSkipCounter: accumulates across calls for the same (date, reason), separate rows per reason", () => {
+    const db = openDb(":memory:");
+    incrementSkipCounter(db, "TOKEN_TOO_OLD", 1, "2026-09-29");
+    incrementSkipCounter(db, "TOKEN_TOO_OLD", 1, "2026-09-29");
+    incrementSkipCounter(db, "TOKEN_TOO_OLD", 3, "2026-09-29");
+    incrementSkipCounter(db, "NO_BUYER", 1, "2026-09-29");
+    incrementSkipCounter(db, "TOKEN_TOO_OLD", 1, "2026-09-30"); // different date, separate row
+
+    const rows = getSkipCounters(db);
+    assert.equal(rows.length, 3);
+    const byKey = Object.fromEntries(rows.map((r) => [`${r.date}:${r.reason}`, r.count]));
+    assert.equal(byKey["2026-09-29:TOKEN_TOO_OLD"], 5);
+    assert.equal(byKey["2026-09-29:NO_BUYER"], 1);
+    assert.equal(byKey["2026-09-30:TOKEN_TOO_OLD"], 1);
+  });
+
+  test("summarizeSkipCounters: aggregates across all dates, by reason", () => {
+    const rows = [
+      { date: "2026-09-29", reason: "TOKEN_TOO_OLD", count: 5 },
+      { date: "2026-09-30", reason: "TOKEN_TOO_OLD", count: 2 },
+      { date: "2026-09-29", reason: "NO_BUYER", count: 1 },
+    ];
+    const summary = summarizeSkipCounters(rows);
+    assert.deepEqual(summary, { TOKEN_TOO_OLD: 7, NO_BUYER: 1 });
+  });
+
+  test("formatSkipCountersReport: readable output, and an empty table is stated plainly, not left blank", () => {
+    const report = formatSkipCountersReport([{ date: "2026-09-29", reason: "POOL_TOO_OLD", count: 4 }]);
+    assert.match(report, /POOL_TOO_OLD: 4/);
+    const emptyReport = formatSkipCountersReport([]);
+    assert.match(emptyReport, /нет записей/);
+  });
+
+  test("loadSkipCounters: read-only query against a real (in-memory) database round-trips correctly", () => {
+    const db = openDb(":memory:");
+    incrementSkipCounter(db, "RADAR_ERROR", 2);
+    incrementSkipCounter(db, "PROCESSING_ERROR", 1);
+    const rows = loadSkipCounters(db);
+    assert.equal(rows.length, 2);
+    const summary = summarizeSkipCounters(rows);
+    assert.equal(summary.RADAR_ERROR, 2);
+    assert.equal(summary.PROCESSING_ERROR, 1);
   });
 });

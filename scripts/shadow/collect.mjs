@@ -28,6 +28,7 @@ import {
   incrementRequestCounter,
   logError,
   insertTrade,
+  incrementSkipCounter,
   DEFAULT_DB_PATH,
   DEFAULT_DAILY_CEILING,
 } from "./db.mjs";
@@ -488,124 +489,165 @@ export async function runCollectionCycle(opts = {}) {
   const dryRun = Boolean(opts.dryRun);
 
   const db = openDb(dbPath);
-  const gitCommit = getRadarCommitHash();
+  // Everything below is wrapped in try/finally (stage 7F fix): runCollectionCycle
+  // previously never closed its db handle at all -- a real leak, one live SQLite
+  // connection per cycle, never freed, most visible in continuous mode (setInterval
+  // in the CLI entry point below) where a new one opens every POLL_INTERVAL_MINUTES
+  // forever, and on Windows where an unclosed handle keeps the file locked.
+  try {
+    const gitCommit = getRadarCommitHash();
 
-  console.log(`[COLLECT] Starting cycle. DB: ${dbPath}, Radar: ${radarUrl}, Commit: ${gitCommit}`);
+    console.log(`[COLLECT] Starting cycle. DB: ${dbPath}, Radar: ${radarUrl}, Commit: ${gitCommit}`);
 
-  const ceilingStatus = checkDailyCeiling(db, DAILY_CEILING);
-  if (!ceilingStatus.allowed) {
-    console.warn(`[COLLECT] Daily ceiling reached (${ceilingStatus.current}/${ceilingStatus.ceiling}). Skipping cycle.`);
-    return { collected: 0, ceilingReached: true };
-  }
-
-  const rawPools = await fetchFreshPools(db);
-  console.log(`[COLLECT] Fetched ${rawPools.length} fresh Solana candidate pools (<= ${POOL_MAX_AGE_MINUTES} min old) from GeckoTerminal.`);
-
-  const candidatePools = limit ? rawPools.slice(0, limit) : rawPools;
-  let savedCount = 0;
-  let tokenTooOldCount = 0;
-  let noBuyerCount = 0;
-  let consecutiveRadarErrors = 0;
-  const rows = [];
-
-  for (const p of candidatePools) {
-    const { mint, pair, dexId } = p;
-    try {
-      const ageCheck = await checkTokenAge(mint, db);
-      if (ageCheck.tooOld) {
-        tokenTooOldCount++;
-        console.log(`[TOKEN_TOO_OLD] ${mint.slice(0, 8)}... minPairCreatedAt=${new Date(ageCheck.minPairCreatedAt).toISOString()}`);
-        continue;
-      }
-
-      const mintState = await fetchMintStateAtT(mint, db);
-      const strat = determineStrat(mintState);
-
-      const poolCreation = await resolvePoolCreationTx(pair, db);
-      const buyerRes = await resolveBuyer(pair, mint, poolCreation, db);
-      if (!buyerRes.buyer) noBuyerCount++;
-
-      const gateCopyRes = buyerRes.buyer
-        ? await queryGateCopy(radarUrl, buyerRes.buyer, mint, COPY_AMOUNT_USD)
-        : { httpStatus: null, body: null, isRadarError: false }; // no buyer -> never called the radar, not a RADAR_ERROR
-
-      if (buyerRes.buyer) {
-        if (gateCopyRes.isRadarError) {
-          consecutiveRadarErrors++;
-        } else {
-          consecutiveRadarErrors = 0;
-        }
-      }
-
-      const mintRiskFetched = buyerRes.buyer && !gateCopyRes.isRadarError ? determineMintRiskFetched(gateCopyRes.body) : "NOT_DETERMINABLE";
-      // Only meaningful when a real verdict exists (task 3 stage 7E) -- no buyer or a
-      // RADAR_ERROR means there is no response body to inspect at all, not "not missing".
-      const radarTokenCheckMissing =
-        buyerRes.buyer && !gateCopyRes.isRadarError ? determineRadarTokenCheckMissing(mintState, mint, gateCopyRes.body) : null;
-
-      const record = {
-        mint,
-        pair,
-        t: buyerRes.t ?? Math.floor((p.poolCreatedAtMs || Date.now()) / 1000),
-        liquidity_usd: null,
-        mint_authority: mintState.mintAuthority,
-        freeze_authority: mintState.freezeAuthority,
-        token_program: mintState.tokenProgram,
-        token_2022_extensions: mintState.extensions,
-        strat,
-        buyer: buyerRes.buyer,
-        buyer_tx_signature: buyerRes.buyerTxSignature,
-        http_status: gateCopyRes.httpStatus,
-        copy_amount_usd: COPY_AMOUNT_USD,
-        mint_risk_fetched: mintRiskFetched,
-        // Independent of mint_risk_fetched (inferred from the radar's response, task 4 stage 7B):
-        // this is the collector's OWN getAccountInfo(mint) result, task 2 stage 7D.
-        mint_metadata_fetched: mintState.fetched,
-        // A real verdict was returned, but our own independent mint check failed -- we cannot
-        // vouch that ANY mint data (ours or the radar's own internal fetch) was available for
-        // this trade. Never set when there is no verdict at all (RADAR_ERROR/NO_BUYER already
-        // excluded elsewhere, task 4/5 stage 7B) -- this flag is specifically about a verdict
-        // that WAS produced without a confirmed mint check backing it.
-        verdict_unconfirmed_mint_check: Boolean(gateCopyRes.body) && !gateCopyRes.isRadarError && !mintState.fetched,
-        // true/false/"NOT_DETERMINABLE"/null (task 3 stage 7E) -- see determineRadarTokenCheckMissing.
-        radar_token_check_missing: radarTokenCheckMissing,
-        radar_verdict: gateCopyRes.isRadarError ? null : gateCopyRes.body,
-        radar_error: gateCopyRes.isRadarError ? gateCopyRes.body : null,
-        radar_code_version: gitCommit,
-        recorded_at: new Date().toISOString(),
-      };
-
-      rows.push(record);
-
-      if (!dryRun) {
-        try {
-          insertTrade(db, record);
-          savedCount++;
-        } catch (dbErr) {
-          if (!/UNIQUE constraint failed/i.test(dbErr.message)) throw dbErr;
-        }
-      } else {
-        savedCount++;
-      }
-
-      console.log(
-        `[SAVED] strat=${strat} mint=${mint.slice(0, 8)}... pair=${pair.slice(0, 8)}... buyer=${buyerRes.buyer ? buyerRes.buyer.slice(0, 8) + "..." : "NONE"} httpStatus=${gateCopyRes.httpStatus ?? "n/a"} mintRiskFetched=${mintRiskFetched} action=${gateCopyRes.body?.action ?? (gateCopyRes.isRadarError ? "RADAR_ERROR" : "n/a")}`
-      );
-
-      if (consecutiveRadarErrors >= MAX_CONSECUTIVE_RADAR_ERRORS) {
-        console.error(`[FATAL] ${MAX_CONSECUTIVE_RADAR_ERRORS} consecutive RADAR_ERROR responses -- aborting run.`);
-        return { collected: savedCount, ceilingReached: false, tokenTooOldCount, noBuyerCount, rows, fatalRadarError: true };
-      }
-    } catch (itemErr) {
-      logError(db, "collect", `processPool:${pair}`, itemErr);
-      console.error(`[ERROR] Processing pool ${pair}:`, itemErr.message);
+    const ceilingStatus = checkDailyCeiling(db, DAILY_CEILING);
+    if (!ceilingStatus.allowed) {
+      console.warn(`[COLLECT] Daily ceiling reached (${ceilingStatus.current}/${ceilingStatus.ceiling}). Skipping cycle.`);
+      return { collected: 0, ceilingReached: true };
     }
 
-    await sleep(200);
-  }
+    // opts.pools: test-only injection point, bypasses fetchFreshPools (already tested on
+    // its own) so POOL_TOO_OLD can be exercised deterministically without racing the real
+    // wall clock across a live network round trip.
+    const rawPools = opts.pools || (await fetchFreshPools(db));
+    console.log(`[COLLECT] Fetched ${rawPools.length} fresh Solana candidate pools (<= ${POOL_MAX_AGE_MINUTES} min old) from GeckoTerminal.`);
 
-  console.log(`[COLLECT] Cycle completed. Saved: ${savedCount}. TOKEN_TOO_OLD: ${tokenTooOldCount}. NO_BUYER: ${noBuyerCount}.`);
-  return { collected: savedCount, ceilingReached: false, tokenTooOldCount, noBuyerCount, rows, fatalRadarError: false };
+    const candidatePools = limit ? rawPools.slice(0, limit) : rawPools;
+    let savedCount = 0;
+    let tokenTooOldCount = 0;
+    let noBuyerCount = 0;
+    let poolTooOldCount = 0;
+    let processingErrorCount = 0;
+    let consecutiveRadarErrors = 0;
+    const rows = [];
+
+    for (const p of candidatePools) {
+      const { mint, pair, dexId } = p;
+      try {
+        // POOL_TOO_OLD (task 3 stage 7F): fetchFreshPools already filtered this pool to
+        // <= POOL_MAX_AGE_MINUTES at discovery time, but real time passes while earlier
+        // items in candidatePools are processed (network calls, retries, the sleep(200)
+        // between iterations below) -- a pool that WAS fresh when fetched can be stale by
+        // the time its own turn comes up. Re-check right before doing any network work on
+        // it, purely locally (no request spent), rather than silently letting a stale pool
+        // through the frame's own <15min guarantee.
+        if (p.poolCreatedAtMs) {
+          const ageAtProcessingMs = Date.now() - p.poolCreatedAtMs;
+          if (ageAtProcessingMs > POOL_MAX_AGE_MINUTES * 60 * 1000) {
+            poolTooOldCount++;
+            incrementSkipCounter(db, "POOL_TOO_OLD");
+            console.log(`[POOL_TOO_OLD] ${pair.slice(0, 8)}... aged ${(ageAtProcessingMs / 60000).toFixed(1)}min by processing time (limit ${POOL_MAX_AGE_MINUTES}min)`);
+            continue;
+          }
+        }
+
+        const ageCheck = await checkTokenAge(mint, db);
+        if (ageCheck.tooOld) {
+          tokenTooOldCount++;
+          incrementSkipCounter(db, "TOKEN_TOO_OLD");
+          console.log(`[TOKEN_TOO_OLD] ${mint.slice(0, 8)}... minPairCreatedAt=${new Date(ageCheck.minPairCreatedAt).toISOString()}`);
+          continue;
+        }
+
+        const mintState = await fetchMintStateAtT(mint, db);
+        const strat = determineStrat(mintState);
+
+        const poolCreation = await resolvePoolCreationTx(pair, db);
+        const buyerRes = await resolveBuyer(pair, mint, poolCreation, db);
+        if (!buyerRes.buyer) {
+          noBuyerCount++;
+          incrementSkipCounter(db, "NO_BUYER");
+        }
+
+        const gateCopyRes = buyerRes.buyer
+          ? await queryGateCopy(radarUrl, buyerRes.buyer, mint, COPY_AMOUNT_USD)
+          : { httpStatus: null, body: null, isRadarError: false }; // no buyer -> never called the radar, not a RADAR_ERROR
+
+        if (buyerRes.buyer) {
+          if (gateCopyRes.isRadarError) {
+            consecutiveRadarErrors++;
+            incrementSkipCounter(db, "RADAR_ERROR");
+          } else {
+            consecutiveRadarErrors = 0;
+          }
+        }
+
+        const mintRiskFetched = buyerRes.buyer && !gateCopyRes.isRadarError ? determineMintRiskFetched(gateCopyRes.body) : "NOT_DETERMINABLE";
+        // Only meaningful when a real verdict exists (task 3 stage 7E) -- no buyer or a
+        // RADAR_ERROR means there is no response body to inspect at all, not "not missing".
+        const radarTokenCheckMissing =
+          buyerRes.buyer && !gateCopyRes.isRadarError ? determineRadarTokenCheckMissing(mintState, mint, gateCopyRes.body) : null;
+
+        const record = {
+          mint,
+          pair,
+          t: buyerRes.t ?? Math.floor((p.poolCreatedAtMs || Date.now()) / 1000),
+          liquidity_usd: null,
+          mint_authority: mintState.mintAuthority,
+          freeze_authority: mintState.freezeAuthority,
+          token_program: mintState.tokenProgram,
+          token_2022_extensions: mintState.extensions,
+          strat,
+          buyer: buyerRes.buyer,
+          buyer_tx_signature: buyerRes.buyerTxSignature,
+          http_status: gateCopyRes.httpStatus,
+          copy_amount_usd: COPY_AMOUNT_USD,
+          mint_risk_fetched: mintRiskFetched,
+          // Independent of mint_risk_fetched (inferred from the radar's response, task 4 stage 7B):
+          // this is the collector's OWN getAccountInfo(mint) result, task 2 stage 7D.
+          mint_metadata_fetched: mintState.fetched,
+          // A real verdict was returned, but our own independent mint check failed -- we cannot
+          // vouch that ANY mint data (ours or the radar's own internal fetch) was available for
+          // this trade. Never set when there is no verdict at all (RADAR_ERROR/NO_BUYER already
+          // excluded elsewhere, task 4/5 stage 7B) -- this flag is specifically about a verdict
+          // that WAS produced without a confirmed mint check backing it.
+          verdict_unconfirmed_mint_check: Boolean(gateCopyRes.body) && !gateCopyRes.isRadarError && !mintState.fetched,
+          // true/false/"NOT_DETERMINABLE"/null (task 3 stage 7E) -- see determineRadarTokenCheckMissing.
+          radar_token_check_missing: radarTokenCheckMissing,
+          radar_verdict: gateCopyRes.isRadarError ? null : gateCopyRes.body,
+          radar_error: gateCopyRes.isRadarError ? gateCopyRes.body : null,
+          radar_code_version: gitCommit,
+          recorded_at: new Date().toISOString(),
+        };
+
+        rows.push(record);
+
+        if (!dryRun) {
+          try {
+            insertTrade(db, record);
+            savedCount++;
+          } catch (dbErr) {
+            if (!/UNIQUE constraint failed/i.test(dbErr.message)) throw dbErr;
+          }
+        } else {
+          savedCount++;
+        }
+
+        console.log(
+          `[SAVED] strat=${strat} mint=${mint.slice(0, 8)}... pair=${pair.slice(0, 8)}... buyer=${buyerRes.buyer ? buyerRes.buyer.slice(0, 8) + "..." : "NONE"} httpStatus=${gateCopyRes.httpStatus ?? "n/a"} mintRiskFetched=${mintRiskFetched} action=${gateCopyRes.body?.action ?? (gateCopyRes.isRadarError ? "RADAR_ERROR" : "n/a")}`
+        );
+
+        if (consecutiveRadarErrors >= MAX_CONSECUTIVE_RADAR_ERRORS) {
+          console.error(`[FATAL] ${MAX_CONSECUTIVE_RADAR_ERRORS} consecutive RADAR_ERROR responses -- aborting run.`);
+          return { collected: savedCount, ceilingReached: false, tokenTooOldCount, noBuyerCount, poolTooOldCount, processingErrorCount, rows, fatalRadarError: true };
+        }
+      } catch (itemErr) {
+        // Any other rejection reason (task 3 stage 7F): an unexpected RPC/parsing failure
+        // mid-pool, not one of the named checks above. Already logged with a stack trace
+        // via logError; skip_counters gets the same event as a queryable daily aggregate.
+        processingErrorCount++;
+        incrementSkipCounter(db, "PROCESSING_ERROR");
+        logError(db, "collect", `processPool:${pair}`, itemErr);
+        console.error(`[ERROR] Processing pool ${pair}:`, itemErr.message);
+      }
+
+      await sleep(200);
+    }
+
+    console.log(`[COLLECT] Cycle completed. Saved: ${savedCount}. TOKEN_TOO_OLD: ${tokenTooOldCount}. NO_BUYER: ${noBuyerCount}. POOL_TOO_OLD: ${poolTooOldCount}. PROCESSING_ERROR: ${processingErrorCount}.`);
+    return { collected: savedCount, ceilingReached: false, tokenTooOldCount, noBuyerCount, poolTooOldCount, processingErrorCount, rows, fatalRadarError: false };
+  } finally {
+    db.close();
+  }
 }
 
 // CLI entry point
