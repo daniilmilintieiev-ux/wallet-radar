@@ -37,7 +37,7 @@ It enforces safety at two coordinated layers:
       │                                                                                     │
       │  ┌───────────────────────┐   ┌───────────────────────────┐   ┌───────────────────┐  │
       │  │  Behavioral Profiler   │   │     Anomaly Detector      │   │  Decision Engine  │  │
-      │  │ • Bounded USD Baseline │──▶│ • 9 Deterministic Rules   │──▶│ • allow / throttle│  │
+      │  │ • Bounded USD Baseline │──▶│ • 10 Deterministic Rules  │──▶│ • allow / throttle│  │
       │  │ • PnL-Lite FIFO Engine │   │ • Anti-Evasion / Warming  │   │ • block / review  │  │
       │  └───────────────────────┘   └───────────────────────────┘   └───────────────────┘  │
       │                                                                        │            │
@@ -161,7 +161,7 @@ Wallet Radar does not rely on a single defensive checkpoint. It provides an end-
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
 │                   3. DETERMINISTIC DETECTION LAYER                     │
-│    9 Anomaly Rules + Supporting Signals (Zero LLM In Decision Path)    │
+│    10 Anomaly Rules + Supporting Signals (Zero LLM In Decision Path)   │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
@@ -229,27 +229,28 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 
 ---
 
-## 9 Deterministic Anomaly Rules (No Hallucinations)
+## 10 Deterministic Anomaly Rules (No Hallucinations)
 
-Wallet Radar rejects opaque LLM prompts in the critical security path. Detection is 100% deterministic and replayable:
+Wallet Radar rejects opaque LLM prompts in the critical security path. Detection is 100% deterministic and replayable. As implemented in `src/analyzer.ts`, there are **10 primary rules** (below) and **3 supporting signals** (further below) — verified against the code, stage 9B audit:
 
 | Rule | Detection Trigger | Severity | Exploit Vector Mitigated |
 |---|---|---|---|
-| `TOXIC_MINT` | Mint has active freeze/mint authorities or top-10 holders control $\ge 60\%$ supply | Medium / High ($\ge 80\%$) | Honeypots, sudden freeze scams, rugpull dumps |
-| `REGIME_SHIFT` | Structural break: amount ($\ge 3\times$), venue/protocol ($\ge 60\%$), or cadence shift ($\ge 4\times$) | Medium (1 dim) / High ($\ge 2$ dims or $\ge 3$ classes) | Account takeover, private key compromise, bot automation |
+| `TOXIC_MINT` | Mint has an active freeze authority, OR an active mint authority, OR top-10 holders control $\ge 60\%$ supply | Medium, or High if the freeze authority is present, OR concentration $\ge 80\%$, OR (pump.fun token AND (mint authority OR $\ge 60\%$ concentration)) | Honeypots, sudden freeze scams, rugpull dumps |
+| `REGIME_SHIFT` | Structural break: amount ($\ge 3\times$), venue/protocol dominance ($\ge 70\%$), or cadence shift ($\ge 4\times$) | Medium (1 dim) / High ($\ge 2$ dims, or $\ge 3$ distinct anomaly categories with $\ge 2$ substantive ones, or $\ge 4$ categories) | Account takeover, private key compromise, bot automation |
 | `WARMING` | Thin historical baseline ($< 5$ txs) followed immediately by high-severity transactions | Medium | Manufactured reputation evasion by siphoners |
 | `LARGE_SWAP` | Swap size $> N\times$ the wallet's bounded USD median (Jupiter normalized) | High | Whale dumping, flash drain of treasury funds |
 | `ACTIVITY_BURST` | $K+$ transactions in a short window vs historical rate | Medium / High ($\ge 2K$) | Automated sweeping scripts, drainer extraction |
-| `DORMANT_ACTIVE` | Wallet reactivates after $N$ days of inactivity | High | Sleeping exploiter wallets returning to liquidate stolen assets |
+| `DORMANT_ACTIVE` | Wallet reactivates after $N$ days of inactivity | High (or Medium below a 60-day reactivation gap) | Sleeping exploiter wallets returning to liquidate stolen assets |
 | `CONCENTRATION` | Repeated high-frequency swaps into a single token | Medium | Coordinated wash trading, illiquid token pumping |
 | `NEW_VENUE` | First swap on a DEX venue not present in baseline profile | Medium | Unverified liquidity pools, malicious swap contracts |
 | `OFF_HOURS` | Batch $\ge 3$ txs with $\ge 2$ txs ($\ge 50\%$) landing in 0-baseline UTC hours (baseline $\ge 20$ txs) | Medium | Automated draining across sleeping timezones |
+| `TAINTED_FUNDING` | The wallet's very first recorded incoming transfer came from an address on the known-exploiter list. **Only the first incoming transfer is ever checked** — if it isn't from a listed address, the rule does not re-check any later incoming transfer, even from a listed address. | High | Freshly-funded wallets bootstrapped directly from a known drainer/exploiter address |
 
 ### Supporting Behavioral Signals
-In addition to the 9 primary rules, the engine tracks contextual signals that enrich anomaly evidence without causing unilateral blocks:
+In addition to the 10 primary rules, the engine tracks 3 contextual signals that enrich anomaly evidence without causing unilateral blocks on their own:
 - **`NEW_PROTOCOL` (Low Severity)**: Emitted upon first interaction with an on-chain program/contract not present in baseline history.
-- **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 60\%$ of counterparty interactions (min 5 txs) concentrate into a single address.
-- **`COUNTERPARTY_MEMORY`**: Detects relationship escalation, new counterparty emergence, and dominant hub routing.
+- **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 50\%$ of counterparty interactions (min 4 txs) concentrate into a single address.
+- **`COUNTERPARTY_MEMORY`**: Three underlying types (`NEW_COUNTERPARTY`, `COUNTERPARTY_HUB`, `COUNTERPARTY_ESCALATION`, defined in `src/counterparty.ts`) — detects relationship escalation, new counterparty emergence, and dominant hub routing.
 
 ---
 
@@ -328,7 +329,7 @@ npm run radar -- trust <wallet-address> --max-risk 30 --min-liquidity 50
 
 `trust` answers the question every copy-trader and agent asks before copying or paying an unverified wallet: **"is it safe to trust this wallet right now?"**
 
-It combines the behavioral risk score (9 rules over the recent window) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
+It combines the behavioral risk score (9 of the 10 primary rules over the recent window — `TOXIC_MINT` is not evaluated on this path, since `runTrustCheck` does not fetch or pass mint risk data, `src/trust.ts:329`) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 - `safe`: risk under max and liquidity over min threshold.
 - `hold`: data available, but risk exceeds max or liquidity is below minimum.
 - `unknown`: insufficient historical data to safely evaluate (conservative fail-safe).
@@ -361,7 +362,7 @@ Add Wallet Radar to your MCP host configuration (`claude_desktop_config.json`, C
 ```
 
 **Exposed MCP Tools:**
-- `radar_scan`: Live Helius fetch + baseline + 9 rules $\rightarrow$ risk score, evidence, freshness.
+- `radar_scan`: Live Helius fetch + baseline + all 10 rules (this endpoint does fetch mint risk data, so `TOXIC_MINT` is included) $\rightarrow$ risk score, evidence, freshness.
 - `radar_trust`: Binary gate before copy/payment $\rightarrow$ `safe` / `hold` / `unknown`.
 - `radar_simulate`: Pre-trade what-if simulation (liquidity stress, risk delta, limits).
 - `radar_batch`: Safety-gate up to 20 copy-trader wallets in a single deterministic pass.
@@ -511,7 +512,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 ## Status
 
-**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
+**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (10 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
 ## Support
 
