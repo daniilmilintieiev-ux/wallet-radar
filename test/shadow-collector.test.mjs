@@ -33,6 +33,11 @@ import {
   OUTCOME_HORIZON_DAYS,
   MIN_INITIAL_LIQUIDITY_USD,
   LIQUIDITY_T3_RETRY_MAX_DAYS,
+  setGeckoTerminalMinIntervalMsForTests,
+  GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT,
+  categorizeDeferredReason,
+  DEFERRED_CATEGORIES,
+  runOutcomesWorker,
 } from "../scripts/shadow/outcomes.mjs";
 import {
   openDb,
@@ -52,6 +57,12 @@ import path from "node:path";
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
+
+// Stage 7M task 2(b): the real GeckoTerminal request pacing (2.5s default) would make
+// every existing checkPoolLiquidityDrop/fetchGeckoTerminalPoolReserve test slow to the
+// point of timing out -- disabled globally for this file's tests, restored to the real
+// default only inside the dedicated pacing tests below (try/finally).
+setGeckoTerminalMinIntervalMsForTests(0);
 
 describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () => {
   // --- Pure logic ---
@@ -1259,6 +1270,227 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     const res = await checkPoolLiquidityDrop("PairPastDeadline", "MintPastDeadline", 1000, t, null, null, fetchImpl);
     assert.equal(res.irrecoverable, "LIQUIDITY_T3_UNAVAILABLE");
     assert.equal(res.apiError, undefined);
+  });
+
+  // --- Stage 7M task 2(b): GeckoTerminal request pacing + Retry-After-aware backoff ---
+  // Uses a faked setTimeout (records the requested ms, fires immediately) so these
+  // tests verify the actual delay values passed to sleep() without real wall-clock waits.
+
+  test("fetchGeckoTerminalPoolReserve: paces consecutive requests at ~GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT apart", async () => {
+    setGeckoTerminalMinIntervalMsForTests(GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT);
+    const originalSetTimeout = globalThis.setTimeout;
+    const sleptMs = [];
+    globalThis.setTimeout = (cb, ms) => {
+      sleptMs.push(ms);
+      cb();
+      return 0;
+    };
+    try {
+      const fetchImpl = async () => jsonResponse({ data: { attributes: { reserve_in_usd: "100" } } });
+      await fetchGeckoTerminalPoolReserve("PairPace1", null, fetchImpl);
+      assert.ok(
+        sleptMs.some((ms) => ms >= GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT - 100),
+        `expected a pacing sleep near ${GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT}ms (a real GeckoTerminal call happened moments earlier in this same test run), got ${JSON.stringify(sleptMs)}`
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      setGeckoTerminalMinIntervalMsForTests(0);
+    }
+  });
+
+  test("fetchGeckoTerminalPoolReserve: 429 with Retry-After header waits that many seconds, NOT the exponential default", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const sleptMs = [];
+    globalThis.setTimeout = (cb, ms) => {
+      sleptMs.push(ms);
+      cb();
+      return 0;
+    };
+    try {
+      let call = 0;
+      const fetchImpl = async () => {
+        call++;
+        if (call === 1) return new Response(JSON.stringify({ errors: [{ status: "429" }] }), { status: 429, headers: { "retry-after": "5" } });
+        return jsonResponse({ data: { attributes: { reserve_in_usd: "100" } } });
+      };
+      const res = await fetchGeckoTerminalPoolReserve("PairRetryAfter", null, fetchImpl);
+      assert.equal(res.reserveInUsd, 100);
+      assert.ok(sleptMs.includes(5000), `expected a 5000ms sleep from Retry-After: 5, got ${JSON.stringify(sleptMs)}`);
+      assert.ok(!sleptMs.includes(1000), "must not ALSO apply the default 1000ms (attempt 0) exponential backoff on top of Retry-After");
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  test("fetchGeckoTerminalPoolReserve: 429 without Retry-After falls back to exponential backoff (1000 * 2^attempt)", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const sleptMs = [];
+    globalThis.setTimeout = (cb, ms) => {
+      sleptMs.push(ms);
+      cb();
+      return 0;
+    };
+    try {
+      let call = 0;
+      const fetchImpl = async () => {
+        call++;
+        if (call === 1) return new Response(JSON.stringify({ errors: [{ status: "429" }] }), { status: 429 }); // no retry-after header at all
+        return jsonResponse({ data: { attributes: { reserve_in_usd: "100" } } });
+      };
+      const res = await fetchGeckoTerminalPoolReserve("PairNoRetryAfter", null, fetchImpl);
+      assert.equal(res.reserveInUsd, 100);
+      assert.ok(sleptMs.includes(1000), `expected the default 1000ms (attempt 0) exponential backoff, got ${JSON.stringify(sleptMs)}`);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  // --- Stage 7M task 2(a): categorizeDeferredReason ---
+
+  test("categorizeDeferredReason: maps each real error message shape to its category", () => {
+    assert.equal(categorizeDeferredReason("GeckoTerminal 429 Too Many Requests: https://..."), "RATE_LIMIT_429");
+    assert.equal(categorizeDeferredReason("Solana RPC 429 Too Many Requests"), "RATE_LIMIT_429");
+    assert.equal(categorizeDeferredReason("GeckoTerminal HTTP 502: https://..."), "HTTP_5xx");
+    assert.equal(categorizeDeferredReason("GeckoTerminal HTTP 503: https://..."), "HTTP_5xx");
+    assert.equal(categorizeDeferredReason("The operation was aborted due to timeout"), "TIMEOUT");
+    assert.equal(categorizeDeferredReason("fetch failed"), "TIMEOUT");
+    assert.equal(categorizeDeferredReason("GeckoTerminal response not JSON: Unexpected token < in JSON"), "PARSE");
+    assert.equal(categorizeDeferredReason("GeckoTerminal response missing reserve_in_usd"), "NO_FIELD");
+    assert.equal(categorizeDeferredReason("something entirely unrecognized"), "UNKNOWN");
+    assert.equal(categorizeDeferredReason(null), "UNKNOWN");
+  });
+
+  test("DEFERRED_CATEGORIES exports exactly the five categories named in the task", () => {
+    assert.deepEqual(DEFERRED_CATEGORIES, ["RATE_LIMIT_429", "HTTP_5xx", "TIMEOUT", "PARSE", "NO_FIELD"]);
+  });
+
+  // --- Stage 7M tasks 2(a)/2(c)/2(e): runOutcomesWorker -- deferred category persisted,
+  // time limit stops cleanly, summary reflects both.
+
+  test("runOutcomesWorker: a persistently-erroring GeckoTerminal call writes the category into outcome_details AND error_logs, outcome stays NULL", async () => {
+    const tmpDbPath = path.join(os.tmpdir(), `shadow-outcomes-deferred-test-${process.pid}-${Date.now()}.db`);
+    const db = openDb(tmpDbPath);
+    try {
+      insertTrade(db, {
+        mint: "MintDeferredCat1111111111111111111111111111",
+        pair: "PairDeferredCat111111111111111111111111111",
+        t: Math.floor(Date.now() / 1000) - 4 * 86400,
+        liquidity_usd: 5000,
+        liquidity_source: "geckoterminal:reserve_in_usd",
+        strat: "A",
+        buyer: "BuyerDeferredCat11111111111111111111111111",
+        recorded_at: new Date().toISOString(),
+      });
+      db.close();
+
+      const fetchImpl = async (input, init) => {
+        const u = String(input);
+        if (u.includes("/networks/solana/pools/")) return jsonResponse({ error: "server error" }, 500); // HTTP_5xx, no retry (not 429)
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (body.method === "getTokenAccountsByOwner") {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { state: "initialized" } } } } }] } });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      };
+
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = fetchImpl;
+      let result;
+      try {
+        result = await runOutcomesWorker({ dbPath: tmpDbPath, minAgeDays: 3 });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+
+      assert.equal(result.deferred, 1);
+      assert.equal(result.evaluated, 0);
+      assert.equal(result.deferredByCategory.HTTP_5xx, 1);
+
+      const db2 = openDb(tmpDbPath);
+      try {
+        const row = db2.prepare("SELECT outcome, outcome_details FROM shadow_trades WHERE pair = ?").get("PairDeferredCat111111111111111111111111111");
+        assert.equal(row.outcome, null, "outcome must stay NULL so the trade is retried");
+        const details = JSON.parse(row.outcome_details);
+        assert.equal(details.deferredCategory, "HTTP_5xx");
+        assert.match(details.deferredReason, /GeckoTerminal query failed/);
+
+        const errorLogRows = db2.prepare("SELECT * FROM error_logs WHERE action LIKE 'deferred:%'").all();
+        assert.equal(errorLogRows.length, 1);
+        assert.match(errorLogRows[0].details, /HTTP_5xx/);
+      } finally {
+        db2.close();
+      }
+    } finally {
+      // runOutcomesWorker (pre-existing, out of this stage's scope) never closes its own
+      // db handle -- on Windows the file can stay locked a moment after return, so this
+      // cleanup is best-effort, not a test assertion.
+      try {
+        fs.rmSync(tmpDbPath, { force: true });
+      } catch {}
+    }
+  });
+
+  test("runOutcomesWorker: time limit stops cleanly after the first trade, remaining trades stay outcome=NULL", async () => {
+    const tmpDbPath = path.join(os.tmpdir(), `shadow-outcomes-timelimit-test-${process.pid}-${Date.now()}.db`);
+    const db = openDb(tmpDbPath);
+    try {
+      for (const suffix of ["1", "2"]) {
+        insertTrade(db, {
+          mint: `MintTimeLimit${suffix}111111111111111111111111`,
+          pair: `PairTimeLimit${suffix}111111111111111111111111`,
+          t: Math.floor(Date.now() / 1000) - (6 - Number(suffix)) * 86400, // both >= 3 days old (minAgeDays=3); trade 1 is older -> processed first (task 2d)
+          liquidity_usd: 5000,
+          liquidity_source: "geckoterminal:reserve_in_usd",
+          strat: "A",
+          buyer: `BuyerTimeLimit${suffix}11111111111111111111111`,
+          recorded_at: new Date().toISOString(),
+        });
+      }
+      db.close();
+
+      const fetchImpl = async (input, init) => {
+        const u = String(input);
+        if (u.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "5000" } } });
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (body.method === "getTokenAccountsByOwner") {
+          return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { state: "initialized" } } } } }] } });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = fetchImpl;
+
+      // nowFn: call 1 is startedAtMs (t=0), call 2 is the pre-trade-1 check (still t=0 -> proceeds),
+      // call 3 is the pre-trade-2 check (jumps past the 1-minute limit -> stops before trade 2).
+      let nowCall = 0;
+      const nowFn = () => {
+        nowCall++;
+        return nowCall <= 2 ? 0 : 2 * 60 * 1000;
+      };
+
+      let result;
+      try {
+        result = await runOutcomesWorker({ dbPath: tmpDbPath, minAgeDays: 3, timeLimitMinutes: 1, nowFn });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+
+      assert.equal(result.timeLimitExhausted, true);
+      assert.equal(result.evaluated + result.deferred, 1, "exactly one trade processed before the time limit stopped the run");
+
+      const db2 = openDb(tmpDbPath);
+      try {
+        const rows = db2.prepare("SELECT pair, outcome FROM shadow_trades ORDER BY pair").all();
+        const stillNull = rows.filter((r) => r.outcome === null);
+        assert.equal(stillNull.length, 1, "the trade the time limit never reached must stay outcome=NULL for the next pass");
+      } finally {
+        db2.close();
+      }
+    } finally {
+      try {
+        fs.rmSync(tmpDbPath, { force: true });
+      } catch {}
+    }
   });
 
   // --- checkBuyerAccountState with injected fetch ---

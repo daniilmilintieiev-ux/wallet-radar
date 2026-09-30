@@ -75,6 +75,29 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// --- Stage 7M task 2(b): minimum spacing between GeckoTerminal requests ---
+// Reproduced for real (docs/PREREGISTRATION.md section 17, task 1): a tight loop of
+// collect.mjs cycles plus an outcomes.mjs --force-all pass with zero pacing between
+// GeckoTerminal calls produced real HTTP 429s (error_logs, script=outcomes,
+// action=fetchGeckoTerminalPoolReserve) -- exactly the unexplained "API error" deferrals
+// task 1 was asked to diagnose. Only GeckoTerminal calls are paced here (task 2b is
+// scoped to GeckoTerminal specifically); DexScreener (fetchWithRetry) and Solana RPC
+// (rpcCall) are unchanged.
+export const GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT = 2500;
+let geckoTerminalMinIntervalMs = GECKOTERMINAL_MIN_INTERVAL_MS_DEFAULT;
+let lastGeckoTerminalRequestAt = 0;
+
+/** Test-only override for the minimum GeckoTerminal request spacing (default 2500ms). */
+export function setGeckoTerminalMinIntervalMsForTests(ms) {
+  geckoTerminalMinIntervalMs = ms;
+}
+
+async function paceGeckoTerminalRequest() {
+  const wait = geckoTerminalMinIntervalMs - (Date.now() - lastGeckoTerminalRequestAt);
+  if (wait > 0) await sleep(wait);
+  lastGeckoTerminalRequestAt = Date.now();
+}
+
 /** Fetches JSON from URL with retry on 429 and network errors. `fetchImpl` is injectable for tests. */
 export async function fetchWithRetry(url, opts = {}, db = null, retries = 3, fetchImpl = fetch) {
   if (db) {
@@ -202,6 +225,7 @@ export async function fetchGeckoTerminalPoolReserve(pair, db = null, fetchImpl =
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    await paceGeckoTerminalRequest();
     if (db) incrementRequestCounter(db, 1, REQUEST_COUNTER_SCRIPT);
     let res;
     try {
@@ -218,7 +242,11 @@ export async function fetchGeckoTerminalPoolReserve(pair, db = null, fetchImpl =
     if (res.status === 404) return { notFound: true };
     if (res.status === 429) {
       if (attempt < retries) {
-        await sleep(1000 * Math.pow(2, attempt));
+        // Stage 7M task 2(b): respect Retry-After (seconds, per HTTP spec) when GeckoTerminal
+        // sends it; fall back to the existing exponential backoff when it doesn't.
+        const retryAfterHeader = typeof res.headers?.get === "function" ? res.headers.get("retry-after") : null;
+        const retryAfterMs = retryAfterHeader != null && Number.isFinite(Number(retryAfterHeader)) ? Number(retryAfterHeader) * 1000 : null;
+        await sleep(retryAfterMs != null ? retryAfterMs : 1000 * Math.pow(2, attempt));
         continue;
       }
       const err = new Error(`GeckoTerminal 429 Too Many Requests: ${url}`);
@@ -462,17 +490,56 @@ export function classifyOutcome({ isIssuerControlled, checkA, checkB, buyer, iss
   return { outcome: "SAFE", details: { reason: "safe: active token account and liquidity maintained", checkA, checkB } };
 }
 
-/** Runs a single outcomes evaluation pass over pending trades. */
+// --- Stage 7M task 2(a): categorize a deferred (apiError) reason ---
+// Reproduced for real (docs/PREREGISTRATION.md section 17, task 1): before this stage,
+// a deferred trade's actual cause (a real HTTP 429 from GeckoTerminal, in that
+// reproduction) was never surfaced anywhere -- not in the console line, not in
+// outcome_details, not linked to the error_logs row fetchGeckoTerminalPoolReserve
+// already wrote. This does NOT change classifyOutcome or the DANGEROUS/SAFE/etc.
+// thresholds -- purely descriptive bookkeeping for a row that stays outcome=NULL.
+export const DEFERRED_CATEGORIES = ["RATE_LIMIT_429", "HTTP_5xx", "TIMEOUT", "PARSE", "NO_FIELD"];
+
+/** Maps a thrown error's message to one of the five known categories, else "UNKNOWN". */
+export function categorizeDeferredReason(message) {
+  const m = String(message || "");
+  if (/429/.test(m)) return "RATE_LIMIT_429";
+  if (/HTTP 5\d\d/.test(m)) return "HTTP_5xx";
+  if (/timeout|fetch failed|ECONNRESET|ETIMEDOUT|aborted/i.test(m)) return "TIMEOUT";
+  if (/not JSON|JSON\.parse|Unexpected token/i.test(m)) return "PARSE";
+  if (/missing .*(reserve_in_usd|field)/i.test(m)) return "NO_FIELD";
+  return "UNKNOWN";
+}
+
+/**
+ * Records a deferred trade's category/reason into outcome_details WITHOUT ever setting
+ * `outcome` (must stay NULL so getPendingTrades keeps retrying it) -- a direct UPDATE,
+ * not updateTradeOutcome (which always sets both columns together).
+ */
+function recordDeferredReason(db, id, category, message) {
+  const detailsStr = JSON.stringify({ deferredCategory: category, deferredReason: message, deferredAt: new Date().toISOString() });
+  db.prepare(`UPDATE shadow_trades SET outcome_details = ? WHERE id = ? AND outcome IS NULL`).run(detailsStr, id);
+}
+
+/**
+ * Runs a single outcomes evaluation pass over pending trades, oldest `t` first
+ * (task 2d -- unchanged, already how db.mjs's getPendingTrades orders its query).
+ * Stops cleanly once `timeLimitMinutes` (default 90) of wall-clock time has elapsed
+ * (task 2c) -- trades not yet reached stay outcome=NULL, picked up by the next pass.
+ */
 export async function runOutcomesWorker(opts = {}) {
   const dbPath = opts.dbPath || DEFAULT_DB_PATH;
   const minAgeDays = opts.minAgeDays != null ? opts.minAgeDays : OUTCOME_HORIZON_DAYS;
   const dryRun = Boolean(opts.dryRun);
   const limit = opts.limit || null;
+  const timeLimitMinutes = opts.timeLimitMinutes != null ? opts.timeLimitMinutes : 90;
+  const timeLimitMs = timeLimitMinutes * 60 * 1000;
+  const nowFn = opts.nowFn || Date.now;
+  const startedAtMs = nowFn();
 
   const db = openDb(dbPath);
   const issuerMap = loadIssuerControlledMints(opts.issuerFilePath || DEFAULT_ISSUER_FILE);
 
-  console.log(`[OUTCOMES] Starting worker. DB: ${dbPath}, Min Age Days: ${minAgeDays}`);
+  console.log(`[OUTCOMES] Starting worker. DB: ${dbPath}, Min Age Days: ${minAgeDays}, Time limit: ${timeLimitMinutes} min`);
   console.log(`[OUTCOMES] Loaded ${issuerMap.size} pre-registered issuer-controlled mints.`);
 
   const pending = getPendingTrades(db, minAgeDays);
@@ -481,8 +548,17 @@ export async function runOutcomesWorker(opts = {}) {
   const batch = limit ? pending.slice(0, limit) : pending;
   let evaluatedCount = 0;
   let deferredCount = 0;
+  const deferredByCategory = {};
+  let timeLimitExhausted = false;
+  let processedInThisPass = 0;
 
   for (const trade of batch) {
+    if (nowFn() - startedAtMs >= timeLimitMs) {
+      timeLimitExhausted = true;
+      console.log(`[OUTCOMES] Time limit (${timeLimitMinutes} min) reached -- stopping cleanly. ${batch.length - processedInThisPass} trade(s) left unprocessed, outcome stays NULL.`);
+      break;
+    }
+
     try {
       const isIssuer = issuerMap.has(trade.mint);
       const issuerRecord = isIssuer ? issuerMap.get(trade.mint) : null;
@@ -494,7 +570,13 @@ export async function runOutcomesWorker(opts = {}) {
 
       if (result.outcome === null) {
         deferredCount++;
-        console.log(`[DEFERRED] ID ${trade.id} | Mint: ${trade.mint.slice(0, 8)}... -> API error, left NULL for retry`);
+        const message = checkB?.apiError ? checkB.reason : checkA?.apiError ? checkA.reason : (result.details?.reason || "unknown");
+        const category = categorizeDeferredReason(message);
+        deferredByCategory[category] = (deferredByCategory[category] || 0) + 1;
+        if (!dryRun) recordDeferredReason(db, trade.id, category, message);
+        logError(db, "outcomes", `deferred:${trade.id}`, message, { tradeId: trade.id, category });
+        console.log(`[DEFERRED] ID ${trade.id} | Mint: ${trade.mint.slice(0, 8)}... -> ${category}: ${message}`);
+        processedInThisPass++;
         continue;
       }
 
@@ -503,17 +585,29 @@ export async function runOutcomesWorker(opts = {}) {
       }
 
       evaluatedCount++;
+      processedInThisPass++;
       console.log(`[OUTCOME] ID ${trade.id} | Mint: ${trade.mint.slice(0, 8)}... | Buyer: ${trade.buyer ? trade.buyer.slice(0, 8) + "..." : "NONE"} -> ${result.outcome}`);
     } catch (err) {
       logError(db, "outcomes", `evaluateTrade:${trade.id}`, err);
       console.error(`[ERROR] Evaluating trade ${trade.id}:`, err.message);
+      processedInThisPass++;
     }
 
     await sleep(200);
   }
 
-  console.log(`[OUTCOMES] Pass completed. Evaluated: ${evaluatedCount}. Deferred (API error, retry later): ${deferredCount}.`);
-  return { evaluated: evaluatedCount, deferred: deferredCount };
+  // Task 2(e): run summary -- processed / deferred by category / time-limit-exhausted flag.
+  const categorySummary =
+    Object.keys(deferredByCategory).length === 0
+      ? "none"
+      : DEFERRED_CATEGORIES.concat(["UNKNOWN"])
+          .filter((c) => deferredByCategory[c])
+          .map((c) => `${c}: ${deferredByCategory[c]}`)
+          .join(", ");
+  console.log(
+    `[OUTCOMES] Pass completed. Evaluated: ${evaluatedCount}. Deferred: ${deferredCount} (${categorySummary}). Time limit exhausted: ${timeLimitExhausted}.`
+  );
+  return { evaluated: evaluatedCount, deferred: deferredCount, deferredByCategory, timeLimitExhausted };
 }
 
 // CLI entry point
@@ -524,6 +618,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let dryRun = false;
   let customDb = null;
   let forceAll = false;
+  let timeLimitMinutes = undefined; // undefined -> runOutcomesWorker's own default (90)
 
   for (const a of args) {
     if (a.startsWith("--min-age-days=")) minAgeDays = parseFloat(a.split("=")[1]);
@@ -531,6 +626,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     else if (a.startsWith("--limit=")) limit = parseInt(a.split("=")[1], 10);
     else if (a === "--dry-run") dryRun = true;
     else if (a.startsWith("--db=")) customDb = a.split("=")[1];
+    else if (a.startsWith("--time-limit-minutes=")) timeLimitMinutes = parseFloat(a.split("=")[1]); // task 2c
   }
 
   // Task 5e: --force-all (minAgeDays=0, evaluates trades regardless of age)
@@ -547,7 +643,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     minAgeDays = 0;
   }
 
-  runOutcomesWorker({ dbPath: customDb, minAgeDays, limit, dryRun })
+  runOutcomesWorker({ dbPath: customDb, minAgeDays, limit, dryRun, timeLimitMinutes })
     .then(() => process.exit(0))
     .catch((err) => {
       console.error("Fatal error:", err);
