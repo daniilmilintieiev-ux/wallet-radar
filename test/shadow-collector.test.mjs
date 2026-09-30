@@ -479,6 +479,115 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     }
   });
 
+  // --- Task 2 (stage 7K): HTTP 200 + invalid body = BAD_RESPONSE, never a verdict ---
+
+  test("queryGateCopy: HTTP 200 with a non-JSON body -> BAD_RESPONSE (isRadarError:true), body truncated to 500 chars, never parsed as a verdict", async () => {
+    const originalFetch = globalThis.fetch;
+    const garbage = "<html>not json at all</html>";
+    globalThis.fetch = async () => new Response(garbage, { status: 200, headers: { "Content-Type": "text/html" } });
+    try {
+      const res = await queryGateCopy("http://localhost:7690", "SomeBuyer1111111111111111111111111111111", "SomeMint11111111111111111111111111111111", COPY_AMOUNT_USD);
+      assert.equal(res.isRadarError, true);
+      assert.equal(res.httpStatus, 200);
+      assert.equal(res.badResponse, true);
+      assert.equal(res.body, garbage, "body is the raw text (short enough here to be unchanged), not a parsed object");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("queryGateCopy: HTTP 200 with valid JSON but no string `action` field -> BAD_RESPONSE", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => jsonResponse({ allow: true, riskScore: 5 }, 200); // no `action` key at all
+    try {
+      const res = await queryGateCopy("http://localhost:7690", "SomeBuyer1111111111111111111111111111111", "SomeMint11111111111111111111111111111111", COPY_AMOUNT_USD);
+      assert.equal(res.isRadarError, true);
+      assert.equal(res.badResponse, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("queryGateCopy: HTTP 200 with `action` as a non-string (e.g. number) -> BAD_RESPONSE", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => jsonResponse({ allow: true, action: 42 }, 200);
+    try {
+      const res = await queryGateCopy("http://localhost:7690", "SomeBuyer1111111111111111111111111111111", "SomeMint11111111111111111111111111111111", COPY_AMOUNT_USD);
+      assert.equal(res.isRadarError, true);
+      assert.equal(res.badResponse, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("queryGateCopy: HTTP 200 non-JSON body longer than 500 chars is truncated", async () => {
+    const originalFetch = globalThis.fetch;
+    const longGarbage = "x".repeat(1000);
+    globalThis.fetch = async () => new Response(longGarbage, { status: 200 });
+    try {
+      const res = await queryGateCopy("http://localhost:7690", "SomeBuyer1111111111111111111111111111111", "SomeMint11111111111111111111111111111111", COPY_AMOUNT_USD);
+      assert.equal(res.body.length, 500);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("runCollectionCycle: BAD_RESPONSE (200, invalid body) increments skip_counters RADAR_ERROR and the consecutive-error counter, radar_verdict stays NULL, radar_error holds the truncated body", async () => {
+    const pair = "PairBadResponse111111111111111111111111111";
+    const mint = "MintBadResponse111111111111111111111111111";
+    const creator = "CreatorBadResponse11111111111111111111111111";
+    const buyer = "BuyerBadResponse111111111111111111111111111";
+    const creationSig = { signature: "creationSigBR", blockTime: 1000 };
+    const buySig = { signature: "buySigBR", blockTime: 1010 };
+    const pools = [{ pair, mint, dexId: "raydium", poolCreatedAtMs: Date.now() - 60_000, poolCreatedAtIso: new Date(Date.now() - 60_000).toISOString(), reserveInUsd: 5000 }];
+    const tmpDbPath = path.join(os.tmpdir(), `shadow-bad-response-test-${process.pid}-${Date.now()}.db`);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("dexscreener.com")) return jsonResponse({ pairs: [{ pairCreatedAt: Date.now() - 60_000 }] });
+      if (url.includes("/gate-copy")) return new Response("not json", { status: 200 });
+      const body = JSON.parse(init.body);
+      if (body.method === "getAccountInfo") {
+        const addr = body.params[0];
+        if (addr === buyer) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111", executable: false } } });
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { info: {} } } } } });
+      }
+      if (body.method === "getSignaturesForAddress") return jsonResponse({ jsonrpc: "2.0", id: 1, result: [buySig, creationSig] });
+      if (body.method === "getTransaction") {
+        const sig = body.params[0];
+        if (sig === creationSig.signature) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { transaction: { message: { accountKeys: [creator] } }, blockTime: creationSig.blockTime } });
+        if (sig === buySig.signature) {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { blockTime: buySig.blockTime, meta: { preTokenBalances: [], postTokenBalances: [{ mint, owner: buyer, accountIndex: 0, uiTokenAmount: { amount: "1" } }] } },
+          });
+        }
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: null });
+    };
+    try {
+      const result = await runCollectionCycle({ dbPath: tmpDbPath, radarUrl: "http://fake-radar", pools, budgetPools: 1 });
+      assert.equal(result.rows.length, 1);
+      assert.equal(result.rows[0].http_status, 200);
+      assert.equal(result.rows[0].radar_verdict, null);
+      assert.equal(result.rows[0].radar_error, "not json");
+
+      const db = openDb(tmpDbPath);
+      try {
+        const byReason = Object.fromEntries(getSkipCounters(db).map((r) => [r.reason, r.count]));
+        assert.equal(byReason.RADAR_ERROR, 1);
+      } finally {
+        db.close();
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(tmpDbPath, { force: true });
+    }
+  });
+
   test(`runCollectionCycle: ${MAX_CONSECUTIVE_RADAR_ERRORS} consecutive RADAR_ERROR responses abort the cycle (fatalRadarError:true), never recorded as a verdict (stage 7D task 3)`, async () => {
     const n = MAX_CONSECUTIVE_RADAR_ERRORS;
     const pools = Array.from({ length: n }, (_, i) => ({

@@ -64,7 +64,7 @@ const BUYER_CANDIDATE_SCAN_LIMIT = 20; // how many post-creation signatures to t
 // Without a per-cycle budget, a cycle greedily processes every fresh pool
 // fetchFreshPools returns and exhausts the whole day's DAILY_REQUEST_CEILING_COLLECT
 // within the first 1-2 hours, leaving zero collection for the rest of the day.
-export const REQUESTS_PER_POOL = 7; // measured in the 20-pool dry run: 138 requests / 20 pools = 6.9, rounded up
+export const REQUESTS_PER_POOL = 10; // stage 7K task 3: re-measured (204 requests / 22 pools = 9.27), rounded up -- was 7 (138/20=6.9)
 export const DEFAULT_POLL_INTERVAL_MINUTES = 15;
 
 /**
@@ -458,13 +458,35 @@ export async function queryGateCopy(radarUrl, buyer, mint, copyAmountUsd = COPY_
       body: JSON.stringify({ targetWallet: buyer, mint, copyAmountUsd }),
       signal: AbortSignal.timeout(10000),
     });
+    const rawText = await res.text();
     let body = null;
+    let parseFailed = false;
     try {
-      body = await res.json();
+      body = JSON.parse(rawText);
     } catch {
-      body = null;
+      parseFailed = true;
     }
-    return { httpStatus: res.status, body, isRadarError: res.status !== 200 };
+
+    if (res.status !== 200) {
+      return { httpStatus: res.status, body, isRadarError: true };
+    }
+
+    // Stage 7K task 2: HTTP 200 but the body isn't JSON, or is JSON without a string
+    // `action` field -- BAD_RESPONSE. Never treated as a real verdict: isRadarError:true
+    // routes it through the same RADAR_ERROR/consecutive-error bookkeeping the caller
+    // (runCollectionCycle) already applies to non-200 responses. body is the raw text,
+    // truncated to 500 chars, so radar_error stores what actually came back rather than
+    // a fabricated object.
+    if (parseFailed || typeof body?.action !== "string") {
+      return {
+        httpStatus: res.status,
+        body: rawText.slice(0, 500),
+        isRadarError: true,
+        badResponse: true,
+      };
+    }
+
+    return { httpStatus: res.status, body, isRadarError: false };
   } catch (err) {
     return { httpStatus: null, body: { error: `Radar call failed: ${err.message}` }, isRadarError: true };
   }
