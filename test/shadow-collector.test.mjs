@@ -1082,7 +1082,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "500" } } });
       throw new Error("unexpected URL " + url + " -- migration search must not run below the 0.9 threshold");
     };
-    const res = await checkPoolLiquidityDrop("PairHalf", "MintHalf", 1000, 1_000_000, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairHalf", "MintHalf", 1000, 1_000_000, null, null, fetchImpl);
     assert.ok(Math.abs(res.drop - 0.5) < 1e-9);
     assert.equal(res.migration, false, "below-threshold drops still report migration:false (no migration search runs, but the field is present)");
     assert.equal(res.migrationUndetermined, undefined);
@@ -1094,10 +1094,66 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       if (url.includes("/tokens/")) return jsonResponse({ pairs: [] });
       throw new Error("unexpected URL " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairAAA", "MintAAA", 1000, 1_000_000, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairAAA", "MintAAA", 1000, 1_000_000, null, null, fetchImpl);
     assert.ok(Math.abs(res.drop - 0.95) < 1e-9);
     assert.equal(res.migration, false);
     assert.equal(res.apiError, undefined);
+  });
+
+  // --- Stage 7L task 1 (docs/PREREGISTRATION.md section 16): dropCause / priceRatio ---
+
+  test("checkPoolLiquidityDrop: dropCause=UNDETERMINED when initialPriceUsd is null (no price at t)", async () => {
+    const fetchImpl = async (url) => {
+      if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "50", base_token_price_usd: "0.001" } } });
+      if (url.includes("/tokens/")) return jsonResponse({ pairs: [] });
+      throw new Error("unexpected URL " + url);
+    };
+    const res = await checkPoolLiquidityDrop("PairPriceNullSeen", "MintPriceNullSeen", 1000, 1_000_000, null, null, fetchImpl);
+    assert.equal(res.dropCause, "UNDETERMINED");
+    assert.equal(res.priceRatio, null);
+  });
+
+  test("checkPoolLiquidityDrop: dropCause=UNDETERMINED when base_token_price_usd is missing at t+3", async () => {
+    const fetchImpl = async (url) => {
+      if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "50" } } }); // no base_token_price_usd
+      if (url.includes("/tokens/")) return jsonResponse({ pairs: [] });
+      throw new Error("unexpected URL " + url);
+    };
+    const res = await checkPoolLiquidityDrop("PairPriceNullT3", "MintPriceNullT3", 1000, 1_000_000, 1.0, null, fetchImpl);
+    assert.equal(res.dropCause, "UNDETERMINED");
+    assert.equal(res.priceRatio, null);
+  });
+
+  test("checkPoolLiquidityDrop: dropCause=PRICE_CRASH when price fell >90%% even though reserve also fell (constant-product sqrt relation, section 16)", async () => {
+    // initialLiquidityUsd=1000, reserve at t+3=50 -> drop=0.95. Price ratio 0.01/1.0=0.01 <= 0.1 -> PRICE_CRASH.
+    const fetchImpl = async (url) => {
+      if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "50", base_token_price_usd: "0.01" } } });
+      if (url.includes("/tokens/")) return jsonResponse({ pairs: [] });
+      throw new Error("unexpected URL " + url);
+    };
+    const res = await checkPoolLiquidityDrop("PairPriceCrash", "MintPriceCrash", 1000, 1_000_000, 1.0, null, fetchImpl);
+    assert.equal(res.dropCause, "PRICE_CRASH");
+    assert.ok(Math.abs(res.priceRatio - 0.01) < 1e-9);
+  });
+
+  test("checkPoolLiquidityDrop: dropCause=LIQUIDITY_REMOVAL when reserve fell >90%% but price held (real withdrawal, not a price crash)", async () => {
+    const fetchImpl = async (url) => {
+      if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "50", base_token_price_usd: "0.95" } } });
+      if (url.includes("/tokens/")) return jsonResponse({ pairs: [] });
+      throw new Error("unexpected URL " + url);
+    };
+    const res = await checkPoolLiquidityDrop("PairLiqRemoval", "MintLiqRemoval", 1000, 1_000_000, 1.0, null, fetchImpl);
+    assert.equal(res.dropCause, "LIQUIDITY_REMOVAL");
+    assert.ok(Math.abs(res.priceRatio - 0.95) < 1e-9);
+  });
+
+  test("checkPoolLiquidityDrop: drop < 0.9 never computes dropCause (field absent)", async () => {
+    const fetchImpl = async (url) => {
+      if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: { reserve_in_usd: "500", base_token_price_usd: "1.0" } } });
+      throw new Error("unexpected URL " + url + " -- migration search (and dropCause) must not run below the 0.9 threshold");
+    };
+    const res = await checkPoolLiquidityDrop("PairHalfCause", "MintHalfCause", 1000, 1_000_000, 1.0, null, fetchImpl);
+    assert.equal(res.dropCause, undefined);
   });
 
   test("checkPoolLiquidityDrop: drop=0.95 WITH a successor created AFTER t -> counted as migration", async () => {
@@ -1111,7 +1167,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       }
       throw new Error("unexpected URL " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairBBB", "MintBBB", 1000, t, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairBBB", "MintBBB", 1000, t, null, null, fetchImpl);
     assert.ok(Math.abs(res.drop - 0.95) < 1e-9);
     assert.equal(res.migration, true, "successor created after t must count as a migration");
   });
@@ -1127,7 +1183,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       }
       throw new Error("unexpected URL " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairCCC", "MintCCC", 1000, t, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairCCC", "MintCCC", 1000, t, null, null, fetchImpl);
     assert.equal(res.migration, false, "a pool that predates t is not a successor, even with high liquidity");
     assert.ok(Math.abs(res.drop - 0.99) < 1e-9);
   });
@@ -1139,14 +1195,14 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       if (url.includes("/tokens/")) return jsonResponse({ pairs: [{ pairAddress: "UncheckablePair", dexId: "raydium", pairCreatedAt: (t + 3600) * 1000 }] }); // no liquidity key at all
       throw new Error("unexpected URL " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairUncheckable", "MintUncheckable", 1000, t, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairUncheckable", "MintUncheckable", 1000, t, null, null, fetchImpl);
     assert.equal(res.migrationUndetermined, true);
     assert.equal(res.migration, false);
   });
 
   test("checkPoolLiquidityDrop: GeckoTerminal API failure (500) -> apiError:true, no drop inferred, retried within the 3-day window", async () => {
     const fetchImpl = async () => jsonResponse({ error: "server error" }, 500);
-    const res = await checkPoolLiquidityDrop("PairDDD", "MintDDD", 1000, Math.floor(Date.now() / 1000), null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairDDD", "MintDDD", 1000, Math.floor(Date.now() / 1000), null, null, fetchImpl);
     assert.equal(res.apiError, true);
     assert.equal(res.drop, undefined, "must not fabricate a drop value on API failure");
     assert.equal(res.irrecoverable, undefined);
@@ -1157,7 +1213,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       if (url.includes("/networks/solana/pools/")) return jsonResponse({ data: { attributes: {} } }); // no reserve_in_usd key
       throw new Error("unexpected URL " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairMissingField", "MintMissingField", 1000, Math.floor(Date.now() / 1000), null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairMissingField", "MintMissingField", 1000, Math.floor(Date.now() / 1000), null, null, fetchImpl);
     assert.equal(res.apiError, true);
     assert.equal(res.drop, undefined);
   });
@@ -1167,7 +1223,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       if (url.includes("/networks/solana/pools/")) return jsonResponse({ errors: [{ status: "404", title: "Not Found" }] }, 404);
       throw new Error("unexpected URL " + url + " -- 404 must short-circuit, no migration search");
     };
-    const res = await checkPoolLiquidityDrop("PairEEE", "MintEEE", 1000, 1_000_000, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairEEE", "MintEEE", 1000, 1_000_000, null, null, fetchImpl);
     assert.equal(res.pairMissing, true);
     assert.equal(res.drop, null);
   });
@@ -1176,7 +1232,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     const fetchImpl = async (url) => {
       throw new Error("must not make any request when L_t is NULL -- got " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairNullLt", "MintNullLt", null, 1_000_000, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairNullLt", "MintNullLt", null, 1_000_000, null, null, fetchImpl);
     assert.equal(res.irrecoverable, "NO_LIQUIDITY_AT_T");
     assert.equal(res.drop, null);
   });
@@ -1185,14 +1241,14 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     const fetchImpl = async (url) => {
       throw new Error("must not make any request when L_t is below the floor -- got " + url);
     };
-    const res = await checkPoolLiquidityDrop("PairLowLt", "MintLowLt", 999.99, 1_000_000, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairLowLt", "MintLowLt", 999.99, 1_000_000, null, null, fetchImpl);
     assert.equal(res.irrecoverable, "NO_LIQUIDITY_AT_T");
   });
 
   test("checkPoolLiquidityDrop: L_t3 unavailable, still within the 3-day retry window -> apiError (retry later), not irrecoverable", async () => {
     const t = Math.floor(Date.now() / 1000) - (OUTCOME_HORIZON_DAYS + 1) * 86400; // 1 day past t+3, within the 3-day window
     const fetchImpl = async () => jsonResponse({ error: "server error" }, 500);
-    const res = await checkPoolLiquidityDrop("PairRetryWindow", "MintRetryWindow", 1000, t, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairRetryWindow", "MintRetryWindow", 1000, t, null, null, fetchImpl);
     assert.equal(res.apiError, true);
     assert.equal(res.irrecoverable, undefined);
   });
@@ -1200,7 +1256,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
   test("checkPoolLiquidityDrop: L_t3 unavailable, past the 3-day retry window -> невосстановимо (ликвидность недоступна)", async () => {
     const t = Math.floor(Date.now() / 1000) - (OUTCOME_HORIZON_DAYS + LIQUIDITY_T3_RETRY_MAX_DAYS + 1) * 86400; // past the deadline
     const fetchImpl = async () => jsonResponse({ error: "server error" }, 500);
-    const res = await checkPoolLiquidityDrop("PairPastDeadline", "MintPastDeadline", 1000, t, null, fetchImpl);
+    const res = await checkPoolLiquidityDrop("PairPastDeadline", "MintPastDeadline", 1000, t, null, null, fetchImpl);
     assert.equal(res.irrecoverable, "LIQUIDITY_T3_UNAVAILABLE");
     assert.equal(res.apiError, undefined);
   });
@@ -1254,10 +1310,31 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
     assert.equal(pools[0].reserveInUsd, null);
   });
 
+  // --- Stage 7L task 2: base_token_price_usd (price_usd_seen), same object as reserve_in_usd ---
+
+  test("fetchFreshPools: priceUsdSeen parsed as a number from base_token_price_usd, same response as reserveInUsd", async () => {
+    const now = Date.now();
+    const fresh = { attributes: { address: "PricedPair111", pool_created_at: new Date(now - 2 * 60 * 1000).toISOString(), reserve_in_usd: "2647.89", base_token_price_usd: "0.0000033777" }, relationships: { dex: { data: { id: "pumpswap" } }, base_token: { data: { id: "solana_PricedMint111111111111111111111111111" } } } };
+    const fetchImpl = async () => jsonResponse({ data: [fresh] });
+    const pools = await fetchFreshPools(null, fetchImpl, 1);
+    assert.equal(pools.length, 1);
+    assert.equal(pools[0].priceUsdSeen, 0.0000033777);
+  });
+
+  test("fetchFreshPools: priceUsdSeen is null (not 0, not skipped) when base_token_price_usd is absent", async () => {
+    const now = Date.now();
+    const noPrice = { attributes: { address: "NoPricePair", pool_created_at: new Date(now - 1000).toISOString(), reserve_in_usd: "500" }, relationships: { dex: { data: { id: "raydium" } }, base_token: { data: { id: "solana_NoPriceMint111111111111111111111111" } } } };
+    const fetchImpl = async () => jsonResponse({ data: [noPrice] });
+    const pools = await fetchFreshPools(null, fetchImpl, 1);
+    assert.equal(pools.length, 1, "the pool itself is still returned, only priceUsdSeen is null");
+    assert.equal(pools[0].priceUsdSeen, null);
+    assert.equal(pools[0].reserveInUsd, 500, "reserveInUsd is unaffected by a missing price field");
+  });
+
   test("runCollectionCycle: liquidity_usd/liquidity_source populated from reserveInUsd, LIQUIDITY_T_MISSING NOT incremented when present", async () => {
     const pair = "PairLiqPresent1111111111111111111111111111";
     const mint = "MintLiqPresent1111111111111111111111111111";
-    const pools = [{ pair, mint, dexId: "raydium", poolCreatedAtMs: Date.now() - 60_000, poolCreatedAtIso: new Date(Date.now() - 60_000).toISOString(), reserveInUsd: 5000.5 }];
+    const pools = [{ pair, mint, dexId: "raydium", poolCreatedAtMs: Date.now() - 60_000, poolCreatedAtIso: new Date(Date.now() - 60_000).toISOString(), reserveInUsd: 5000.5, priceUsdSeen: 0.0042 }];
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
@@ -1275,6 +1352,7 @@ describe("Shadow Collector Unit Tests (Offline / Mocked, fetch injected)", () =>
       assert.equal(result.rows.length, 1);
       assert.equal(result.rows[0].liquidity_usd, 5000.5);
       assert.equal(result.rows[0].liquidity_source, "geckoterminal:reserve_in_usd");
+      assert.equal(result.rows[0].price_usd_seen, 0.0042, "stage 7L task 2: price_usd_seen saved from the same pool object as reserveInUsd");
     } finally {
       globalThis.fetch = originalFetch;
     }

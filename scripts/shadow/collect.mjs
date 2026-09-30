@@ -534,7 +534,11 @@ export async function fetchFreshPools(db = null, fetchImpl = fetch, maxPages = 5
         // arrives in this same response, no extra request needed to get liquidity at t.
         const reserveRaw = p.attributes?.reserve_in_usd;
         const reserveInUsd = reserveRaw != null && Number.isFinite(Number(reserveRaw)) ? Number(reserveRaw) : null;
-        pools.push({ pair: address, mint, dexId, poolCreatedAtMs: createdAtMs, poolCreatedAtIso: createdAtStr, reserveInUsd });
+        // Stage 7L task 2: base_token_price_usd from this SAME object, no extra request.
+        // NULL when absent -- never fabricated (same convention as reserveInUsd above).
+        const priceRaw = p.attributes?.base_token_price_usd;
+        const priceUsdSeen = priceRaw != null && Number.isFinite(Number(priceRaw)) ? Number(priceRaw) : null;
+        pools.push({ pair: address, mint, dexId, poolCreatedAtMs: createdAtMs, poolCreatedAtIso: createdAtStr, reserveInUsd, priceUsdSeen });
       }
     }
     // Pages are newest-first; once a page has no fresh entries, older pages are all stale too.
@@ -719,6 +723,8 @@ export async function runCollectionCycle(opts = {}) {
           t: buyerRes.t ?? Math.floor((p.poolCreatedAtMs || Date.now()) / 1000),
           liquidity_usd: liquidityUsd,
           liquidity_source: liquiditySource,
+          // Stage 7L task 2: same source object as liquidity_usd, no extra request.
+          price_usd_seen: p.priceUsdSeen ?? null,
           mint_authority: mintState.mintAuthority,
           freeze_authority: mintState.freezeAuthority,
           token_program: mintState.tokenProgram,

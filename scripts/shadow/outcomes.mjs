@@ -244,7 +244,13 @@ export async function fetchGeckoTerminalPoolReserve(pair, db = null, fetchImpl =
       if (db) logError(db, "outcomes", "fetchGeckoTerminalPoolReserve:missingField", err, { pair });
       throw err;
     }
-    return { reserveInUsd: Number(raw) };
+    // Stage 7L task 2: base_token_price_usd from this SAME response, no extra request.
+    // Unlike reserve_in_usd, a missing/non-numeric price does NOT throw -- the drop
+    // computation does not depend on it, only the descriptive PRICE_CRASH/LIQUIDITY_REMOVAL
+    // cause field does, and that field has its own UNDETERMINED state for exactly this case.
+    const rawPrice = data?.data?.attributes?.base_token_price_usd;
+    const priceUsd = rawPrice != null && Number.isFinite(Number(rawPrice)) ? Number(rawPrice) : null;
+    return { reserveInUsd: Number(raw), priceUsd };
   }
 }
 
@@ -262,8 +268,17 @@ export async function fetchGeckoTerminalPoolReserve(pair, db = null, fetchImpl =
  *   { pairMissing: true, drop: null, ... }              -- GeckoTerminal HTTP 404 on the pool
  *   { drop, migrationUndetermined: true, ... }          -- drop>=0.9 but a candidate successor pair has no liquidity field to check
  *   { drop, migration: true/false, ... }                -- normal result, drop is a real number (can be negative)
+ *
+ * Stage 7L task 1 (docs/PREREGISTRATION.md section 16, correcting 15д): reserve_in_usd
+ * collapsing >=90% does NOT mean liquidity was withdrawn -- for a constant-product pool
+ * (x*y=k, no LP add/remove), reserve_in_usd is proportional to sqrt(price), so a price
+ * crash of ~99% alone produces the same ~90% reserve drop. Whenever drop>=0.9, this also
+ * computes a descriptive (non-authoritative) `dropCause`: "PRICE_CRASH" | "LIQUIDITY_REMOVAL"
+ * | "UNDETERMINED" (no price data), plus `priceRatio` when computable. This does NOT change
+ * the DANGEROUS/migration/migrationUndetermined classification itself, which still depends
+ * only on `drop` and the migration search below.
  */
-export async function checkPoolLiquidityDrop(pair, mint, initialLiquidityUsd, t, db = null, fetchImpl = fetch, nowMs = Date.now()) {
+export async function checkPoolLiquidityDrop(pair, mint, initialLiquidityUsd, t, initialPriceUsd = null, db = null, fetchImpl = fetch, nowMs = Date.now()) {
   // Rule: L_t missing or below the floor -- irrecoverable, never even attempt L_t3
   // (there is nothing meaningful to compute a ratio against).
   if (initialLiquidityUsd == null || initialLiquidityUsd < MIN_INITIAL_LIQUIDITY_USD) {
@@ -315,6 +330,18 @@ export async function checkPoolLiquidityDrop(pair, mint, initialLiquidityUsd, t,
   const drop = (initialLiquidityUsd - currentLiquidityUsd) / initialLiquidityUsd;
 
   if (drop >= 0.9) {
+    // Stage 7L task 1: descriptive (non-authoritative) cause of the reserve collapse.
+    // priceUsd here is base_token_price_usd at t+3, from the SAME GeckoTerminal call
+    // that produced currentLiquidityUsd above -- no extra request.
+    let dropCause;
+    let priceRatio = null;
+    if (initialPriceUsd == null || reserveRes.priceUsd == null) {
+      dropCause = "UNDETERMINED";
+    } else {
+      priceRatio = reserveRes.priceUsd / initialPriceUsd;
+      dropCause = priceRatio <= 0.1 ? "PRICE_CRASH" : "LIQUIDITY_REMOVAL";
+    }
+
     // Successor/migration search still uses DexScreener /tokens/{mint} (unchanged source
     // for THIS sub-check -- only the L_t/L_t3 comparison itself moved to GeckoTerminal).
     let tokenData;
@@ -324,7 +351,7 @@ export async function checkPoolLiquidityDrop(pair, mint, initialLiquidityUsd, t,
       if (db) logError(db, "outcomes", "checkPoolLiquidityDrop:migration", err, { mint });
       // The drop itself IS known (from GeckoTerminal, independent of this call) -- only
       // the migration-vs-not distinction is unknown, so this is undetermined, not apiError.
-      return { drop, initialLiquidityUsd, currentLiquidityUsd, migration: false, migrationUndetermined: true, reason: `миграция не определена: DexScreener tokens query failed: ${err.message}` };
+      return { drop, initialLiquidityUsd, currentLiquidityUsd, dropCause, priceRatio, migration: false, migrationUndetermined: true, reason: `миграция не определена: DexScreener tokens query failed: ${err.message}` };
     }
 
     const allPairs = Array.isArray(tokenData?.pairs) ? tokenData.pairs : [];
@@ -334,7 +361,7 @@ export async function checkPoolLiquidityDrop(pair, mint, initialLiquidityUsd, t,
     // direction (not DANGEROUS, not "миграция, не исход"), report undetermined instead.
     const hasUncheckableLiquidity = otherPairs.some((p) => p.liquidity == null || p.liquidity.usd == null);
     if (hasUncheckableLiquidity) {
-      return { drop, initialLiquidityUsd, currentLiquidityUsd, migration: false, migrationUndetermined: true, reason: "миграция не определена: у одной или нескольких пар токена в DexScreener отсутствует поле liquidity" };
+      return { drop, initialLiquidityUsd, currentLiquidityUsd, dropCause, priceRatio, migration: false, migrationUndetermined: true, reason: "миграция не определена: у одной или нескольких пар токена в DexScreener отсутствует поле liquidity" };
     }
 
     const tMs = typeof t === "number" ? t * 1000 : null;
@@ -351,6 +378,8 @@ export async function checkPoolLiquidityDrop(pair, mint, initialLiquidityUsd, t,
       drop,
       initialLiquidityUsd,
       currentLiquidityUsd,
+      dropCause,
+      priceRatio,
       migration: successorFound,
       successorPairs: successorPairs.map((p) => ({ pair: p.pairAddress, dexId: p.dexId, liq: p.liquidity?.usd, pairCreatedAt: p.pairCreatedAt })),
       reason: successorFound ? "миграция, не исход (successor created after t)" : "liquidity dropped >= 90%",
@@ -459,7 +488,7 @@ export async function runOutcomesWorker(opts = {}) {
       const issuerRecord = isIssuer ? issuerMap.get(trade.mint) : null;
 
       const checkA = await checkBuyerAccountState(trade.buyer, trade.mint, db);
-      const checkB = await checkPoolLiquidityDrop(trade.pair, trade.mint, trade.liquidity_usd, trade.t, db);
+      const checkB = await checkPoolLiquidityDrop(trade.pair, trade.mint, trade.liquidity_usd, trade.t, trade.price_usd_seen, db);
 
       const result = classifyOutcome({ isIssuerControlled: isIssuer, checkA, checkB, buyer: trade.buyer, issuerRecord });
 

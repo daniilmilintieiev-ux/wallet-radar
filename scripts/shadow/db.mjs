@@ -44,6 +44,9 @@ export function initSchema(db) {
       t INTEGER NOT NULL,
       liquidity_usd REAL,
       liquidity_source TEXT,
+      -- Stage 7L task 2: base_token_price_usd from the SAME GeckoTerminal object as
+      -- reserve_in_usd (new_pools / fetchFreshPools), no extra request. NULL when absent.
+      price_usd_seen REAL,
       mint_authority TEXT,
       freeze_authority TEXT,
       token_program TEXT,
@@ -217,12 +220,12 @@ export function logError(db, script, action, error, details = null) {
 export function insertTrade(db, trade) {
   const stmt = db.prepare(`
     INSERT INTO shadow_trades (
-      mint, pair, t, liquidity_usd, liquidity_source, mint_authority, freeze_authority,
+      mint, pair, t, liquidity_usd, liquidity_source, price_usd_seen, mint_authority, freeze_authority,
       token_program, token_2022_extensions, strat, buyer, buyer_tx_signature,
       http_status, copy_amount_usd, mint_risk_fetched, mint_metadata_fetched,
       verdict_unconfirmed_mint_check, radar_token_check_missing,
       radar_verdict, radar_error, radar_code_version, recorded_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   // Both booleans below are stored as TEXT "true"/"false" for the same reason as
@@ -236,6 +239,9 @@ export function insertTrade(db, trade) {
     // Stage 7J task 1: which source produced liquidity_usd -- 'geckoterminal:reserve_in_usd'
     // when GeckoTerminal's new_pools reserve_in_usd was captured, null when it was missing.
     trade.liquidity_source ?? null,
+    // Stage 7L task 2: base_token_price_usd captured from the same GeckoTerminal object
+    // as liquidity_usd, at the same moment -- NULL when the field was absent.
+    trade.price_usd_seen ?? null,
     trade.mint_authority ?? null,
     trade.freeze_authority ?? null,
     trade.token_program ?? null,
@@ -271,7 +277,7 @@ export function getPendingTrades(db, minAgeDays = 3) {
   const cutoffTime = nowSeconds - minAgeSeconds;
 
   const stmt = db.prepare(`
-    SELECT id, mint, pair, t, liquidity_usd, buyer, strat, recorded_at
+    SELECT id, mint, pair, t, liquidity_usd, price_usd_seen, buyer, strat, recorded_at
     FROM shadow_trades
     WHERE outcome IS NULL AND t <= ?
     ORDER BY t ASC
