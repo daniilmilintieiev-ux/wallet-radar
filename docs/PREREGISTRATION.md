@@ -355,3 +355,61 @@ git diff shadow-v1..HEAD --stat -- scripts/shadow/collect.mjs scripts/shadow/db.
 ### 15и. Проверка неизменности — теперь относительно `shadow-v3`
 
 С момента создания `shadow-v3` проверка «код сборщика не менялся» выполняется как `git diff shadow-v3..HEAD --stat -- scripts/shadow/collect.mjs scripts/shadow/db.mjs scripts/shadow/outcomes.mjs scripts/shadow/preflight.mjs src/` — `shadow-v1`/`shadow-v2` остаются в истории (не удалены), но точкой отсчёта больше не являются.
+
+---
+
+## 16. Исправление §15д (этап 7L)
+
+**§15д не переписан** (сохранён как есть, ниже написан для истории). Настоящий раздел его исправляет.
+
+### 16.0. Ошибка
+
+В §15д сказано: «критерий (b) сравнивает резервы пула в USD, поэтому колебание курса базового актива само по себе не влияет на `drop`». **Это неверно.** `reserve_in_usd` — суммарная стоимость обоих резервов пула в USD; для пула с постоянным произведением (`x*y=k`, без добавления/вывода ликвидности LP) она пропорциональна `sqrt(price)`, где `price` — цена base-токена в quote-активе. Обвал `price` примерно на 99% (`price_new = 0.01 * price_old`) без единого изъятия ликвидности даёт `TVL_new/TVL_old = sqrt(0.01) = 0.1`, то есть падение резервов на 90% — ровно порог DANGEROUS-eligible из §15б/критерия (b). Цена базового актива **влияет** на `drop`, причём может быть единственной причиной 90%-го падения резервов.
+
+Вывод формулы: `x*y=k` (constant product) ⇒ `y = sqrt(k*p)`, `x = sqrt(k/p)` (где `p = y/x` — цена base в quote) ⇒ `TVL_quote = x*p + y = sqrt(k/p)*p + sqrt(k*p) = 2*sqrt(k*p)`, откуда `TVL_quote ∝ sqrt(p)`. Справедливо при допущении, что цена quote-актива (обычно SOL) к USD не менялась существенно за то же окно — упрощение, зафиксированное здесь явно, не проверявшееся отдельно.
+
+### 16.1. Исправленный критерий (b)
+
+**(b) = «коллапс резервов ≥90% (изъятие ликвидности либо обвал цены ≥99%)».** Порог и сама классификация DANGEROUS/«миграция, не исход»/«миграция не определена» из §15б **не меняются** — по-прежнему только `drop >= 0.9` и результат поиска successor-пула. Добавлено отдельное **описательное** (не влияющее на исход) поле причины в `outcome_details`, вычисляемое в `checkPoolLiquidityDrop` (`scripts/shadow/outcomes.mjs`) всегда, когда `drop >= 0.9`:
+- `PRICE_CRASH` — цена base-токена (`base_token_price_usd`) на `t+3` упала более чем на 90% относительно цены на момент наблюдения (`price_usd_seen`, см. §16.3), т.е. `priceRatio = price_t3 / price_seen <= 0.1`.
+- `LIQUIDITY_REMOVAL` — иначе (цена известна на обоих концах, но `priceRatio > 0.1` — обвал резервов не объясняется одной лишь ценой).
+- `UNDETERMINED` — `price_usd_seen` или цена на `t+3` отсутствуют (цены нет).
+
+Реализация: `scripts/shadow/outcomes.mjs`, внутри `checkPoolLiquidityDrop`, ветка `if (drop >= 0.9)` — вычисляется один раз и присутствует во всех трёх возвращаемых формах этой ветки (`migrationUndetermined`, `migration`, обычный DANGEROUS-кандидат); при `drop < 0.9` поле `dropCause` отсутствует (не вычисляется, не проставляется). Тесты: `test/shadow-collector.test.mjs`, секция «Stage 7L task 1» — PRICE_CRASH, LIQUIDITY_REMOVAL, оба варианта UNDETERMINED, и что `drop < 0.9` поле не создаёт.
+
+### 16.2. Проверка по документации: для каких пулов связь верна
+
+Проверено чтением официальной документации (не по памяти модели):
+
+| DEX / тип пула | Механизм | Источник | Связь `TVL ∝ sqrt(price)` |
+|---|---|---|---|
+| Raydium AMM v4 | `x*y=k`, constant product | [docs.raydium.io/products/amm-v4](https://docs.raydium.io/products/amm-v4): «It maintains a constant-product invariant (xy=k)» | верна |
+| Raydium CPMM (Standard AMM) | `x*y=k`, constant product | [docs.raydium.io/products/cpmm](https://docs.raydium.io/products/cpmm): «Pure constant-product AMM... xy=k invariant» | верна |
+| PumpSwap (`pumpswap`, и bonding-curve этап `pump-fun`, тот же механизм на виртуальных резервах) | `x*y=k`, constant product | [deepwiki.com/pump-fun/pump-public-docs, 4.1 AMM Mechanism](https://deepwiki.com/pump-fun/pump-public-docs/4.1-pumpswap-amm-mechanism): «implements the constant product formula x * y = k»; аналогично для бондинг-кривой — [docs.raydium.io/algorithms/bonding-curves](https://docs.raydium.io/algorithms/bonding-curves) описывает виртуально-резервный CPMM-вариант | верна (приближённо, с той же quote-price оговоркой) |
+| Raydium CLMM | концентрированная ликвидность (тики, диапазоны позиций, аналог Uniswap v3) | [docs.raydium.io/products/clmm](https://docs.raydium.io/products/clmm): «Concentrated-liquidity AMM... liquidity is deposited into price ranges (ticks)» | **НЕ верна** — TVL зависит от того, в каких тиках сейчас есть ликвидность и как она распределена; глобальной `x*y=k`-связи по всему пулу нет |
+| Raydium LaunchLab (до/после graduation) | смешанно: докью описывает как квадратичные, так и CPMM-варианты бондинг-кривой ([docs.raydium.io/algorithms/bonding-curves](https://docs.raydium.io/algorithms/bonding-curves): «quadratic, linear, and virtual-reserves CPMM variants») | **НЕ ПРОВЕРЕНО** — какая именно кривая используется у конкретного пула, по ответу GeckoTerminal не определяется |
+
+Для `raydium-clmm` и `raydium-launchlab` формулировка §15в применяется как ориентировочная: `dropCause` для таких пулов не переклассифицируется отдельно (код не различает dex-тип при вычислении `dropCause` — это было бы избыточной сложностью без явного запроса), но интерпретация PRICE_CRASH/LIQUIDITY_REMOVAL для этих двух dex_id считается **приблизительной**, а не строго обоснованной константным произведением.
+
+### 16.3. Реальная находка: `DEX_ID_REGEX` уже включает CLMM и LaunchLab
+
+Проверено запросом `GET https://api.geckoterminal.com/api/v2/networks/solana/dexes` (реальный, без секретов): Solana dex_id у Raydium — `raydium`, `raydium-clmm`, `raydium-launchlab`. Текущий фильтр коллектора (`scripts/shadow/collect.mjs:60`, `DEX_ID_REGEX = /^(raydium|pump-?fun|pumpswap)/i`) заякорен только с начала строки и матчит **все три** — то есть CLMM- и LaunchLab-пулы уже попадают в собираемую выборку, это не гипотетический краевой случай. Это не было отдельным вопросом задачи, но напрямую влияет на то, для какой доли записей `dropCause` следует считать приблизительным (§16.2) — зафиксировано здесь как побочная, но существенная находка. Код `DEX_ID_REGEX` не менялся (задача этого не требовала).
+
+### 16.4. `price_usd_seen` (task 2): реальная проверка
+
+Проверено двумя реальными запросами (без секретов), без API-ключа:
+- `GET /networks/solana/new_pools?page=1`: пул возрастом ~6.85 мин, `base_token_price_usd = 0.0000033777405881864313810930258996393750582046565270934406782663006`, `reserve_in_usd = 2678.5907` — в том же объекте `data[].attributes`.
+- `GET /networks/solana/pools/Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` (пул создан `2023-07-05T14:34:02Z`, возраст ~1 182 дня на момент проверки): `base_token_price_usd = 118.66091444137043419014986596`, `reserve_in_usd = 30725450.5071` — тот же `data.attributes`.
+
+Оба случая подтверждают: поле присутствует и в `new_pools`, и в `GET /pools/{address}`, в том же объекте, что и `reserve_in_usd` — дополнительный запрос не нужен. Код код не разошёлся с этим предположением, правка не потребовалась в части присутствия поля, только его использование добавлено (ниже).
+
+Реализация:
+- `scripts/shadow/collect.mjs`, `fetchFreshPools`: `price_usd_seen` считывается из `p.attributes.base_token_price_usd` в том же цикле, где уже читается `reserve_in_usd`; `NULL` при отсутствии/нечисловом значении, без запасного значения `0`.
+- `scripts/shadow/db.mjs`: новая колонка `shadow_trades.price_usd_seen REAL`.
+- `scripts/shadow/outcomes.mjs`, `fetchGeckoTerminalPoolReserve`: теперь также возвращает `priceUsd` из **того же** ответа GeckoTerminal, которым уже вычисляется `L_t3` — без дополнительного запроса. В отличие от `reserve_in_usd`, отсутствие цены не бросает исключение (не блокирует вычисление `drop`), а даёт `dropCause: "UNDETERMINED"`.
+
+Тесты: `test/shadow-collector.test.mjs` — `fetchFreshPools: priceUsdSeen...` (наличие/отсутствие), `runCollectionCycle: ... price_usd_seen saved...`, плюс четыре теста `dropCause` из §16.1.
+
+### 16.5. Распределение seen_at − t (task 3)
+
+`scripts/shadow/analyze.mjs`: `computeSeenAtVsTGapMinutes(rows, poolCandidateRows)` — распределение (`pool_candidates.seen_at` у записи с `selected=1` для данного `pair`) минус `t` записи, в минутах: медиана, 90-й процентиль (nearest-rank), максимум. Записи, для которых нет `pool_candidates` со `selected=1` по тому же `pair`, считаются отдельно (`unmatchedCount`) и явно не включаются в распределение (не отбрасываются молча, не считаются нулевым разрывом) — `formatSeenAtVsTGapReport` печатает это число отдельной строкой, когда оно `> 0`. Функция читает только `pair`/`t`/`seen_at`/`selected` — не читает `outcome`/`radar_verdict`/`radar_error`, поэтому добавлена и в `--counters-only` (`formatCountersOnlyReport`), и в полный отчёт; `--counters-only` по-прежнему не показывает исходов и причин ни в одной секции. Тесты: `test/shadow-analyze.test.mjs` — медиана/p90/max на синтетических данных, случай без соответствия, пустой ввод, и явная проверка, что `formatSeenAtVsTGapReport` не упоминает `outcome`/`DANGEROUS`/`SAFE`.
