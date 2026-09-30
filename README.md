@@ -299,10 +299,10 @@ npm install
 npm run build
 ```
 
-### 2. Verify System Integrity (600+ Tests)
+### 2. Verify System Integrity (666 Tests)
 
 ```bash
-# Run the complete test suite (27 suites, 0 failures)
+# Run the complete test suite (29 suites, 0 failures)
 npm test
 
 # Run offline smoke selftest (no network or API keys required)
@@ -366,7 +366,7 @@ Add Wallet Radar to your MCP host configuration (`claude_desktop_config.json`, C
 - `radar_simulate`: Pre-trade what-if simulation (liquidity stress, risk delta, limits).
 - `radar_batch`: Safety-gate up to 20 copy-trader wallets in a single deterministic pass.
 - `radar_analyze`: Offline anomaly analysis over pre-recorded transaction fixtures.
-- `radar_benchmark`: Deterministic 21-case quality evaluation report.
+- `radar_benchmark`: Deterministic 24-case quality evaluation report.
 - `radar_selftest`: System health check and self-test.
 
 ### 2. Autonomous Agent TypeScript SDK
@@ -492,7 +492,10 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 ### 2. The Pre-Window Leap Snapshot (`f2bc219`, 2026-09-14 11:05 UTC)
 - Landed as a consolidation commit before the hackathon kickoff: ZK scan ledger prototype, initial Agent SDK, Blinks draft, and early Transfer Hook scaffolding.
 
-### 3. In-Window Development (40+ Incremental Commits, 2026-09-14 15:00 UTC onward)
+### 3. In-Window Development (40 Incremental Commits as of the hackathon-submission checkpoint, 2026-09-14 15:00 UTC onward)
+
+> **Commit-count note:** `git rev-list --count f2bc219..3f299bf~1` = **40**, confirming the figure below as of the commit that first stated it (`3f299bf`). The branch has continued past the hackathon window since then (post-submission auditing, shadow-collector data-collection work) — `git rev-list --count f2bc219..HEAD` on the current commit returns a much larger number, which is **not** "hackathon in-window commits" and isn't a like-for-like comparison to the count below.
+
 - **Decision Engine & Pre-Trade Simulation**: Added `radar_simulate`, confidence scoring, and dynamic payment limits (`16b35f3`, `ccfc534`, `aebe35d`).
 - **Anti-Evasion & Calibration**: Created `WARMING` rule, multi-anomaly shift detection, and 21-case eval suite (`0d8a4dd`, `3e3150b`).
 - **Three Core Pillars**:
@@ -508,7 +511,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 ## Status
 
-**Early-access (v0.1.x)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
+**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
 ## Support
 

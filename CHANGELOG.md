@@ -12,8 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > E2E suite) landed as a single snapshot commit
 > [`f2bc219`](https://github.com/daniilmilintieiev-ux/wallet-radar/commit/f2bc219)
 > (2026-09-14 11:05 UTC, 35 files, +9,438) at the window boundary, while the
-> genuine in-window work (from 2026-09-14 15:00 UTC) is a series of 18
-> incremental commits (decision engine, pre-trade simulation, anti-evasion +
+> genuine in-window work (from 2026-09-14 15:00 UTC) is a series of 40
+> incremental commits as of the hackathon-submission checkpoint
+> (`git rev-list --count f2bc219..3f299bf~1` = 40; this branch has since
+> grown past the hackathon window with post-submission auditing work, so a
+> count against the current HEAD is not a like-for-like figure)
+> (decision engine, pre-trade simulation, anti-evasion +
 > benchmark, hardening, trust baseline redesign, autonomous canary, and the three
 > pillars: self-funding economics, multi-agent consensus, active defense). The
 > full before/after breakdown is in the [README](README.md) — "Colosseum
@@ -39,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - **x402 Server Security & Reliability**: Ed25519 caller proof headers (`X-Payment-Proof`) with strict signature authentication (unauthenticated memo binding restricted strictly to Blink callbacks), fail-fast transaction freshness, non-empty `accountKeys` enforcement, safe `accountKeys` deconstruction, dynamic token decimals scaling, and asynchronous background commitments (`Prefer: respond-async` / `RADAR_ASYNC_COMMIT`).
   - **ZK Oracle & Light Protocol Integration**: Full support for Solana v0 versioned transactions, strict unsigned compressed account rejection (`expectedKey` enforcement preventing 1-lamport forgery), and instant fast-fail polling without 15-second hang when querying standard Solana RPCs.
   - **Database High-Performance & Concurrency**: Added compound index `idx_seen_txs_wallet_ts` on SQLite `seen_txs(wallet, ts DESC)` eliminating full table scans, and configured `PRAGMA synchronous = NORMAL` for high-throughput WAL mode.
-  - **Expanded Test Suite**: Reached **600+ automated tests** (28 suites, 0 failures, 100% green) across all components.
+  - **Expanded Test Suite**: Reached **666 automated tests** (29 suites, 0 failures, 100% green) across all components (`npm test`, verified stage 9D).
 - Per-IP rate limiting on the HTTP service (default `120` requests/minute,
   configurable via `RADAR_RATE_LIMIT_PER_MIN`; `429` + `Retry-After` when exceeded,
   `/health` and `OPTIONS` exempt).
@@ -101,8 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   signatures, and anti-replay verification.
 
 ### Changed
-- README reframed from "hackathon MVP" to **early-access (v0.1.x)**, with
-  Status, Support, Security, and Privacy sections and links to the new docs.
+- README reframed from "hackathon MVP" to **early-access (package `1.0.0`)**,
+  with Status, Support, Security, and Privacy sections and links to the new
+  docs.
 - Corrected the anomaly-rule count in user-facing text from 6 to 7 to match
   the documented rule set.
 - README and landing site reframed around the **gate-before-you-copy** wedge:
