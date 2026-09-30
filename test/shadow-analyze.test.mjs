@@ -24,6 +24,10 @@ import {
   formatPoolCandidatesByHourReport,
   computeSeenAtVsTGapMinutes,
   formatSeenAtVsTGapReport,
+  computeHoursWithoutCollection,
+  formatHoursWithoutCollectionReport,
+  COLLECTION_WINDOW_START_UTC,
+  COLLECTION_HARD_STOP_UTC,
   countDistinctBuyers,
   topBuyers,
   oneRecordPerBuyer,
@@ -564,6 +568,51 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
     const report = formatSeenAtVsTGapReport(rows, poolCandidateRows);
     assert.doesNotMatch(report, /outcome/i);
     assert.doesNotMatch(report, /DANGEROUS/);
+  });
+
+  // --- Stage 7M task 3: UTC hours with zero pool_candidates rows ---
+
+  test("computeHoursWithoutCollection: hours with at least one row are not counted, hours with none are", () => {
+    // Range starts 2026-09-30T09:00:00Z. Give it rows in the 09:00 and 11:00 hours only --
+    // the 10:00 hour has no row and must be reported missing.
+    const poolCandidateRows = [
+      { seen_at: "2026-09-30T09:15:00.000Z" },
+      { seen_at: "2026-09-30T11:05:00.000Z" },
+    ];
+    const nowMs = new Date("2026-09-30T12:00:00.000Z").getTime(); // range end = min(now, hard stop) = now here
+    const r = computeHoursWithoutCollection(poolCandidateRows, nowMs);
+    assert.deepEqual(r.missingHours, ["2026-09-30T10:00:00.000Z"]);
+    assert.equal(r.totalMissingHours, 1);
+    assert.equal(r.rangeStartIso, COLLECTION_WINDOW_START_UTC);
+    assert.equal(r.rangeEndIso, new Date(nowMs).toISOString());
+  });
+
+  test("computeHoursWithoutCollection: range end is capped at COLLECTION_HARD_STOP_UTC even if 'now' is later", () => {
+    const nowMs = new Date("2027-01-01T00:00:00.000Z").getTime(); // far past the hard stop
+    const r = computeHoursWithoutCollection([], nowMs);
+    assert.equal(r.rangeEndIso, COLLECTION_HARD_STOP_UTC);
+  });
+
+  test("computeHoursWithoutCollection: empty pool_candidates -> every hour in range is missing", () => {
+    const nowMs = new Date("2026-09-30T12:00:00.000Z").getTime(); // 3 full hours: 09:00, 10:00, 11:00
+    const r = computeHoursWithoutCollection([], nowMs);
+    assert.equal(r.totalMissingHours, 3);
+    assert.deepEqual(r.missingHours, ["2026-09-30T09:00:00.000Z", "2026-09-30T10:00:00.000Z", "2026-09-30T11:00:00.000Z"]);
+  });
+
+  test("formatHoursWithoutCollectionReport: never mentions outcome/DANGEROUS/SAFE -- pure timing diagnostic, safe for --counters-only", () => {
+    const nowMs = new Date("2026-09-30T11:00:00.000Z").getTime();
+    const report = formatHoursWithoutCollectionReport([], nowMs);
+    assert.doesNotMatch(report, /outcome/i);
+    assert.doesNotMatch(report, /DANGEROUS/);
+    assert.match(report, /Часов без единой записи pool_candidates: 2/);
+  });
+
+  test("formatCountersOnlyReport: still never mentions outcome/DANGEROUS/SAFE after adding the hours-without-collection section", () => {
+    const report = formatCountersOnlyReport([], [], 0, []);
+    assert.doesNotMatch(report, /outcome/i);
+    assert.doesNotMatch(report, /DANGEROUS/);
+    assert.match(report, /Часы UTC без единой записи pool_candidates/);
   });
 
   // --- Task 5 (stage 7H): independence of observations ---

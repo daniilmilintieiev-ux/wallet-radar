@@ -446,6 +446,50 @@ export function formatSeenAtVsTGapReport(rows, poolCandidateRows) {
   return lines.join("\n");
 }
 
+// --- Stage 7M task 3: UTC hours with zero pool_candidates rows ("часы без сбора") ---
+// Range fixed to the actual collection window: starts 2026-09-30 09:00 UTC (real start,
+// docs/PREREGISTRATION.md section 17в), ends at min(now, the hard collection-stop date
+// from section 15ж). Purely descriptive: reads only pool_candidates.seen_at, never
+// outcome/radar_verdict/radar_error -- safe for --counters-only.
+export const COLLECTION_WINDOW_START_UTC = "2026-09-30T09:00:00.000Z";
+export const COLLECTION_HARD_STOP_UTC = "2026-10-06T18:00:00.000Z"; // section 15zh
+
+export function computeHoursWithoutCollection(poolCandidateRows, nowMs = Date.now()) {
+  const HOUR_MS = 3600000;
+  const startMs = new Date(COLLECTION_WINDOW_START_UTC).getTime();
+  const hardStopMs = new Date(COLLECTION_HARD_STOP_UTC).getTime();
+  const endMs = Math.min(nowMs, hardStopMs);
+
+  const seenHours = new Set();
+  for (const r of poolCandidateRows) {
+    const t = new Date(r.seen_at).getTime();
+    if (!Number.isFinite(t)) continue;
+    seenHours.add(Math.floor(t / HOUR_MS) * HOUR_MS);
+  }
+
+  const missingHours = [];
+  const firstHour = Math.floor(startMs / HOUR_MS) * HOUR_MS;
+  for (let h = firstHour; h < endMs; h += HOUR_MS) {
+    if (!seenHours.has(h)) missingHours.push(new Date(h).toISOString());
+  }
+
+  return {
+    rangeStartIso: new Date(startMs).toISOString(),
+    rangeEndIso: new Date(endMs).toISOString(),
+    missingHours,
+    totalMissingHours: missingHours.length,
+  };
+}
+
+export function formatHoursWithoutCollectionReport(poolCandidateRows, nowMs = Date.now()) {
+  const r = computeHoursWithoutCollection(poolCandidateRows, nowMs);
+  const lines = [];
+  lines.push(`  Диапазон проверки: ${r.rangeStartIso} -- ${r.rangeEndIso}`);
+  lines.push(`  Часов без единой записи pool_candidates: ${r.totalMissingHours}`);
+  for (const h of r.missingHours) lines.push(`    ${h}`);
+  return lines.join("\n");
+}
+
 /**
  * PREREGISTRATION.md section 12, "правило подглядывания" (stage 7G): before collection
  * stops and the final outcomes.mjs run, analyze.mjs may ONLY print this -- record count,
@@ -475,6 +519,11 @@ export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount, p
   // safe under the look-ahead rule and belongs in counters-only too.
   lines.push("[COUNTERS-ONLY] seen_at (pool_candidates) минус t: распределение в минутах (только счётчики/тайминг, без исходов):");
   lines.push(formatSeenAtVsTGapReport(rows, poolCandidateRows));
+  lines.push("");
+  // Stage 7M task 3: reads only pool_candidates.seen_at -- no outcome/radar_verdict/
+  // radar_error anywhere in computeHoursWithoutCollection, safe for --counters-only.
+  lines.push("[COUNTERS-ONLY] Часы UTC без единой записи pool_candidates (только счётчики/тайминг, без исходов):");
+  lines.push(formatHoursWithoutCollectionReport(poolCandidateRows));
   return lines.join("\n");
 }
 
@@ -695,6 +744,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log("");
       console.log("=== seen_at (pool_candidates) минус t: распределение в минутах (task 3 stage 7L) ===");
       console.log(formatSeenAtVsTGapReport(rows, loadPoolCandidates(db)));
+      console.log("");
+      console.log("=== Часы UTC без единой записи pool_candidates (task 3 stage 7M) ===");
+      console.log(formatHoursWithoutCollectionReport(loadPoolCandidates(db)));
     }
   } finally {
     db.close();
