@@ -53,8 +53,8 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <span class="chip"><b>100%</b> TypeScript</span>
     <span class="chip"><b>Built-in</b> SQLite · Zero External DB</span>
     <span class="chip"><b>ZK</b> on-chain oracle</span>
-    <span class="chip"><b>9</b> deterministic rules</span>
-    <span class="chip"><b>608/608</b> tests passing</span>
+    <span class="chip"><b>10</b> deterministic rules</span>
+    <span class="chip"><b>666/666</b> tests passing</span>
     <span class="chip"><b>MCP</b> server</span>
   </div>
 </header>
@@ -65,16 +65,17 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
   <div class="video-frame">
     <video controls playsinline preload="metadata" poster="posters/scope.png" src="videos/wallet-radar-scope.mp4"></video>
   </div>
-  <div class="hero-cap">Verdict: <b>RISK 100/100</b> · 8 anomalies. The final gate (<code>radar_trust</code>) tells the copy-trading agent to hold — <b>$3,996 protected.</b></div>
+  <div class="sub">Note: this recording predates the stage 9B/9D documentation corrections (rule count, error names, hook figures) and may show retracted numbers. Kept for reference, not deleted; see the corrected figures in the text on this page and in README.md.</div>
+  <div class="hero-cap">Verdict: <b>RISK 100/100</b> · 8 anomalies. The final gate (<code>radar_trust</code>) tells the copy-trading agent to hold — <b>$3,996 would have been flagged</b> (reproduction on historical data, not a confirmed incident).</div>
 </section>
 
 <section>
   <h2>How it works</h2>
-  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and nine deterministic rules, each with a human-readable reason.</div>
+  <div class="sub">No heuristics tuned on the demo, no LLM in the decision path — just a learned baseline and ten deterministic rules, each with a human-readable reason.</div>
   <div class="pipeline">
     <div class="step"><div class="k">COLLECT</div><b>Helius enhanced tx</b><span>Full per-wallet history, paged, straight from mainnet.</span></div>
     <div class="step"><div class="k">BASELINE</div><b>Learn the normal</b><span>Median size, venues, programs, cadence — per wallet.</span></div>
-    <div class="step"><div class="k">DETECT</div><b>9 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers) and a per-rule reason.</span></div>
+    <div class="step"><div class="k">DETECT</div><b>10 deterministic rules</b><span>Every anomaly carries structured evidence (tx sigs, numbers) and a per-rule reason.</span></div>
     <div class="step"><div class="k">ACT</div><b>Score + alert</b><span>Risk 0–100 → Telegram, optional LLM digest, MCP call.</span></div>
   </div>
   <div class="rules">
@@ -87,15 +88,16 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <div class="row"><span class="n">CONCENTRATION</span><span class="d">repeated swaps into the same illiquid token</span></div>
     <div class="row"><span class="n">NEW_VENUE</span><span class="d">first swap on an unseen DEX / protocol</span></div>
     <div class="row"><span class="n">OFF_HOURS</span><span class="d">activity in UTC hours with zero historical baseline activity</span></div>
+    <div class="row"><span class="n">TAINTED_FUNDING</span><span class="d">wallet's first-ever incoming transfer came from a known-exploiter address (only the first transfer is checked)</span></div>
   </div>
 </section>
 
 <section>
   <h2>Live, not just a demo</h2>
   <div class="live">
-    <div class="h">It runs 24/7 on a watchlist — and the demo above is real on-chain data.</div>
-    <p>The radar continuously polls each watched wallet (Helius), rebuilds its baseline, and alerts the moment a rule fires. The demo is a <b>replay of a real event</b>: wallet <code>8XeK5m…eYXU2j</code>, dormant for 173 days, waking with five ≥3×-median swaps on a brand-new venue.</p>
-    <p>Because mainnet is immutable, re-running the detector on live data reproduces the same verdict — <code>radar replay 8XeK5m… --since 2026-03-11 --until 2026-08-31</code> → <span class="ok">RISK 100/100 · 8 anomalies · 1,307-tx baseline</span>.</p>
+    <div class="h">It monitors a watchlist continuously — and the demo above uses real on-chain data.</div>
+    <p>The radar continuously polls each watched wallet (Helius), rebuilds its baseline, and alerts the moment a rule fires. The demo is a <b>reproduction on historical data, not a confirmed incident</b>: wallet <code>8XeK5m…eYXU2j</code>, dormant for 173 days, waking with five ≥3×-median swaps on a brand-new venue.</p>
+    <p>Because mainnet is immutable, re-running the detector on the same historical data reproduces the same verdict — <code>radar replay 8XeK5m… --since 2026-03-11 --until 2026-08-31</code> → <span class="ok">RISK 100/100 · 8 anomalies · 1,307-tx baseline</span>.</p>
     <p>Reproduce it yourself with <code>scripts/verify-canon.sh</code>; full write-up in <code>LIVE-DATA.md</code>.</p>
   </div>
 </section>
