@@ -37,7 +37,7 @@ It enforces safety at two coordinated layers:
       │                                                                                     │
       │  ┌───────────────────────┐   ┌───────────────────────────┐   ┌───────────────────┐  │
       │  │  Behavioral Profiler   │   │     Anomaly Detector      │   │  Decision Engine  │  │
-      │  │ • Bounded USD Baseline │──▶│ • 10 Deterministic Rules  │──▶│ • allow / throttle│  │
+      │  │ • Bounded USD Baseline │──▶│ • 9 Deterministic Rules   │──▶│ • allow / throttle│  │
       │  │ • PnL-Lite FIFO Engine │   │ • Anti-Evasion / Warming  │   │ • block / review  │  │
       │  └───────────────────────┘   └───────────────────────────┘   └───────────────────┘  │
       │                                                                        │            │
@@ -163,7 +163,7 @@ Wallet Radar does not rely on a single defensive checkpoint. It provides an end-
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
 │                   3. DETERMINISTIC DETECTION LAYER                     │
-│    10 Anomaly Rules + Supporting Signals (Zero LLM In Decision Path)   │
+│    9 Anomaly Rules + Supporting Signals (Zero LLM In Decision Path)    │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
@@ -231,9 +231,9 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 
 ---
 
-## 10 Deterministic Anomaly Rules (No Hallucinations)
+## 9 Deterministic Anomaly Rules (No Hallucinations)
 
-Wallet Radar rejects opaque LLM prompts in the critical security path. Detection is 100% deterministic and replayable. As implemented in `src/analyzer.ts`, there are **10 primary rules** (below) and **3 supporting signals** (further below) — verified against the code, stage 9B audit:
+Wallet Radar rejects opaque LLM prompts in the critical security path. Detection is 100% deterministic and replayable:
 
 | Rule | Detection Trigger | Severity | Exploit Vector Mitigated |
 |---|---|---|---|
@@ -246,13 +246,14 @@ Wallet Radar rejects opaque LLM prompts in the critical security path. Detection
 | `CONCENTRATION` | Repeated high-frequency swaps into a single token | Medium | Coordinated wash trading, illiquid token pumping |
 | `NEW_VENUE` | First swap on a DEX venue not present in baseline profile | Medium | Unverified liquidity pools, malicious swap contracts |
 | `OFF_HOURS` | Batch $\ge 3$ txs with $\ge 2$ txs ($\ge 50\%$) landing in 0-baseline UTC hours (baseline $\ge 20$ txs) | Medium | Automated draining across sleeping timezones |
-| `TAINTED_FUNDING` | The wallet's very first recorded incoming transfer came from an address on the known-exploiter list. **Only the first incoming transfer is ever checked** — if it isn't from a listed address, the rule does not re-check any later incoming transfer, even from a listed address. | High | Freshly-funded wallets bootstrapped directly from a known drainer/exploiter address |
 
 ### Supporting Behavioral Signals
-In addition to the 10 primary rules, the engine tracks 3 contextual signals that enrich anomaly evidence without causing unilateral blocks on their own:
+In addition to the 9 primary rules, the engine tracks contextual signals that enrich anomaly evidence without causing unilateral blocks:
 - **`NEW_PROTOCOL` (Low Severity)**: Emitted upon first interaction with an on-chain program/contract not present in baseline history.
 - **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 50\%$ of counterparty interactions (min 4 txs) concentrate into a single address.
 - **`COUNTERPARTY_MEMORY`**: Three underlying types (`NEW_COUNTERPARTY`, `COUNTERPARTY_HUB`, `COUNTERPARTY_ESCALATION`, defined in `src/counterparty.ts`) — detects relationship escalation, new counterparty emergence, and dominant hub routing.
+
+Дополнительно: проверка источника первого пополнения (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — срабатывает, если самый первый входящий перевод на кошелёк пришёл с адреса из списка известных эксплойтеров; проверяется **только первый** такой перевод, более поздние поступления от известных эксплойтеров повторно не проверяются. Это отдельная, независимая от девяти основных правил и от вспомогательных сигналов проверка; в счётчике «9 правил» она не участвует (см. `docs/KNOWN-ISSUES.md` про рассинхронизацию числа между этим README, `src/http-server.ts`/`src/mcp.ts` и `test/regime.test.ts`).
 
 ---
 
@@ -331,7 +332,7 @@ npm run radar -- trust <wallet-address> --max-risk 30 --min-liquidity 50
 
 `trust` answers the question every copy-trader and agent asks before copying or paying an unverified wallet: **"is it safe to trust this wallet right now?"**
 
-It combines the behavioral risk score (9 of the 10 primary rules over the recent window — `TOXIC_MINT` is not evaluated on this path, since `runTrustCheck` does not fetch or pass mint risk data, `src/trust.ts:329`) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
+It combines the behavioral risk score (9 rules over the recent window; `TOXIC_MINT` is one of the 9 but never actually fires on this specific path, since `runTrustCheck` does not fetch or pass mint risk data, `src/trust.ts:329`) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 - `safe`: risk under max and liquidity over min threshold.
 - `hold`: data available, but risk exceeds max or liquidity is below minimum.
 - `unknown`: insufficient historical data to safely evaluate (conservative fail-safe).
@@ -364,7 +365,7 @@ Add Wallet Radar to your MCP host configuration (`claude_desktop_config.json`, C
 ```
 
 **Exposed MCP Tools:**
-- `radar_scan`: Live Helius fetch + baseline + all 10 rules (this endpoint does fetch mint risk data, so `TOXIC_MINT` is included) $\rightarrow$ risk score, evidence, freshness.
+- `radar_scan`: Live Helius fetch + baseline + all 9 rules, including `TOXIC_MINT` (this endpoint does fetch mint risk data, unlike `radar_trust`) $\rightarrow$ risk score, evidence, freshness.
 - `radar_trust`: Binary gate before copy/payment $\rightarrow$ `safe` / `hold` / `unknown`.
 - `radar_simulate`: Pre-trade what-if simulation (liquidity stress, risk delta, limits).
 - `radar_batch`: Safety-gate up to 20 copy-trader wallets in a single deterministic pass.
@@ -514,7 +515,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 ## Status
 
-**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (10 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
+**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
 ## Support
 
