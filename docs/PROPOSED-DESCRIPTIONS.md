@@ -34,6 +34,31 @@ Verified by reading the code (not by running it):
   for either path: the base risk score never checks any mint-risk field, and
   the narrower simulation-time check explicitly omits `mintAuthority`.
 
+## When the token (mint) check is skipped entirely (re-verified, stage 9E)
+
+The freeze-authority/concentration check (`simulate.ts:323-331`) only ever
+runs if **all** of the following hold; any one of them being false skips it
+silently (no error surfaced to the caller):
+
+1. `trustResult.verdict === "safe"` — if the base trust verdict is `hold`
+   (`http-server.ts:443-454`) or `unknown` (`:455-464`), `toolGateCopy`
+   **returns immediately**, before line 466 is ever reached. The proposed
+   trade's mint is never looked at at all in either case — the token check
+   only runs when the wallet's own behavioral risk was already judged
+   acceptable.
+2. `copyAmountUsd` is a number `> 0` (`:434`, `:467`) — if the caller omits
+   both `copyAmountUsd` and `amountUsd`, or passes `0`/negative, the whole
+   `if` block at `:467-487` is skipped and `simRes` stays `undefined`.
+3. `mint` is present and passes `isBase58Address` (`:437`, `:469`) — otherwise
+   `mintRisk` stays `null` (`:468`) and is never fetched.
+4. `fetchMintMetadata` succeeds (`:471`) — a thrown error is caught silently
+   (`catch {}`, `:472`) and again leaves `mintRisk = null`.
+
+Any of (2)-(4) failing means `simulate.ts:323`'s `input.mint && input.mintRisk`
+guard is falsy, so `TOXIC_MINT`/`CONCENTRATION` (simulate.ts:324-330) are never
+evaluated for this call — the response contains no indication that the mint
+was never actually checked (no error, no warning field).
+
 ## Proposed `description` text
 
 For `src/http-server.ts:52` (`POST /gate-copy`, `radar_gate_copy`):

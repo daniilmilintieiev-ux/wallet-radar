@@ -45,3 +45,75 @@ a separate, future change.
   collector's live run is preregistered and locked until it stops on
   2026-10-06 18:00 UTC per `docs/PREREGISTRATION.md`, section 15zh) —
   synchronize after that date.
+
+## DORMANT_ACTIVE observation: the default 7-day trust window may itself manufacture the "dormancy" gap
+
+- **Naблюдение из офлайн-воспроизведения (stage 9E task 3), нужна проверка на живых данных после остановки сбора.**
+- `src/trust.ts:277-288` (`selectScoring`): splits a wallet's fetched history
+  at `windowStart = now - windowDays*86400` (default `windowDays = 7`,
+  `TRUST_DEFAULTS.windowDays`) into `priorTxs` (strictly older than
+  `windowStart`, becomes the baseline) and `evalTxs` (`>= windowStart`,
+  becomes the scored batch).
+- `src/baseline.ts:58,78-79`: `baseline.lastSeenAt` is set to the newest
+  timestamp among the txs passed into `updateBaseline` — i.e., for the
+  trust-check path, the newest **prior-window** (pre-cutoff) transaction.
+- `src/analyzer.ts:525-543` (`DORMANT_ACTIVE`): fires when
+  `(newest_of_evalTxs - baseline.lastSeenAt) / 86400 >= dormantDays` (default
+  `dormantDays = 7`).
+- **Offline reproduction (`scratch/task3-dormant-window.mjs`, not committed):**
+  a synthetic wallet trading exactly once every day for 20 straight days (no
+  real gap ever exceeding ~1 day) was run through `selectScoring` with the
+  real default `windowDays = 7`, then `updateBaseline` + `detectAnomalies`
+  with the real default config. Result: `DORMANT_ACTIVE` **fired** (severity
+  `medium`), reporting `daysSilent: 8` — a number produced entirely by the
+  width of the two-window split (baseline pinned to just before the 7-day
+  cutoff, eval batch newest near "now"), not by any actual gap in trading
+  activity. Because `baseline.lastSeenAt` is structurally always ~`windowDays`
+  in the past relative to "now" on this code path, this appears likely to
+  fire on *every* `radar_trust`/`radar_gate_copy` call (default window) for
+  *any* continuously-active wallet, not just a genuinely dormant one — but
+  this has only been reproduced offline, against a synthetic fixture, this
+  stage. It has not been checked against real wallet histories.
+- **Status:** not fixed this stage (`src/` out of scope). Needs confirmation
+  against real, live wallet data — safe to attempt only after the shadow
+  collector's data collection stops (2026-10-06 18:00 UTC,
+  `docs/PREREGISTRATION.md` section 15zh), so as not to interfere with the
+  live run.
+
+## TAINTED_FUNDING checks only the wallet's very first incoming transfer
+
+- `src/analyzer.ts:471-501` (`checkFundingSource`): sorts the wallet's
+  transactions ascending by timestamp and iterates them; for the **first**
+  transaction found containing any incoming native transfer
+  (`nt.toUserAccount === wallet`, `:476-481`), it checks whether the funder is
+  in `KNOWN_EXPLOITERS`. If yes, it returns the `TAINTED_FUNDING` anomaly
+  (`:483-495`). If no, it returns `null` **immediately** (`:496`) — the
+  function does not continue scanning any later transaction, even if a later
+  incoming transfer came from a listed exploiter address.
+- Practical effect: a wallet whose first-ever recorded funding was legitimate
+  can later receive funds directly from a known drainer/exploiter and
+  `TAINTED_FUNDING` will never fire for it.
+- Documented next to the rule's description in README.md (§"9 Deterministic
+  Anomaly Rules", the `TAINTED_FUNDING` paragraph).
+- **Status:** not fixed this stage (`src/` out of scope) — behavior is
+  recorded as a documented limitation, not changed.
+
+## README's "Decision Engine Mapping" (§2) does not match decision.ts/trust.ts/simulate.ts's actual logic
+
+- README described a single continuous risk-score axis (`0–30 allow, 30–70
+  throttle, >70 block`) as if it were `computeDecision`'s own logic. It is
+  not: see stage 9E task 1's findings (now corrected in README directly).
+  Kept here only as a pointer in case a future edit reintroduces the same
+  conflation: `block` in `src/decision.ts:118-126` is driven by anomaly
+  **severity** (`hasExploitHigh`), not by a numeric risk-score cutoff; the
+  literal `riskScore >= 70` constant that inspired "70" lives in
+  `src/simulate.ts:104-105` and zeroes out **tiered payment limits**, a
+  different mechanism than `computeDecision`'s verdict, and only applies
+  inside the simulation path (`copyAmountUsd > 0` and a valid `mint`
+  supplied). `src/defense.ts:103-118`'s `DEFENSE_THRESHOLDS` (30/50/75) is a
+  third, independent system (persistent per-wallet posture, not a per-call
+  verdict).
+- **Status:** documentation fixed this stage (README.md, this branch). No
+  code change made or proposed — the three systems are each internally
+  consistent; this entry exists only to prevent the same conflation from
+  recurring in future doc edits.

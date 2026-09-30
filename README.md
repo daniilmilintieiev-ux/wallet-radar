@@ -105,32 +105,27 @@ Where:
   - $w_{\text{high}} = 30$ (critical exploit signatures: toxic mint authorities, top-10 concentration $\ge 80\%$, multi-dimensional regime shifts, large unexpected swaps)
 - **Zero Black-Box Multipliers:** The core anomaly scorer intentionally uses pure integer addition without floating-point drift, ensuring 100% reproducible and verifiable verdicts. Multi-anomaly correlation (e.g. `REGIME_SHIFT` occurring alongside `WARMING` or multiple distinct anomaly classes) is handled explicitly by the `REGIME_SHIFT` meta-detector (escalating severity to `high`), rather than ungrounded multiplicative compounding.
 
-### 2. Decision Engine Mapping
+### 2. Decision Engine Mapping (verified against code, stage 9E)
 
-Continuous risk score $R$ and liquid capital $L_{\text{USD}}$ map deterministically to agent operational decisions:
+There is no single continuous risk-score axis mapping to `allow`/`throttle`/`block`. Three separate mechanisms are involved, each with its own thresholds:
 
-```
-                      Risk Score R ───────────►
-             0                     30                    70                   100
-             ┌─────────────────────┬─────────────────────┬─────────────────────┐
-L >= $50     │     ALLOW           │     THROTTLE        │      BLOCK          │
-             │ Full trade capacity │ Dynamic cap: 25%*L  │  Hard stop on-chain │
-             ├─────────────────────┼─────────────────────┼─────────────────────┤
-L < $50      │     THROTTLE        │     THROTTLE        │      BLOCK          │
-             │ Thin liquidity warn │ Low cap & cooldown  │  Counterparty risk  │
-             └─────────────────────┴─────────────────────┴─────────────────────┘
-Sparse/Null  │                MANUAL_REVIEW / UNKNOWN (Hold Verdict)           │
-History      │             Zero ungrounded assumptions: fails safe             │
-             └─────────────────────────────────────────────────────────────────┘
-```
+1. **Base trust verdict** (`safe` / `hold` / `unknown`, `src/trust.ts:130-153`): a binary check — `riskScore > maxRisk` (default **30**) and/or `liquidityUsd < minLiquidityUsd` (default **$50**) each push toward `hold`; `hold` if either reason fired, otherwise `safe`. There is no "70" anywhere in this check.
+2. **Agent-facing verdict** (`allow` / `throttle` / `block` / `manual_review`, `computeDecision`, `src/decision.ts:102-159`): **not** a numeric risk-score cutoff. `block` fires whenever *any* anomaly has `severity === "high"` other than `DORMANT_ACTIVE` (`decision.ts:118-126`) — regardless of the risk score's numeric value. Several rules (e.g. `LARGE_SWAP`) always carry a fixed `"high"` severity, not one scaled by magnitude — so a single qualifying anomaly forces `block` at whatever risk score that one anomaly contributes, no matter how large the underlying trade is past its trigger threshold. `manual_review`/`throttle` for the remaining cases come from the base verdict combined with `maxRisk × 1.5` / `minLiquidityUsd × 0.5` escalation multipliers (`decision.ts:136,147`) — again, no `30`/`70` split.
+3. **Simulation-time tiered limits** (`src/simulate.ts:104-121`, only reached inside `toolGateCopy` when both an amount and a mint are supplied — see `docs/PROPOSED-DESCRIPTIONS.md`): a literal `riskScore >= 70` zeroes out every payment tier ("Strictly blocked"). This governs per-tier `maxAmountUsd`/`allowed`, a different mechanism from `computeDecision`'s verdict field, though `toolGateCopy` folds the result into its own final answer.
 
-- **`allow`**: Safe execution path ($R \le 30, L \ge \$50$). Suggested limit capped at $\min(L, \$500)$.
-- **`throttle`**: Elevated risk or shallow liquidity ($30 < R \le 70$). Enforces cooldown (15m) and dynamic limit:
-  $$\text{Limit}_{\text{suggested}} = L \times 0.25 \times \max\left(0.1, 1 - \frac{R}{100}\right)$$
-- **`block`**: Critical threat detected ($R > 70$ or high-severity anomaly). In Transfer Hook mode, transactions unconditionally revert.
-- **`manual_review`**: Unverified account type, unpriced tokens, or zero historical baseline. Escalates to human or falls back to conservative hold.
+**Reproduced offline** (`scratch/task2-large-swap.mjs`, not committed — a single swap at 5×, 50×, and 500× the wallet's baseline median, all else identical): all three multiples produced the *identical* result — `riskScore: 30`, base verdict `safe` (30 is not `>` `maxRisk` 30), yet `computeDecision`'s verdict was `block` every time, because `LARGE_SWAP` is always severity `"high"`. **The trade's magnitude past the trigger threshold makes no difference to the verdict.** This directly contradicts a claim that "one large trade gives a hold, not a block, at any amount": in this reproduction, it is neither `hold` (the base verdict is actually `safe`) nor merely held back — `computeDecision` blocks it outright, independent of size.
 
-### 3. CI Regression Suite (synthetic fixtures, not an empirical benchmark)
+### 3. Risk Score vs. Defense State vs. Verdict — three distinct concepts
+
+These are computed by different code paths, on different timescales, and are easy to conflate:
+
+| Concept | Range / values | Computed by | Persists across calls? |
+|---|---|---|---|
+| **Risk score** | 0–100, integer | `computeRiskScore`, sum of firing anomalies' severity points (`src/analyzer.ts:1073-1085`; `low=5, medium=15, high=30`, capped at 100) | No — recomputed fresh each evaluation from the current anomaly list |
+| **Defense state** | `armed` → `alerting` → `gated` → `blocked` | `src/defense.ts:103-118` (`DEFENSE_THRESHOLDS`: `alerting: 30`, `gated: 50`, `blocked: 75`, plus any high-severity anomaly forces `blocked` directly) | **Yes** — a persistent per-wallet posture (Pillar 3, Active Defense) that escalates on repeated bad observations and only de-escalates after a quiet/clean streak (`defense.ts:173-220`) |
+| **Verdict** | `safe`/`hold`/`unknown` (trust) or `allow`/`throttle`/`block`/`manual_review` (decision) | `src/trust.ts:130-153` / `src/decision.ts:102-159` (see above) | No — a fresh, stateless answer for this one call, though `DecisionResult.enforcedByDefense` can note that a persistent defense state tightened it |
+
+### 4. CI Regression Suite (synthetic fixtures, not an empirical benchmark)
 
 **Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: a zero-network, fully reproducible regression harness executed on every build, using 24 versioned, hand-authored test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing). Each fixture's expected outcome is defined by construction (the author writes a transaction sequence designed to trigger, or not trigger, a specific rule) — this is a **regression test against the ruleset itself**, not an independent measurement against real-world wallets. It currently passes 24/24 (100% precision/recall/accuracy on this fixture set). Run locally via `npm run radar -- benchmark`.
 
