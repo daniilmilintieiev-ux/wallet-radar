@@ -77,13 +77,13 @@ It enforces safety at two coordinated layers:
 |---|---|---|
 | **Devnet Transfer Hook** | [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet) | **LIVE ON DEVNET** (ProgramData: 245,778 B, `d8f9a92`) |
 | **Hook Authority** | `4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY` | On-chain verified upgrade authority |
-| **Token-22 Test Mint** | `2YDsAV...` (configured with `TransferHook`) | Reverts on flagged transfer (`0x1771`) |
+| **Token-22 Test Mint** | [`2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV`](https://explorer.solana.com/address/2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV?cluster=devnet) (configured with `TransferHook`) | Reverts on flagged transfer (`0x1771`); full address found by searching the program's transaction history, stage 9B |
 | **A2A Agent Gate** | [`https://radar.cbellory.xyz`](https://radar.cbellory.xyz) | `POST /a2a`, `GET /.well-known/agent.json` |
 | **x402 Pay-per-Call** | [`https://pay.cbellory.xyz`](https://pay.cbellory.xyz) | `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC) |
 | **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | Monospace ZK Ledger & Active Defense UI |
 | **Trust Proof API** | `https://radar.cbellory.xyz/trust-proof?wallet=<addr>` | Verifiable on-chain attestation + x402 receipt |
 | **Actions & Blinks** | [`https://pay.cbellory.xyz/actions.json`](https://pay.cbellory.xyz/actions.json) | Phantom, Solflare, Dialect one-tap scan card |
-| **Canary Node** | Orange Pi 24/7 Node (`192.168.0.164`) | 1,500+ uninterrupted polling loops |
+| **Canary Node** | Orange Pi (ARM64, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
 
 ---
 

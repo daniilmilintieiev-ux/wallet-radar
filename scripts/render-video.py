@@ -209,7 +209,7 @@ def render_slide_4(lang="ru"):
     f_desc = get_font(22)
     
     draw.text((80, 110), "04 // EDGE DEPLOYMENT", fill=AMBER, font=f_eye)
-    draw.text((80, 145), "24/7 Orange Pi Node · Independent Validation Pending", fill=TEXT_WHITE, font=f_tit)
+    draw.text((80, 145), "Continuous Orange Pi Node · Independent Validation Pending", fill=TEXT_WHITE, font=f_tit)
     draw.text((80, 205), "Autonomous hardware node active. Walk-forward accuracy claim retracted pending ground-truth review (see ground-truth/PROTOCOL.md).", fill=TEXT_MUTED, font=f_desc)
 
     # 4 Stat Pillars
@@ -220,7 +220,7 @@ def render_slide_4(lang="ru"):
     stats = [
         ("N/A", "WALK-FORWARD ACCURACY", "Retracted -- independent validation not yet complete", TEXT_MUTED),
         ("N/A", "FALSE BLOCKS ON DEX", "Retracted -- independent validation not yet complete", TEXT_MUTED),
-        ("62 MB", "EDGE NODE RAM FOOTPRINT", "Physical Orange Pi 3B (ARM64) 24/7 daemon", AMBER),
+        ("~150 MB", "EDGE NODE RAM FOOTPRINT (RSS, stage 9C measurement)", "Physical Orange Pi (ARM64, Armbian) daemon, continuous monitoring", AMBER),
         ("665", "PASSING UNIT TESTS", "0 failures · CI regression suite (not an accuracy claim)", GREEN)
     ]
 
@@ -235,11 +235,11 @@ def render_slide_4(lang="ru"):
         
     # Bottom info box
     draw.rounded_rectangle([80, 640, 1840, 840], radius=16, fill=PANEL_COLOR, outline=BORDER_COLOR, width=2)
-    draw.text((120, 675), "PHYSICAL NODE DEPLOYMENT (Orange Pi 3B @ 192.168.0.164)", fill=AMBER, font=get_font(20, bold=True))
+    draw.text((120, 675), "PHYSICAL NODE DEPLOYMENT (Orange Pi, ARM64/Armbian, @ 192.168.0.164)", fill=AMBER, font=get_font(20, bold=True))
     draw.text((120, 725), "• Services active: radar-http, radar-watch (daily alert mode), x402server, canary-agent", fill=TEXT_WHITE, font=get_font(16))
     draw.text((120, 765), "• Daily Telegram Digest scheduled at 07:00 UTC+3 with rich HTML summary and zero day-time spam", fill=TEXT_MUTED, font=get_font(16))
     
-    sub = "Третье: независимая проверка точности History Machine ещё не завершена (см. ground-truth/PROTOCOL.md). Orange Pi нода в 62 МБ RAM..." if lang == "ru" else "Third: independent accuracy validation of History Machine is not yet complete (see ground-truth/PROTOCOL.md). Orange Pi node in 62 MB RAM..."
+    sub = "Третье: независимая проверка точности History Machine ещё не завершена (см. ground-truth/PROTOCOL.md). Orange Pi (ARM64, Armbian), непрерывный мониторинг..." if lang == "ru" else "Third: independent accuracy validation of History Machine is not yet complete (see ground-truth/PROTOCOL.md). Orange Pi (ARM64, Armbian), continuous monitoring..."
     draw_footer(draw, sub)
     return img
 
@@ -259,7 +259,7 @@ def render_slide_5(lang="ru"):
     cards = [
         ("01", "COPY-TRADING BOT SDK", "One-line screening middleware for Jupiter and Raydium bots.\nIntercepts toxic counterparties before order submission.\nSupports Solana Agent Kit & ElizaOS plugins.", AMBER),
         ("02", "DIALECT BLINKS (ACTIONS)", "One-tap wallet safety scans directly in Twitter/X and Discord.\nx402 micropayments (0.005 USDC) with instant attestation.\nStandard Solana Actions manifest live at pay.cbellory.xyz.", CYAN),
-        ("03", "SCALED WATCHLIST (100-300)", "Expanding 24/7 background monitoring on the Orange Pi node.\nAutomated harvester dataset across top institutional actors.\nContinuous anomaly telemetry without RPC overuse.", GREEN)
+        ("03", "SCALED WATCHLIST (100-300)", "Expanding continuous background monitoring on the Orange Pi node.\nAutomated harvester dataset across top institutional actors.\nContinuous anomaly telemetry without RPC overuse.", GREEN)
     ]
     
     for i, (num, title, desc, col) in enumerate(cards):
