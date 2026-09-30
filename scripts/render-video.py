@@ -1,6 +1,15 @@
+import json
 import os
 import subprocess
 from PIL import Image, ImageDraw, ImageFont
+
+def load_devnet_log_sample():
+    """Real devnet transaction data (assets/devnet-log-sample.json), fetched via
+    getTransaction against https://api.devnet.solana.com, stage 9B/9D -- not a
+    hardcoded/synthetic terminal simulation."""
+    path = os.path.join(os.path.dirname(__file__), "..", "assets", "devnet-log-sample.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 WIDTH = 1920
 HEIGHT = 1080
@@ -102,31 +111,39 @@ def render_slide_2(lang="ru"):
     f_tit = get_font(42, bold=True)
     f_desc = get_font(22)
     
+    log_sample = load_devnet_log_sample()
+
     draw.text((80, 110), "02 // ON-CHAIN ENFORCEMENT LAYER", fill=AMBER, font=f_eye)
     draw.text((80, 145), "SPL Token-2022 Transfer Hook Live on Solana Devnet", fill=TEXT_WHITE, font=f_tit)
-    draw.text((80, 205), "Hardened across 11 internal audit revisions. Autonomous revert 0x1771 (DestinationHighRisk).", fill=TEXT_MUTED, font=f_desc)
-    
+    draw.text((80, 205), "Hardened across 11 internal audit revisions. Autonomous revert 0x1771 (CounterpartyFlagged).", fill=TEXT_MUTED, font=f_desc)
+
     # Terminal frame
     draw.rounded_rectangle([80, 280, 1840, 840], radius=16, fill=(0, 0, 0), outline=BORDER_COLOR, width=2)
-    
+
     f_term = get_font(18)
-    trace = [
-        ("[19:14:02.102] solana transaction simulate --devnet --commitment confirmed", TEXT_WHITE),
-        ("[19:14:02.140] > Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV invoke [1]", CYAN),
-        ("[19:14:02.142]   Program log: Instruction: TransferHookExecute", TEXT_MUTED),
-        ("[19:14:02.145]   Program log: Validating destination scan record PDA [b\"radar_record\", mint, wallet]...", TEXT_MUTED),
-        ("[19:14:02.148]   Program log: Attestation age: 14s (within MAX_ATTESTATION_AGE_SEC = 300s)", GREEN),
-        ("[19:14:02.152]   Program log: Verification: TOXIC_MINT active freeze authority (HiMSSzzw...)", AMBER),
-        ("[19:14:02.155]   Program log: Destination posture: BLOCKED (spend limit: $0)", RED),
-        ("[19:14:02.158]   Program log: Custom program error: 0x1771 (DestinationHighRisk)", RED),
-        ("[19:14:02.162] < Program wvN1... consumed 24,190 compute units; failed with error 0x1771", RED),
-        ("[19:14:02.170] RESULT: TRANSACTION INTERCEPTED AND REVERTED ON-CHAIN BEFORE BALANCE TRANSFER", GREEN),
-    ]
-    
-    y = 320
+    # Built from a real devnet transaction's actual logMessages (assets/devnet-log-sample.json,
+    # stage 9B/9D) -- not a hand-typed simulation. Solana program logs carry no per-line
+    # wall-clock timestamp, so none is invented here; only the real signature/slot/compute
+    # units from that transaction's meta are shown.
+    trace = [(f"$ solana confirm {log_sample['signature']} --url devnet", TEXT_WHITE)]
+    for line in log_sample["logMessages"]:
+        if "failed" in line or "REJECTED" in line or "CounterpartyFlagged" in line:
+            col = RED
+        elif "invoke" in line:
+            col = CYAN
+        else:
+            col = TEXT_MUTED
+        trace.append((f"  {line}", col))
+    trace.append((
+        f"RESULT: TRANSACTION REVERTED ON-CHAIN (slot {log_sample['slot']}, "
+        f"{log_sample['computeUnitsConsumed']} compute units consumed) -- BALANCE TRANSFER BLOCKED",
+        GREEN,
+    ))
+
+    y = 300
     for line, col in trace:
         draw.text((120, y), line, fill=col, font=f_term)
-        y += 48
+        y += 40
         
     sub = "Первое: ончейн-защита на SPL Token-2022 Transfer Hook развернута в Devnet. Пройдено 11 ревизий аудита..." if lang == "ru" else "First: on-chain defense via SPL Token-2022 Transfer Hook is live on Devnet across 11 audit revisions..."
     draw_footer(draw, sub)
