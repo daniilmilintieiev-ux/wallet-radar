@@ -5,7 +5,7 @@
 [![Tests](https://img.shields.io/badge/tests-600%2B%20passing%20%7C%2028%20suites-3fb950.svg)](file:///test)
 [![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20revisions%20verified-blue.svg)](file:///SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
-[![ZK Compression](https://img.shields.io/badge/light%20protocol-408.2x%20rent%20savings-ffb000.svg)](file:///src/oracle)
+[![ZK Compression](https://img.shields.io/badge/light%20protocol-~400x%20less%20locked--up%20rent-ffb000.svg)](file:///src/oracle)
 [![License](https://img.shields.io/badge/license-MIT-informational.svg)](file:///LICENSE)
 
 ---
@@ -55,7 +55,7 @@ It enforces safety at two coordinated layers:
       │  │ SPL Token-22 Transfer Hook (Devnet)     │  │ Light Protocol ZK Scan Ledger     │ │
       │  │ • Program: wvN1kyvjoFSJq...MGSayAzHwoV  │  │ • RS01 Ed25519 Signed Attestations│ │
       │  │ • Two-Sided Counterparty Verification   │  │ • ~0.000005 SOL Rent-Free State   │ │
-      │  │ • Live CPI Revert on Flagged Accounts   │  │ • 408.2x Cheaper Than Normal PDAs │ │
+      │  │ • Live CPI Revert on Flagged Accounts   │  │ • ~400x Less Locked-Up Rent       │ │
       │  └─────────────────────────────────────────┘  └───────────────────────────────────┘ │
       └─────────────────────────────────────────────────────────────────────────────────────┘
                                                  ▲
@@ -219,7 +219,7 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 
 | Metric | Traditional Solana PDA | Wallet Radar ZK Compressed State | Improvement |
 |---|---|---|---|
-| **Account Rent Deposit** | ~0.002039 SOL ($0.30+) | **~0.000005 SOL ($0.0007)** | **408.2x Cheaper** |
+| **Account Rent Deposit** | ~0.002039 SOL ($0.30+) | **~0.000005 SOL ($0.0007)** | **~400x less locked-up rent deposit** (a rent deposit is refundable on account close either way — this compares how much SOL is tied up while the account is open, not a fee) |
 | **State Storage** | Full validator RAM | Merkle tree compressed leaf | Zero validator bloat |
 | **Binary Encoding** | 500+ bytes Borsh | **34–130 bytes `RS01` header** | High-density packing |
 | **Cryptographic Proof** | Plain account data | **Ed25519 oracle signature trailer** | Verifiable off-chain |
