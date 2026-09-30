@@ -117,3 +117,193 @@ a separate, future change.
   code change made or proposed — the three systems are each internally
   consistent; this entry exists only to prevent the same conflation from
   recurring in future doc edits.
+
+## `/gate-copy` cannot be gated by any authentication, and is open by default
+
+- Источник: отчёт 11A, п.2.
+- `src/http-server.ts:108-131` (`authorizeMutating`): line 115, `if (!token)
+  return true;` — without `RADAR_API_TOKEN` set (the out-of-the-box
+  default), every route is authorized, including the mutating set
+  (`/watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`, `:116-118`).
+- Even when `RADAR_API_TOKEN` and `RADAR_AUTH_HEAVY`/`RADAR_REQUIRE_AUTH`
+  are both set, the `isHeavy` set (`:119-122`) only covers `/batch`,
+  `/scan`, `/trust`, `/simulate` — `/gate-copy` is in neither `isMutating`
+  nor `isHeavy`, so it cannot be gated by this mechanism under any
+  configuration.
+- `/gate-copy` is in `LIVE_HELIUS_PATHS` (`http-server.ts:800-811`) and
+  exists only in `http-server.ts`, not in the paid `src/x402server.ts`
+  (confirmed via `grep -n "gate-copy" src/x402server.ts` — no match) — so
+  it is both unauthenticated-by-default and free, while still incurring
+  real Helius API cost.
+- **Status:** находка, исправление запланировано после 2026-10-06 (`src/`
+  вне области этого этапа).
+
+## `fetchMintMetadata`/`getTokenLargestAccounts` failure silently skips TOXIC_MINT for that mint (fails open)
+
+- Источник: отчёт 11A, п.1(а).
+- `src/mint.ts:496-524` (`fetchSwapMintRisk`): a per-mint fetch failure is
+  caught (`:516-518`) and that mint is simply omitted from the returned
+  `MintRiskMap` — not recorded as `null`, just absent.
+- `src/analyzer.ts:780`: `const meta = mintRisk[m]; if (!meta) continue;
+  // Fetch failed or no metadata: skip rule for this mint` — a mint whose
+  metadata fetch failed receives no TOXIC_MINT evaluation at all,
+  regardless of its actual risk.
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## `BLUECHIP_FALLBACK_PRICES` is defined but never used; price-feed failure degrades LARGE_SWAP to major-mints-only
+
+- Источник: отчёт 11A, п.1(в).
+- `src/pricing.ts:115-128` defines a hardcoded fallback USD price table
+  (SOL, USDC, USDT, WBTC, WETH, mSOL, bSOL, JitoSOL, JUP, RAY, BONK, PYTH).
+  `grep -rn "BLUECHIP_FALLBACK_PRICES" src/*.ts` finds only this
+  definition — it is never imported or referenced anywhere else.
+- On a real Jupiter price-feed failure, `fetchSwapPrices` (`pricing.ts:
+  135-149`) returns `null` (`:147`); `LARGE_SWAP` then falls back to
+  comparing raw token quantities restricted to `MAJOR_MINTS` (SOL/USDC/
+  USDT) only (`analyzer.ts:661-681`) — non-major mints get no LARGE_SWAP
+  detection at all during a price-feed outage, not stale hardcoded prices.
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## TOXIC_MINT does not consider Token-2022 extensions
+
+- Источник: отчёт 11A, п.1(б).
+- `grep -rn "permanentDelegate|pausable|transferHook|defaultAccountState"
+  src/mint.ts src/types.ts src/analyzer.ts` — zero matches.
+- `MintRiskInfo` (`src/mint.ts:9-46`, `:48-73`) only ever extracts
+  `mintAuthority`, `freezeAuthority`, `top10Pct`, `isPumpFun`. Token-2022
+  extensions that can equally or more severely affect counterparty risk
+  (`permanentDelegate` — clawback, `pausableConfig` — global transfer
+  halt, `transferHook` — arbitrary on-transfer logic, `defaultAccountState`
+  — new accounts start frozen) are not read or evaluated by TOXIC_MINT at
+  all.
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## x402 replay protection is per-process; cross-process concurrent delivery is possible
+
+- Источник: отчёт 11A, п.3.
+- `src/x402server.ts:1000-1005`: the replay check (`inFlightPayments.has()
+  || store.hasSettledPayment()`) and `inFlightPayments.add()` are fully
+  synchronous with no `await` between them — not racy within one process.
+- `inFlightPayments` is in-memory, per-process. `x402server.ts:1161-1169`
+  (and the matching `/analyze` branch, `:1183-1187`): the 200 response with
+  the full paid result is sent **regardless** of whether
+  `store.recordSettledPayment()` returned `true` or `false` — the code's
+  own debug log admits this: `console.warn("[x402] payment signature
+  settled concurrently; scan still delivered")` (`:1162`). Two concurrent
+  requests carrying the same valid signature, routed to two different
+  worker processes, would each pass their own local check, each re-verify
+  successfully (verification is read-only against the chain), and each be
+  served — the SQLite `UNIQUE` constraint on `settled_payments.signature`
+  prevents a duplicate database row, not duplicate delivery.
+- Confirmed by reading the code; not exercised under real multi-process
+  concurrency (out of scope, no network/process orchestration this stage).
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## Payment-verification error message may include `err.message`; whether it can contain the RPC URL (with the API key) is unconfirmed
+
+- Источник: отчёт 11A, п.1(г)/п.3.
+- `src/mint.ts:411`, `src/trust.ts:336`, `src/x402server.ts:180` all embed
+  `HELIUS_API_KEY` directly into the RPC URL as a query parameter
+  (`?api-key=...`).
+- `src/x402server.ts:492-493`: `catch (err) { return { valid: false, error:
+  \`Verification exception: ${err.message}\` } }` — this `error` field is
+  returned in the public HTTP response to the paying client.
+- Whether a failed `fetch()` call's `.message` can ever contain the
+  request URL (and thus the embedded key) — НЕ ПРОВЕРЕНО: confirming this
+  requires triggering a real network failure against a key-bearing URL,
+  which this stage's rules do not permit.
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## Transfer Hook: single program upgrade authority, single per-mint config authority, no explicit risk_score bound
+
+- Источник: отчёт 11A, п.4.
+- The program's own upgrade authority (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`,
+  confirmed stage 9B) is a single key that can redeploy the entire program
+  for every mint that uses it — no multisig/timelock observed on-chain
+  (whether that key is itself a multisig/Squads vault was not checked,
+  would require a live RPC call).
+- Each mint's `config.authority` (`programs/radar-transfer-hook/src/
+  lib.rs:640,710,739`, Anchor `has_one = authority`) is a single `Signer`
+  per mint, separate from the program upgrade authority, with no on-chain
+  multisig requirement.
+- `write_scan_record`'s `risk_score: u8` parameter (`lib.rs:492`) has no
+  explicit `<= 100` bounds check — low severity, since only the trusted
+  `config.authority` can call this instruction.
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## Test-quality: two constants have zero test coverage at their boundary, five tests are tautological
+
+- Источник: отчёт 11A, п.5.
+- Mutating `REGIME_DOMINANT_RATIO` (`analyzer.ts:256`, 0.7 → 0.4) and
+  `DEFENSE_THRESHOLDS.blocked` (`defense.ts:109`, 75 → 90) each produced
+  **zero** failures across `test/analyzer.test.js`, `test/defense.test.js`,
+  `test/toxic_mint.test.js`, `test/regime.test.js` (115 tests total).
+  Verified by editing each constant in turn, running `npm run build &&
+  node --test <the 4 files>`, then reverting (`git checkout --`); final
+  `git status` was clean.
+- Five tests derive their own pass/fail oracle from the same constant the
+  production rule reads, so they cannot catch a regression in that
+  constant's value (only in the comparison operator):
+  1. `test/analyzer.test.ts:685` — "DORMANT_ACTIVE: boundary conditions" —
+     builds its gap from `DEFAULT_CONFIG.dormantDays * 86_400` (`:687`).
+  2. `test/analyzer.test.ts:465` — "ACTIVITY_BURST: window boundary" —
+     builds its window from `DEFAULT_CONFIG.burstWindowMin * 60` (`:467`).
+  3. `test/analyzer.test.ts:536` — "CONCENTRATION: window boundary" —
+     builds its span from `DEFAULT_CONFIG.concentrationWindowMin * 60`
+     (`:538`).
+  4. `test/defense.test.ts:67` — "escalates to blocked at risk >= blocked
+     threshold" — feeds `DEFENSE_THRESHOLDS.blocked` directly as the input
+     `riskScore` (`:68`).
+  5. `test/defense.test.ts:62` — "escalates to gated at risk >= gated
+     threshold" — same pattern with `DEFENSE_THRESHOLDS.gated` (`:63`).
+- **Status:** находка, исправление запланировано после 2026-10-06 (`test/`
+  вне области этого этапа).
+
+## `npm audit`: 12 known vulnerabilities in the dependency tree (9 moderate, 3 high)
+
+- Источник: отчёт 11B.
+- Reported packages: `bigint-buffer`, `@solana/buffer-layout-utils`,
+  `@solana/spl-token` — all reachable through `@solana/spl-token@0.4.15`'s
+  own dependency tree, not a direct top-level choice.
+- Impact on this project's actual usage was not assessed this stage (no
+  exploitability analysis of which code paths touch the vulnerable
+  functions).
+- **Status:** находка, исправление запланировано после 2026-10-06.
+
+## "Sub-second" latency claim holds for offline `/analyze` only, not for live `/trust`
+
+- Источник: отчёт 11B.
+- Offline `/analyze` (pre-recorded fixtures, no network): median 3.69ms.
+- Live `/trust` (real Helius history fetch + RPC balance query): measured
+  1.0–2.4s across 5 wallets.
+- README wording corrected this stage (see below) to distinguish the two.
+- **Status:** находка, исправление запланировано после 2026-10-06 (wording
+  fixed this stage; no code change proposed).
+
+## `examples/copy-bot-firewall.ts` demo uses a built-in mock `fetchFn`, never calls a real server
+
+- Источник: отчёт 11A/11B.
+- `examples/copy-bot-firewall.ts:74-94`: `createRadarClient` is
+  constructed with a `fetchFn` that always returns canned, hardcoded
+  responses keyed on specific example wallet addresses ("Mock fallback
+  fetcher for standalone demo runs if remote server is offline", `:76`) —
+  this mock always takes priority, so the demo never actually reaches
+  `RADAR_API_URL`/a real running server, regardless of whether one exists.
+- Not a bug — the demo is explicitly designed to run standalone — but
+  worth stating plainly rather than implying it exercises a live gate.
+- **Status:** находка, исправление запланировано после 2026-10-06 (demo
+  behavior, not incorrect, just undocumented until now).
+
+## Light Protocol oracle: logic confirmed in tests, on-chain write path unverified; the program ID is Light's own, not project-specific
+
+- Источник: отчёт 11B.
+- `src/oracle/ledger.ts:77`: `DEFAULT_ORACLE_PROGRAM_ID = new
+  PublicKey("SySTEM1eSU2p4BGQfQpimFEWWSC1XDFeun3Nqzz3rT7")` — the comment
+  directly above it states "Defaults to Light Protocol System Program" —
+  this is Light Protocol's own program, not a program this project
+  deployed or controls.
+- Confirmed: unit-test coverage of the ledger's pack/unpack/verify logic
+  exists. Not confirmed this stage: an actual write to Light Protocol's
+  compressed-account state on a live network (would require network
+  access, out of scope).
+- **Status:** находка, исправление запланировано после 2026-10-06.

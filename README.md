@@ -22,7 +22,7 @@ When an autonomous agent interacts with a wallet, it faces critical risks:
 **Wallet Radar is the pre-trade firewall that solves this.** Point-in-time scanners only answer *"what does this wallet hold right now?"* Wallet Radar answers **"what changed, does it matter, and is it safe to trade with right now?"**
 
 It enforces safety at two coordinated layers:
-- **Layer 1 (Off-Chain Pre-Trade Gate):** Sub-second risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
+- **Layer 1 (Off-Chain Pre-Trade Gate):** Offline analysis: milliseconds. Live check: about 1-2 seconds. Risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
 - **Layer 2 (On-Chain Hard Enforcement):** SPL Token-22 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level, backed by Light Protocol ZK compression (~0.000005 SOL audit attestations).
 
 ```
@@ -83,7 +83,7 @@ It enforces safety at two coordinated layers:
 | **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | Monospace ZK Ledger & Active Defense UI |
 | **Trust Proof API** | `https://radar.cbellory.xyz/trust-proof?wallet=<addr>` | Verifiable on-chain attestation + x402 receipt |
 | **Actions & Blinks** | [`https://pay.cbellory.xyz/actions.json`](https://pay.cbellory.xyz/actions.json) | Phantom, Solflare, Dialect one-tap scan card |
-| **Canary Node** | Orange Pi (ARM64, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
+| **Canary Node** | ARM64 board (12 cores, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
 
 ---
 
@@ -520,6 +520,18 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 - Число правил: `analyzer.ts` реализует 9 правил, которые везде и посчитаны как «9», плюс отдельное `TAINTED_FUNDING`, не входящее в этот счётчик нигде в коде и тестах (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
 - `TAINTED_FUNDING` проверяет только самый первый входящий перевод на кошелёк за всю его историю — более позднее поступление от известного эксплойтера повторно не проверяется (см. описание правила выше).
 - `DORMANT_ACTIVE` может ложно срабатывать у кошелька, который торгует каждый день без реальных перерывов, из-за самой границы 7-дневного окна `trust`-проверки — воспроизведено офлайн на синтетической фикстуре (стадия 9E); требует проверки на живых данных после остановки сбора shadow-collector.
+- `/gate-copy` не входит ни в один из наборов авторизации (`isMutating`/`isHeavy`, `src/http-server.ts:108-131`) и не может быть закрыт `RADAR_API_TOKEN` ни при какой конфигурации; вызывает Helius и без токена вообще все маршруты открыты по умолчанию (`authorizeMutating`, `:115`).
+- Сбой `fetchMintMetadata`/`getTokenLargestAccounts` приводит к тихому пропуску метаданных (`src/mint.ts:496-524`) — `TOXIC_MINT` для этого mint просто не оценивается (fail open), а не считается безопасным или опасным (`src/analyzer.ts:780`).
+- `BLUECHIP_FALLBACK_PRICES` (`src/pricing.ts:115-128`) определён, но нигде не используется; при сбое Jupiter `LARGE_SWAP` работает только для SOL/USDC/USDT по сырым величинам.
+- `TOXIC_MINT` не учитывает расширения Token-2022 (`permanentDelegate`, `pausableConfig`, `transferHook`, `defaultAccountState`) — `MintRiskInfo` содержит только `mintAuthority`, `freezeAuthority`, `top10Pct`, `isPumpFun`.
+- x402: защита от повтора платежа синхронна и не имеет гонки внутри одного процесса, но между процессами возможна повторная доставка результата по одной подписи (`src/x402server.ts:1000-1005`, `:1161-1169`).
+- Сообщение об ошибке проверки платежа может включать `err.message` (`src/x402server.ts:492-493`); попадание URL с API-ключом в это сообщение не проверялось (нужен реальный сетевой сбой).
+- Transfer Hook: один upgrade authority у самой программы и один `config.authority` на mint (без мультисига на уровне протокола); `risk_score` в `write_scan_record` не ограничен явно значением ≤100 (`lib.rs:492`).
+- Качество тестов: мутации `REGIME_DOMINANT_RATIO` и `DEFENSE_THRESHOLDS.blocked` не роняют ни одного теста; 5 тестов сверяют результат с той же константой, что и проверяемый код (список в `docs/KNOWN-ISSUES.md`).
+- `npm audit`: 12 известных уязвимостей в дереве зависимостей (9 moderate, 3 high — `bigint-buffer`, `@solana/buffer-layout-utils`, `@solana/spl-token`), все через `@solana/spl-token@0.4.15`; влияние на проект не оценивалось.
+- Заявление «sub-second» было верно только для офлайн `/analyze` (медиана 3.69 мс); живая проверка `/trust` измерена в 1.0-2.4 с на 5 кошельках — формулировка ниже исправлена.
+- Демо `examples/copy-bot-firewall.ts` использует встроенные заглушки ответов и не обращается к реальному серверу, даже если он запущен.
+- Оракул Light Protocol: логика подтверждена тестами; реальная запись в сеть Light Protocol не проверялась в рамках этого аудита. `DEFAULT_ORACLE_PROGRAM_ID` (`src/oracle/ledger.ts:77`) — системная программа Light Protocol, не контракт этого проекта.
 
 ## Как проверить
 
