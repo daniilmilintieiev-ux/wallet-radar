@@ -512,6 +512,35 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 **Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
+## Статус функций
+
+Проверено на ветке `docs/claims-fix`, дата 2026-09-30.
+
+| Функция | Статус | Ограничение |
+|---|---|---|
+| CLI `radar selftest` | живой запуск | встроенная синтетическая фикстура, сеть не требуется |
+| CLI `radar benchmark` | живой запуск | 24 детерминированных кейса, сеть не требуется |
+| CLI `radar analyze` | живой запуск | локальный JSON-файл истории, сеть не требуется |
+| CLI `radar prices` | живой запуск | публичный GET к Jupiter Price API |
+| CLI `radar add` / `history` / `report` / `alerts` / `remove` | живой запуск | локальное чтение/запись SQLite, сеть не требуется |
+| CLI `radar digest` | живой запуск | локальный запуск без ключей Telegram |
+| CLI `radar replay` | тесты | без ключа Helius живым запуском не проверялся (6 тестов `test/replay.test.js`) |
+| CLI `radar scan` | только код | CLI-обёртка живым запуском не проверялась; HTTP `/scan` подтверждён отдельно (ниже) |
+| CLI `radar trust` | тесты | алгоритм проверен 34 тестами `test/trust.test.js`; живым запуском подтверждён только HTTP `/trust` |
+| CLI `radar watch` | тесты | цикл проверен тестами `test/watch.test.js`/`test/defense.test.js` и systemd-сервисом на плате |
+| `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` | живой запуск | без платного Helius-ключа (офлайн/публичные данные) |
+| `POST /analyze` | живой запуск | офлайн, медиана времени ответа 3.69 мс |
+| `POST /trust` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
+| `POST /scan` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
+| `POST /gate-copy` | живой запуск (ключ Helius, 1-2,5 с) | без авторизации по умолчанию, см. «Ограничения и известные проблемы» |
+| `POST /simulate` | тесты | покрыт `test/simulate.test.js` |
+| `POST /batch` | тесты | покрыт `test/trust.test.js` |
+| MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | живой запуск | |
+| MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | тесты | покрыты `test/mcp.test.js` |
+| SPL Token-22 Transfer Hook (Devnet) | живой запуск | реальная транзакция с откатом `0x1771`/`CounterpartyFlagged` |
+| Демо `examples/copy-bot-firewall.ts` | не подтверждено | `fetchFn` — встроенные заглушки с зашитыми вердиктами, реального обращения к радару по умолчанию нет |
+| Запись аттестаций Light Protocol (ончейн, Devnet) | не подтверждено | `getCompressedAccountsByOwner` недоступен на обычном Devnet RPC (`-32601 Method not found`); подтверждена только офлайн-логика (`test/oracle.test.js`) |
+
 ## Ограничения и известные проблемы
 
 Полный список с файл:строка — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). Кратко:
