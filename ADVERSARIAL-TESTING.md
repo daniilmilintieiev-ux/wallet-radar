@@ -1,7 +1,7 @@
 # Automated Adversarial Testing Report
 
 **Target Codebase:** `wallet-radar`  
-**Execution Date:** September 25, 2026  
+**Execution Date:** 2026-09-25  
 **Environment:** Local Sandbox, Node.js v24.19.0, Solana Web3.js v1.99.0, SPL Token-2022  
 **Test Suite:** `test/adversarial.test.ts` (`dist/test/adversarial.test.js`)  
 **Scope:** Two money-moving critical financial subsystems:

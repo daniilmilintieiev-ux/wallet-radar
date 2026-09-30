@@ -512,6 +512,30 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 **Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
+## Ограничения и известные проблемы
+
+Полный список с файл:строка — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). Кратко:
+
+- Версия в `package.json` (`1.0.0`) не совпадает с версией, которую отдаёт A2A-карточка (`src/http-server.ts:592`, `"0.3.0"`) — несвязанные поля, не синхронизированы.
+- Число правил: `analyzer.ts` реализует 9 правил, которые везде и посчитаны как «9», плюс отдельное `TAINTED_FUNDING`, не входящее в этот счётчик нигде в коде и тестах (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
+- `TAINTED_FUNDING` проверяет только самый первый входящий перевод на кошелёк за всю его историю — более позднее поступление от известного эксплойтера повторно не проверяется (см. описание правила выше).
+- `DORMANT_ACTIVE` может ложно срабатывать у кошелька, который торгует каждый день без реальных перерывов, из-за самой границы 7-дневного окна `trust`-проверки — воспроизведено офлайн на синтетической фикстуре (стадия 9E); требует проверки на живых данных после остановки сбора shadow-collector.
+
+## Как проверить
+
+Пять воспроизводимых команд (каждая проверена в рамках этапов 9B–9E):
+
+1. **Полный набор тестов**: `npm test` → 666/666, 29 suites.
+2. **Детерминированный бенчмарк**: `npm run radar -- benchmark` → 24/24 на версионированном синтетическом наборе фикстур (это регрессионный тест на самих правилах, не независимый замер точности на реальных данных — см. «Статус независимой оценки»).
+3. **Офлайн self-test**: `npm run radar -- selftest` → без сети и API-ключей, прогоняет полный конвейер детекции на синтетическом кошельке.
+4. **Детерминированный replay**: `node dist/src/cli.js replay <wallet> --since <unix-ts> --until <unix-ts>` → повторно прогоняет детектор по историческому окну реального кошелька; одинаковые входные данные всегда дают одинаковый вердикт.
+5. **Живой девнет-хук** (публичный RPC, только чтение):
+   ```bash
+   curl -s https://api.devnet.solana.com -X POST -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",{"encoding":"base64"}]}'
+   ```
+   → подтверждает `executable: true`, владелец — upgradeable BPF loader.
+
 ## Support
 
 - **Report issues** via [GitHub Issues](https://github.com/daniilmilintieiev-ux/wallet-radar/issues) (non-security) or privately via [SECURITY.md](SECURITY.md) (security).
@@ -527,6 +551,9 @@ Wallet Radar is read-only and custody-free: it reads public on-chain data via He
 - [CHANGELOG.md](CHANGELOG.md) — release history and leap entries.
 - [SECURITY.md](SECURITY.md) — security policy, disclosure, data handling.
 - [docs/trust-spec.md](docs/trust-spec.md) — trust-check architecture and decision boundaries.
+- [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — tracked documentation/code inconsistencies, with file:line citations.
+- [docs/PROPOSED-DESCRIPTIONS.md](docs/PROPOSED-DESCRIPTIONS.md) — proposed corrected tool/endpoint descriptions, not yet applied to `src/`.
+- [ADVERSARIAL-TESTING.md](ADVERSARIAL-TESTING.md) — adversarial test matrix for the x402 server and Transfer Hook.
 
 ## License
 

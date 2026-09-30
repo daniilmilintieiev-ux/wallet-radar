@@ -1,6 +1,6 @@
 # `radar trust <wallet> | --watchlist` — Specification
 
-**Status: v1 — verdict + watchlist shortlist production-ready; network (RPC/Jupiter) is best-effort; fully covered by tests (70/70).**
+**Status: v1 — verdict + watchlist shortlist production-ready; network (RPC/Jupiter) is best-effort; fully covered by tests (40/40, `node --test dist/test/trust.test.js dist/test/trust-proof.test.js`, stage 9E).**
 
 ## Purpose
 
