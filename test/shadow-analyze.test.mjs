@@ -22,6 +22,8 @@ import {
   loadPoolCandidates,
   summarizePoolCandidatesByHour,
   formatPoolCandidatesByHourReport,
+  computeSeenAtVsTGapMinutes,
+  formatSeenAtVsTGapReport,
   countDistinctBuyers,
   topBuyers,
   oneRecordPerBuyer,
@@ -503,6 +505,63 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
   test("formatCountersOnlyReport: includes the pool_candidates-by-hour section without leaking outcome data", () => {
     const report = formatCountersOnlyReport([], [], 0, [{ seen_at: "2026-09-29T11:00:00.000Z", selected: 1 }]);
     assert.match(report, /11:00 UTC -- увидено: 1, выбрано: 1/);
+    assert.doesNotMatch(report, /outcome/i);
+    assert.doesNotMatch(report, /DANGEROUS/);
+  });
+
+  // --- Stage 7L task 3: seen_at (pool_candidates) minus t distribution ---
+
+  test("computeSeenAtVsTGapMinutes: median/p90/max computed over matched rows, using the SELECTED candidate per pool", () => {
+    const rows = [
+      { pair: "PairA", t: 1000 }, // seen_at 1060s later -> 1min gap
+      { pair: "PairB", t: 1000 }, // seen_at 1300s later -> 5min gap
+      { pair: "PairC", t: 1000 }, // seen_at 1600s later -> 10min gap
+    ];
+    const poolCandidateRows = [
+      { pool: "PairA", seen_at: new Date(1060 * 1000).toISOString(), selected: 1 },
+      { pool: "PairA", seen_at: new Date(1030 * 1000).toISOString(), selected: 0 }, // seen but not selected -- must be ignored
+      { pool: "PairB", seen_at: new Date(1300 * 1000).toISOString(), selected: 1 },
+      { pool: "PairC", seen_at: new Date(1600 * 1000).toISOString(), selected: 1 },
+    ];
+    const s = computeSeenAtVsTGapMinutes(rows, poolCandidateRows);
+    assert.equal(s.matchedCount, 3);
+    assert.equal(s.unmatchedCount, 0);
+    assert.ok(Math.abs(s.medianMinutes - 5) < 1e-9);
+    assert.ok(Math.abs(s.maxMinutes - 10) < 1e-9);
+    assert.ok(s.p90Minutes >= 5 && s.p90Minutes <= 10);
+  });
+
+  test("computeSeenAtVsTGapMinutes: rows whose pair has no selected=1 candidate are counted as unmatched, never given a fabricated gap", () => {
+    const rows = [
+      { pair: "PairMatched", t: 1000 },
+      { pair: "PairOrphan", t: 2000 }, // no pool_candidates row at all
+    ];
+    const poolCandidateRows = [{ pool: "PairMatched", seen_at: new Date(1060 * 1000).toISOString(), selected: 1 }];
+    const s = computeSeenAtVsTGapMinutes(rows, poolCandidateRows);
+    assert.equal(s.matchedCount, 1);
+    assert.equal(s.unmatchedCount, 1);
+  });
+
+  test("computeSeenAtVsTGapMinutes: empty input -> all stats null, zero counts, no throw", () => {
+    const s = computeSeenAtVsTGapMinutes([], []);
+    assert.equal(s.matchedCount, 0);
+    assert.equal(s.unmatchedCount, 0);
+    assert.equal(s.medianMinutes, null);
+    assert.equal(s.p90Minutes, null);
+    assert.equal(s.maxMinutes, null);
+  });
+
+  test("formatSeenAtVsTGapReport: reports the unmatched count explicitly when a pair has no matching candidate", () => {
+    const rows = [{ pair: "PairOrphan", t: 1000 }];
+    const report = formatSeenAtVsTGapReport(rows, []);
+    assert.match(report, /БЕЗ соответствующего pool_candidates/);
+    assert.match(report, /1/);
+  });
+
+  test("formatSeenAtVsTGapReport: never mentions outcome/DANGEROUS/SAFE -- pure timing diagnostic, safe for --counters-only", () => {
+    const rows = [{ pair: "PairA", t: 1000, outcome: "DANGEROUS" }];
+    const poolCandidateRows = [{ pool: "PairA", seen_at: new Date(1060 * 1000).toISOString(), selected: 1 }];
+    const report = formatSeenAtVsTGapReport(rows, poolCandidateRows);
     assert.doesNotMatch(report, /outcome/i);
     assert.doesNotMatch(report, /DANGEROUS/);
   });

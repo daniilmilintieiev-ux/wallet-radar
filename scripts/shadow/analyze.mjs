@@ -371,6 +371,82 @@ export function formatPoolCandidatesByHourReport(poolCandidateRows) {
 }
 
 /**
+ * Nearest-rank percentile over a numeric array (ascending sort, index =
+ * ceil(p * n) - 1, clamped). Simple and deterministic -- no interpolation.
+ */
+function percentile(sortedAsc, p) {
+  if (sortedAsc.length === 0) return null;
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.ceil(p * sortedAsc.length) - 1));
+  return sortedAsc[idx];
+}
+
+/**
+ * Stage 7L task 3 (docs/PREREGISTRATION.md section 16): distribution of the gap between
+ * pool_candidates.seen_at (when the collector actually captured liquidity_usd/price_usd_seen,
+ * see section 15е/16) and shadow_trades.t (the buyer's on-chain purchase time), in minutes.
+ * This is purely a timing diagnostic over the collector's OWN bookkeeping (pair, t, seen_at) --
+ * it reads neither outcome nor radar_verdict/radar_error, so it is safe under the look-ahead
+ * rule and callable from --counters-only.
+ *
+ * Match rule: for a shadow_trades row with pair P, use the pool_candidates row where
+ * pool === P AND selected = 1 (the cycle in which THIS trade was actually recorded) --
+ * not just any "seen" row, since a pool can be seen across several cycles before selection.
+ * A row with no such candidate is counted separately as unmatched, never silently dropped
+ * or defaulted to a gap of 0.
+ */
+export function computeSeenAtVsTGapMinutes(rows, poolCandidateRows) {
+  const selectedByPool = new Map();
+  for (const c of poolCandidateRows) {
+    if (!c.selected) continue;
+    // First selected candidate wins if duplicates exist -- pool_candidates is written
+    // once per (cycle_ts, pool), so more than one selected row for the same pool would
+    // mean it was processed in two different cycles; keep the earliest.
+    if (!selectedByPool.has(c.pool)) selectedByPool.set(c.pool, c);
+  }
+
+  const gapsMinutes = [];
+  let unmatchedCount = 0;
+  for (const row of rows) {
+    const candidate = selectedByPool.get(row.pair);
+    if (!candidate) {
+      unmatchedCount++;
+      continue;
+    }
+    const seenAtMs = new Date(candidate.seen_at).getTime();
+    const tMs = row.t * 1000;
+    gapsMinutes.push((seenAtMs - tMs) / 60000);
+  }
+
+  gapsMinutes.sort((a, b) => a - b);
+  const n = gapsMinutes.length;
+  const median = n === 0 ? null : n % 2 === 1 ? gapsMinutes[(n - 1) / 2] : (gapsMinutes[n / 2 - 1] + gapsMinutes[n / 2]) / 2;
+
+  return {
+    matchedCount: n,
+    unmatchedCount,
+    medianMinutes: median,
+    p90Minutes: percentile(gapsMinutes, 0.9),
+    maxMinutes: n === 0 ? null : gapsMinutes[n - 1],
+  };
+}
+
+export function formatSeenAtVsTGapReport(rows, poolCandidateRows) {
+  const s = computeSeenAtVsTGapMinutes(rows, poolCandidateRows);
+  const fmt = (v) => (v === null ? "н/д" : v.toFixed(2));
+  const lines = [];
+  lines.push(
+    `  seen_at (pool_candidates) минус t (записи), минуты -- медиана: ${fmt(s.medianMinutes)}, 90-й процентиль: ${fmt(s.p90Minutes)}, максимум: ${fmt(s.maxMinutes)} (записей с соответствием: ${s.matchedCount})`
+  );
+  if (s.unmatchedCount > 0) {
+    lines.push(`  Записей БЕЗ соответствующего pool_candidates (selected=1) по pair: ${s.unmatchedCount} -- соответствие не найдено, распределение выше их не включает.`);
+  }
+  if (s.matchedCount === 0 && s.unmatchedCount === 0) {
+    lines.push(`  Нет записей для сравнения (shadow_trades пуст).`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * PREREGISTRATION.md section 12, "правило подглядывания" (stage 7G): before collection
  * stops and the final outcomes.mjs run, analyze.mjs may ONLY print this -- record count,
  * error_logs count, skip_counters, and per-form RECORD COUNTS with no outcome/danger-rate
@@ -393,6 +469,12 @@ export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount, p
   lines.push("");
   lines.push("[COUNTERS-ONLY] pool_candidates -- увидено/выбрано по часам UTC (task 3 stage 7H, только счётчики):");
   lines.push(formatPoolCandidatesByHourReport(poolCandidateRows));
+  lines.push("");
+  // Stage 7L task 3: purely a timing diagnostic over (pair, t, seen_at) -- no outcome,
+  // no radar_verdict/radar_error read anywhere in computeSeenAtVsTGapMinutes, so this is
+  // safe under the look-ahead rule and belongs in counters-only too.
+  lines.push("[COUNTERS-ONLY] seen_at (pool_candidates) минус t: распределение в минутах (только счётчики/тайминг, без исходов):");
+  lines.push(formatSeenAtVsTGapReport(rows, poolCandidateRows));
   return lines.join("\n");
 }
 
@@ -610,6 +692,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log("");
       console.log("=== pool_candidates -- увидено/выбрано по часам UTC (task 3 stage 7H) ===");
       console.log(formatPoolCandidatesByHourReport(loadPoolCandidates(db)));
+      console.log("");
+      console.log("=== seen_at (pool_candidates) минус t: распределение в минутах (task 3 stage 7L) ===");
+      console.log(formatSeenAtVsTGapReport(rows, loadPoolCandidates(db)));
     }
   } finally {
     db.close();
