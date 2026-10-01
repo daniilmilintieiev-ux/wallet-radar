@@ -10,6 +10,7 @@ import {
 import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
 import { deriveAssociatedTokenAddress, buildSplTransferInstruction } from "../sdk/index.js";
 import { USDC_MINT } from "../types.js";
+import { getVersion } from "../version.js";
 
 export { ACTIONS_CORS_HEADERS };
 
@@ -326,7 +327,7 @@ export function getBlinkRegistrationManifest(
 
   return {
     name: "Wallet Radar",
-    version: "1.0.0",
+    version: getVersion(),
     description: "One-tap Solana wallet risk scan and on-chain ZK attestation via Blinks",
     actionUrl,
     actionsJsonUrl,
