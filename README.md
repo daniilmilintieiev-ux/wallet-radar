@@ -498,7 +498,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 - **Decision Engine & Pre-Trade Simulation**: Added `radar_simulate`, confidence scoring, and dynamic payment limits (`16b35f3`, `ccfc534`, `aebe35d`).
 - **Anti-Evasion & Calibration**: Created `WARMING` rule, multi-anomaly shift detection, and 21-case eval suite (`0d8a4dd`, `3e3150b`).
 - **Three Core Pillars**:
-  - *Pillar 1 (Economics)*: PnL engine and `/economics` self-funding ledger (`72ea65f`).
+  - *Pillar 1 (Economics)*: PnL engine and `/economics` unit-economics ledger (`72ea65f`).
   - *Pillar 2 (Consensus)*: Multi-agent consensus panel with weighted aggregation (`d7cc3cc`).
   - *Pillar 3 (Active Defense)*: Autonomous wallet stance escalation (`16ed9a4`).
 - **On-Chain Devnet Deployment**: Compiled Transfer Hook to SBF, deployed to Solana Devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), and verified live revert on flagged accounts (`886579b`, `56d3caa`, `d8f9a92`).
@@ -533,6 +533,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 | `POST /trust` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
 | `POST /scan` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
 | `POST /gate-copy` | живой запуск (ключ Helius, 1-2,5 с) | без авторизации по умолчанию, см. «Ограничения и известные проблемы» |
+| x402-платёж | живой запуск (один тестовый платёж 0,005 USDC) | подтверждает работу платёжного пути, не является внешней выручкой; см. «Ограничения и известные проблемы» |
 | `POST /simulate` | тесты | покрыт `test/simulate.test.js` |
 | `POST /batch` | тесты | покрыт `test/trust.test.js` |
 | MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | живой запуск | |
