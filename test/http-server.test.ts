@@ -1509,6 +1509,76 @@ test("A6(a)+(b): trust, batch, and gate-copy descriptions document token mint ch
   }
 });
 
+test("A7: POST /trust and /batch reject invalid base58 and length bounds with 400", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  try {
+    const invalidAddresses = [
+      "1".repeat(31), // length 31 (under)
+      "1".repeat(45), // length 45 (over)
+      "0" + "1".repeat(31), // '0' is not base58
+      "O" + "1".repeat(31), // 'O' is not base58
+      "I" + "1".repeat(31), // 'I' is not base58
+      "l" + "1".repeat(31), // 'l' is not base58
+    ];
+
+    for (const badAddr of invalidAddresses) {
+      const resTrust = await fetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: badAddr }),
+      });
+      assert.equal(resTrust.status, 400, `POST /trust with '${badAddr}' must return 400`);
+
+      const resBatch = await fetch(`${r.base}/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallets: [badAddr] }),
+      });
+      assert.equal(resBatch.status, 400, `POST /batch with '${badAddr}' must return 400`);
+    }
+
+    // Valid 32- and 44-character addresses without history: 200 unknown
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.startsWith("http://127.0.0.1")) {
+          return originalFetch(url, init);
+        }
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      };
+
+      const valid32 = "1".repeat(32);
+      const res32 = await originalFetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: valid32 }),
+      });
+      assert.equal(res32.status, 200);
+      const data32 = (await res32.json()) as any;
+      assert.equal(data32.verdict, "unknown");
+
+      const valid44 = "1".repeat(44);
+      const res44 = await originalFetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: valid44 }),
+      });
+      assert.equal(res44.status, 200);
+      const data44 = (await res44.json()) as any;
+      assert.equal(data44.verdict, "unknown");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+
 
 
 

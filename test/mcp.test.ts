@@ -263,3 +263,49 @@ test("MCP radar_batch: reports error when HELIUS_API_KEY is not set", async () =
     await client.close();
   }
 });
+
+test("A7: radar_trust and radar_batch validate address bounds and base58 charset", async () => {
+  const savedKey = process.env.HELIUS_API_KEY;
+  process.env.HELIUS_API_KEY = "test_mock_key";
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const client = await createTestClient();
+  try {
+    const invalidAddresses = [
+      "1".repeat(31), // length 31 (under)
+      "1".repeat(45), // length 45 (over)
+      "0" + "1".repeat(31), // '0' is not base58
+      "O" + "1".repeat(31), // 'O' is not base58
+      "I" + "1".repeat(31), // 'I' is not base58
+      "l" + "1".repeat(31), // 'l' is not base58
+    ];
+
+    for (const badAddr of invalidAddresses) {
+      // radar_trust
+      const resTrust = await client.request("tools/call", {
+        name: "radar_trust",
+        arguments: { wallet: badAddr },
+      });
+      assert.equal(resTrust.result.isError, true, `radar_trust with '${badAddr}' must return isError: true`);
+      assert.match(resTrust.result.content[0].text, /base58|address/i);
+
+      // radar_batch
+      const resBatch = await client.request("tools/call", {
+        name: "radar_batch",
+        arguments: { wallets: [badAddr] },
+      });
+      assert.equal(resBatch.result.isError, true, `radar_batch with '${badAddr}' must return isError: true`);
+      assert.match(resBatch.result.content[0].text, /base58|address/i);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedKey !== undefined) process.env.HELIUS_API_KEY = savedKey;
+    else delete process.env.HELIUS_API_KEY;
+    await client.close();
+  }
+});
+

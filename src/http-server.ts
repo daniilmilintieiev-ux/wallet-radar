@@ -316,7 +316,7 @@ async function toolAnalyze(body: Record<string, unknown>, ctx: RequestContext = 
   return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) };
 }
 
-async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
+async function toolTrust(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
   if (body.maxRisk !== undefined && (typeof body.maxRisk !== "number" || !Number.isFinite(body.maxRisk) || body.maxRisk < 0 || body.maxRisk > 100)) {
@@ -328,7 +328,7 @@ async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   if (body.windowDays !== undefined && (typeof body.windowDays !== "number" || !Number.isFinite(body.windowDays) || body.windowDays <= 0)) {
     throw new HttpError(400, "body.windowDays must be a positive number.");
   }
-  const apiKey = process.env.HELIUS_API_KEY;
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark.");
   return runTrustCheck(apiKey, wallet, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
@@ -337,7 +337,7 @@ async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   });
 }
 
-async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
+async function toolBatch(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallets = body.wallets;
   if (!Array.isArray(wallets) || wallets.length === 0) {
     throw new HttpError(400, "body.wallets must be a non-empty array of Solana base58 addresses.");
@@ -357,7 +357,7 @@ async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
   if (body.windowDays !== undefined && (typeof body.windowDays !== "number" || !Number.isFinite(body.windowDays) || body.windowDays <= 0)) {
     throw new HttpError(400, "body.windowDays must be a positive number.");
   }
-  const apiKey = process.env.HELIUS_API_KEY;
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark.");
   const results = await runTrustChecks(apiKey, wallets, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
@@ -908,7 +908,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         recipient: process.env.RADAR_X402_RECIPIENT,
         rpcUrl: ctx.rpcUrl,
         scanHandler: async (wallet: string) => {
-          return await toolTrust({ wallet });
+          return await toolTrust({ wallet }, ctx);
         },
       });
       if (handled) return;

@@ -220,6 +220,12 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ wallet, maxRisk, minLiquidityUsd, windowDays }) => {
+      if (!isValidBase58(wallet)) {
+        return {
+          content: [{ type: "text", text: `Invalid Solana wallet address: "${wallet}". Must be 32-44 base58 characters.` }],
+          isError: true,
+        };
+      }
       const apiKey = process.env.HELIUS_API_KEY;
       if (!apiKey) {
         return {
@@ -274,6 +280,14 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ wallets, maxRisk, minLiquidityUsd, windowDays }) => {
+      for (const w of wallets) {
+        if (!isValidBase58(w)) {
+          return {
+            content: [{ type: "text", text: `Invalid Solana wallet address in batch: "${w}". Must be 32-44 base58 characters.` }],
+            isError: true,
+          };
+        }
+      }
       const apiKey = process.env.HELIUS_API_KEY;
       if (!apiKey) {
         return {
