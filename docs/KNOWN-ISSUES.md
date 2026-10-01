@@ -327,3 +327,14 @@ a separate, future change.
 - (b) Upgrade authority of the Transfer Hook program on devnet (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`) — regular key: `owner` = System Program, `space` = 0, no indication of multisig (Squads, etc.). Not re-verified in this session (network access was not performed in this stage) — source: report 11E.
 - (c) Typo in address: `src/daily-digest.ts:24` contains `"3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh"` — 43 characters. Directly verified in this session (base58 decoding): this string decodes to **31 bytes**, not 32 as required for a valid Solana address; the actual payer address (44 characters, decodes to 32 bytes) is `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (see item (a) above). The strings differ, though visually similar (shared prefix `3fNN`, shared suffix `5eYh`). The same invalid address in the `radar-watch` watchlist produces a Helius 400 error every 5 minutes (per report 11E, not reproduced in this session — network was not used).
 - **Status:** finding, fix planned after 2026-10-06 (`src/` is out of scope for this stage).
+
+## Dashboard redesigned in branch dashboard, not deployed; reads only existing fields; recorded replay is a historical window
+
+- Source: stage 16A dashboard redesign.
+- Branch `dashboard` overhauls the HTML rendered by `GET /dashboard` (`src/dashboard.ts`) into the Swiss monospace brutalist aesthetic of the project's weekly reports (`w2_update.html`).
+- The branch is isolated and not merged into `release` or `main` (held until after 2026-10-06 preregistration freeze concludes). Not deployed to production or Cloudflare.
+- The dashboard strictly reads existing fields from the data model (no speculative or synthetic fields):
+  - In live records without multi-layered consensus or liquidity data, missing fields are omitted or indicated gracefully without synthetic mocks.
+  - Recorded replay (`docs/dashboard/replay-8XeK5m.json`) is explicitly presented as a historical window (`recordedAtUtc: 2026-10-01T20:29:39Z`), annotated with "historical replay, not a confirmed incident", and not represented as live telemetry.
+  - Independent test status (`docs/dashboard/test-status.json`) displays `result: null` during collection without previewing or fabricating score numbers.
+- **Status:** implemented in branch `dashboard`, awaiting deployment post-freeze.
