@@ -5,7 +5,7 @@ import { updateBaseline } from "../src/baseline.js";
 import { isExistentialThreat } from "../src/defense.js";
 import { selectScoring, TRUST_DEFAULTS } from "../src/trust.js";
 import { BLUECHIP_FALLBACK_PRICES } from "../src/pricing.js";
-import { EnhancedTx } from "../src/types.js";
+import { EnhancedTx, DEFAULT_CONFIG } from "../src/types.js";
 
 // B9: for every wallet in benchmarks/history-cache, the walk-forward and
 // trust paths must produce byte-for-byte identical verdict/riskScore/anomaly
@@ -27,7 +27,7 @@ function runTrustPathOnce(address: string, sortedTxs: EnhancedTx[], prices: Reco
   const windowStart = generatedAt - TRUST_DEFAULTS.windowDays * 86_400;
   const { baselineTxs, evalTxs } = selectScoring(sortedTxs, windowStart);
   const baseline = updateBaseline(address, null, baselineTxs, generatedAt, prices);
-  const anomalies = detectAnomalies(address, evalTxs, baseline, { dormantMeasure: "first" } as any, prices);
+  const anomalies = detectAnomalies(address, evalTxs, baseline, { ...DEFAULT_CONFIG, dormantMeasure: "first" }, prices);
   const riskScore = computeRiskScore(anomalies);
   const hasHigh = anomalies.some(isExistentialThreat);
   let verdict: string;
