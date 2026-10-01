@@ -466,8 +466,12 @@ export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
 }
 
 /**
- * 1-Hop Funding Source Check: inspects the earliest incoming native SOL transfer
- * to identify if the wallet was seeded from known malicious drainers or mixers.
+ * 1-Hop Funding Source Check (B4: checks ALL incoming native SOL transfers in
+ * the supplied history, not just the first found -- a wallet whose first
+ * incoming transfer is clean but whose second (or later) came from a known
+ * exploiter must still be flagged). Fires on the earliest tainted transfer
+ * when more than one matches, so `text`/`timestamp` describe how the wallet
+ * was first seeded from a malicious source.
  */
 export function checkFundingSource(wallet: string, txs: EnhancedTx[]): Anomaly | null {
   if (txs.length === 0) return null;
@@ -478,23 +482,21 @@ export function checkFundingSource(wallet: string, txs: EnhancedTx[]): Anomaly |
         nt.toUserAccount === wallet &&
         nt.fromUserAccount &&
         nt.fromUserAccount !== wallet &&
-        (nt.amount ?? 0) > 0
+        (nt.amount ?? 0) > 0 &&
+        KNOWN_EXPLOITERS.has(nt.fromUserAccount)
       ) {
-        if (KNOWN_EXPLOITERS.has(nt.fromUserAccount)) {
-          return {
-            type: "TAINTED_FUNDING",
-            wallet,
-            severity: "high",
-            timestamp: tx.timestamp ?? 0,
-            evidence: {
-              funder: nt.fromUserAccount,
-              amountSol: (nt.amount ?? 0) / 1e9,
-              sig: tx.signature,
-            },
-            text: `Initial funding of ${((nt.amount ?? 0) / 1e9).toFixed(3)} SOL received from known malicious actor (${nt.fromUserAccount}).`,
-          };
-        }
-        return null;
+        return {
+          type: "TAINTED_FUNDING",
+          wallet,
+          severity: "high",
+          timestamp: tx.timestamp ?? 0,
+          evidence: {
+            funder: nt.fromUserAccount,
+            amountSol: (nt.amount ?? 0) / 1e9,
+            sig: tx.signature,
+          },
+          text: `Initial funding of ${((nt.amount ?? 0) / 1e9).toFixed(3)} SOL received from known malicious actor (${nt.fromUserAccount}).`,
+        };
       }
     }
   }
