@@ -112,6 +112,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           summary: anomalySummary(anomalies),
           digest: digestAnomalies(anomalies),
           freshness: buildFreshness(lastActivity, Math.floor(Date.now() / 1000), windowStart, lastActivity),
+          ...(prices === null ? { degraded: ["PRICES_UNAVAILABLE"] } : {}),
         };
 
         if (options.store) {
@@ -403,6 +404,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             riskScore: trustResult.riskScore,
             maxSafeAmountUsd: 0,
             executionTier: "blocked",
+            degraded: trustResult.degraded,
             details: { trust: trustResult },
           });
         }
@@ -414,6 +416,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             tokenCheck: "skipped_base_verdict",
             riskScore: trustResult.riskScore,
             maxSafeAmountUsd: 0,
+            degraded: trustResult.degraded,
             details: { trust: trustResult },
           });
         }
@@ -482,6 +485,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: "blocked",
               slippageToleranceBps: 0,
               cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.recommendedDelaySec ?? 300),
+              degraded: trustResult.degraded,
               details: detailsWithAnomaly(),
             });
           }
@@ -497,6 +501,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: simRes.executionTier ?? "standard",
               slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
               cooldownSec: simRes.suggestedCooldownSec ?? 60,
+              degraded: trustResult.degraded,
               details: detailsWithAnomaly(),
             });
           }
@@ -513,6 +518,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: simRes.executionTier ?? "guarded",
               slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
               cooldownSec: simRes.suggestedCooldownSec ?? ((simRes.decision as any)?.recommendedDelaySec ?? 60),
+              degraded: trustResult.degraded,
               details: { trust: trustResult, simulation: simRes },
             });
           }
@@ -528,6 +534,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: simRes.executionTier ?? "standard",
               slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
               cooldownSec: simRes.suggestedCooldownSec ?? 60,
+              degraded: trustResult.degraded,
               details: { trust: trustResult, simulation: simRes },
             });
           }
@@ -544,7 +551,8 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           executionTier: simRes?.executionTier ?? "instant",
           slippageToleranceBps: simRes?.slippageToleranceBps ?? 100,
           cooldownSec: simRes?.suggestedCooldownSec ?? 0,
-          details: { trust: trustResult, simulation: simRes },
+          degraded: trustResult.degraded,
+              details: { trust: trustResult, simulation: simRes },
         });
       } catch (err) {
         return {

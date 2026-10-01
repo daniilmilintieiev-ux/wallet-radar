@@ -1805,6 +1805,121 @@ test("B2: TOKEN_CHECK_UNAVAILABLE contributes 0 risk points to computeRiskScore 
   assert.equal(computeRiskScore(anomalies as any), 0);
 });
 
+test("B3: POST /scan reports degraded: ['PRICES_UNAVAILABLE'] when the Jupiter price fetch fails, without changing verdict/riskScore", async () => {
+  const { store, dir } = tmpStore();
+  const wallet = "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8";
+  const txs: EnhancedTx[] = [
+    { signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+  ];
+
+  const rOk = await startWatchServer(store, {
+    apiKey: "mock_helius_key",
+    rateLimitPerMin: 0,
+    fetchTxs: async () => txs,
+    fetchPrices: async () => ({ So11111111111111111111111111111111111111112: 150 }),
+    fetchMintRisk: async () => ({}),
+  });
+  const rDegraded = await startWatchServer(store, {
+    apiKey: "mock_helius_key",
+    rateLimitPerMin: 0,
+    fetchTxs: async () => txs,
+    fetchPrices: async () => null, // mocked Jupiter price-fetch failure
+    fetchMintRisk: async () => ({}),
+  });
+
+  try {
+    const resOk = await fetch(`${rOk.base}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet }),
+    });
+    const dataOk = (await resOk.json()) as any;
+    assert.equal(dataOk.degraded, undefined, "no degraded field when prices are available");
+
+    const resDegraded = await fetch(`${rDegraded.base}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet }),
+    });
+    const dataDegraded = (await resDegraded.json()) as any;
+    assert.deepEqual(dataDegraded.degraded, ["PRICES_UNAVAILABLE"]);
+    assert.equal(dataDegraded.pricesAvailable, false);
+    // Same verdict/riskScore either side -- this fixture has no price-dependent anomalies.
+    assert.equal(dataDegraded.verdict, dataOk.verdict);
+    assert.equal(dataDegraded.riskScore, dataOk.riskScore);
+  } finally {
+    await rOk.close();
+    await rDegraded.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("B3: /gate-copy reports degraded: ['PRICES_UNAVAILABLE'] (propagated from runTrustCheck) when the Jupiter price fetch fails", async () => {
+  const { store, dir } = tmpStore();
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+    if (urlStr.startsWith("http://127.0.0.1")) return originalFetch(input, init);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([{ signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    // Mocked Jupiter price-fetch failure (B3).
+    if (urlStr.includes("jup.ag")) {
+      return new Response("Internal Server Error", { status: 500 });
+    }
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (parsed?.method === "getAccountInfo") {
+        const address = parsed.params?.[0];
+        if (address === testMint) {
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { type: "mint", info: { freezeAuthority: null, mintAuthority: null, isInitialized: true } } } } } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111" } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  try {
+    const res = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as any;
+    assert.equal(data.tokenCheck, "applied");
+    assert.deepEqual(data.degraded, ["PRICES_UNAVAILABLE"]);
+    assert.deepEqual(data.details.trust.degraded, ["PRICES_UNAVAILABLE"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
 
 
 

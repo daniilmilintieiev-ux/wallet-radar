@@ -463,6 +463,94 @@ test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async ()
   }
 });
 
+test("B3: runTrustCheck reports degraded: ['PRICES_UNAVAILABLE'] when the Jupiter price fetch fails, without changing verdict/riskScore", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      const mockTxs: EnhancedTx[] = [
+        { signature: "sigHist1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+      ];
+      return new Response(JSON.stringify(mockTxs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    // Mocked Jupiter price-fetch failure (B3) -- everything else succeeds.
+    if (urlStr.includes("jup.ag")) {
+      return new Response("Internal Server Error", { status: 500 });
+    }
+    if (bodyStr) {
+      try {
+        const parsed = JSON.parse(bodyStr);
+        if (parsed.method === "getBalance") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (parsed.method === "getTokenAccountsByOwner") {
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 50 } } } } } }] } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (parsed.method === "getAccountInfo") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: SYSTEM_PROGRAM } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      } catch {}
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, {});
+    assert.deepEqual(res.degraded, ["PRICES_UNAVAILABLE"]);
+    assert.equal(res.solPriced, false);
+    assert.equal(res.solPrice, null);
+    // Verdict is unaffected: this fixture has no price-dependent anomalies either way.
+    assert.equal(res.verdict, "safe");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("B3: runTrustCheck with opts.noPrices does NOT report degraded (deliberate skip, not a failure)", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (urlStr.includes("jup.ag")) {
+      throw new Error("must not be called when opts.noPrices is set");
+    }
+    if (bodyStr) {
+      try {
+        const parsed = JSON.parse(bodyStr);
+        if (parsed.method === "getBalance") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (parsed.method === "getTokenAccountsByOwner") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [] } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (parsed.method === "getAccountInfo") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: SYSTEM_PROGRAM } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      } catch {}
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, { noPrices: true });
+    assert.equal(res.degraded, undefined, "opts.noPrices is a deliberate skip, not a degradation");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("runTrustCheck: error handling when history or balances fail", async () => {
   const originalFetch = globalThis.fetch;
   const targetWallet = "WappetTest111111111111111111111111111111111";

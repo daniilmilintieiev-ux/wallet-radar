@@ -186,6 +186,14 @@ export interface TrustResult {
   generatedAt: number;
   /** Median swap size (USD) over the scored baseline window, when known. */
   medianSwapAmountUsd: number | null;
+  /**
+   * Known data-quality degradations for this result (B3). Does not change
+   * verdict or riskScore -- purely informational. Currently only
+   * "PRICES_UNAVAILABLE" (the Jupiter price fetch failed or returned
+   * nothing), set independently of `opts.noPrices` (an intentional,
+   * caller-requested offline mode, not a degradation).
+   */
+  degraded?: string[];
 }
 
 /** Solana JSON-RPC call (getBalance / getTokenAccountsByOwner). */
@@ -312,6 +320,9 @@ export async function runTrustCheck(
   let txCount = 0;
   let lastActivity: number | null = null;
   let medianSwapAmountUsd: number | null = null;
+  // B3: prices are unavailable (not the same as opts.noPrices, a deliberate
+  // caller choice) when fetchSwapPrices/fetchUsdPrices returned null/threw.
+  let pricesUnavailable = false;
   try {
     // Fetch two windows: the requested window (to score) plus the equal prior
     // window (to establish "normal" behavior). This is what makes the
@@ -325,6 +336,7 @@ export async function runTrustCheck(
     const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
     lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
     const prices = opts.noPrices ? null : await fetchSwapPrices(txs, { wallet });
+    if (prices === null && !opts.noPrices) pricesUnavailable = true;
     const { baselineTxs, evalTxs } = selectScoring(txs, windowStart);
     const baseline = updateBaseline(wallet, null, baselineTxs, generatedAt, prices);
     txCount = evalTxs.length;
@@ -350,8 +362,10 @@ export async function runTrustCheck(
     try {
       const prices = await fetchUsdPrices([SOL_MINT]);
       solPrice = prices[SOL_MINT] ?? null;
+      if (solPrice === null) pricesUnavailable = true;
     } catch {
       solPrice = null;
+      pricesUnavailable = true;
     }
   }
 
@@ -450,6 +464,7 @@ export async function runTrustCheck(
     windowDays,
     generatedAt,
     medianSwapAmountUsd,
+    ...(pricesUnavailable ? { degraded: ["PRICES_UNAVAILABLE"] } : {}),
   };
 }
 

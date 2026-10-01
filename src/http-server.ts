@@ -201,6 +201,7 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
     summary: anomalySummary(anomalies),
     digest: digestAnomalies(anomalies),
     freshness: buildFreshness(lastActivity, nowSec, windowStart, lastActivity),
+    ...(prices === null ? { degraded: ["PRICES_UNAVAILABLE"] } : {}),
   };
 
   if (ctx.store) {
@@ -459,6 +460,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
       executionTier: "blocked",
+      degraded: trustResult.degraded,
       details: { trust: trustResult },
     };
   }
@@ -470,6 +472,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       tokenCheck: "skipped_base_verdict",
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
+      degraded: trustResult.degraded,
       details: { trust: trustResult },
     };
   }
@@ -540,6 +543,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: "blocked",
         slippageToleranceBps: 0,
         cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.cooldownMs ? Math.round(simRes.decision.cooldownMs / 1000) : 300),
+        degraded: trustResult.degraded,
         details: details(),
       };
     }
@@ -555,6 +559,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: simRes.executionTier ?? "standard",
         slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
         cooldownSec: simRes.suggestedCooldownSec ?? 60,
+        degraded: trustResult.degraded,
         details: details(),
       };
     }
@@ -571,6 +576,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: simRes.executionTier ?? "guarded",
         slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
         cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.cooldownMs ? Math.round(simRes.decision.cooldownMs / 1000) : 60),
+        degraded: trustResult.degraded,
         details: details(),
       };
     }
@@ -586,6 +592,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: simRes.executionTier ?? "standard",
         slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
         cooldownSec: simRes.suggestedCooldownSec ?? 60,
+        degraded: trustResult.degraded,
         details: details(),
       };
     }
@@ -602,6 +609,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
     executionTier: simRes?.executionTier ?? "instant",
     slippageToleranceBps: simRes?.slippageToleranceBps ?? 100,
     cooldownSec: simRes?.suggestedCooldownSec ?? 0,
+    degraded: trustResult.degraded,
     details: { trust: trustResult, simulation: simRes, ...(tokenCheckAnomaly ? { tokenCheckAnomaly } : {}) },
   };
 }
