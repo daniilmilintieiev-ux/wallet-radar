@@ -16,6 +16,7 @@ import { detectCounterpartyAnomalies } from "./counterparty.js";
 import { median, maxOf, minOf } from "./stats.js";
 import { classifyWalletArchetype, WalletArchetype } from "./archetype.js";
 import { KNOWN_SAFE_MINTS, KNOWN_AMM_OWNERS } from "./mint.js";
+import { DEFAULT_HOOK_PROGRAM_ID } from "./hook/index.js";
 
 /** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
 export const TOP10_CONCENTRATION_PCT = 60;
@@ -782,16 +783,33 @@ export function detectAnomalies(
         const hasMint = Boolean(meta.mintAuthority);
         const top10 = typeof meta.top10Pct === "number" ? meta.top10Pct : null;
         const concentrated = top10 != null && top10 >= TOP10_CONCENTRATION_PCT;
-        if (hasFreeze || hasMint || concentrated) {
+        // Token-2022 extensions (B1). Fixed severities, not tuned to results:
+        // permanentDelegate and a frozen defaultAccountState are `high`
+        // (either lets the mint's authority move or freeze tokens out of any
+        // holder's account at will); pausable and a transfer hook pointing
+        // at a program other than this project's own hook are `medium`.
+        const permanentDelegate = Boolean(meta.permanentDelegate);
+        const defaultFrozen = Boolean(meta.defaultAccountStateFrozen);
+        const pausable = Boolean(meta.pausable);
+        const foreignTransferHook =
+          typeof meta.transferHook === "string" && meta.transferHook !== DEFAULT_HOOK_PROGRAM_ID.toBase58();
+        if (hasFreeze || hasMint || concentrated || permanentDelegate || defaultFrozen || pausable || foreignTransferHook) {
           flaggedMints.add(m);
           const veryConcentrated = top10 != null && top10 >= TOP10_HIGH_PCT;
           const isPump = Boolean(meta.isPumpFun || m.toLowerCase().endsWith("pump"));
-          const severity: Severity = hasFreeze || veryConcentrated || (isPump && (hasMint || concentrated)) ? "high" : "medium";
+          const severity: Severity =
+            hasFreeze || veryConcentrated || (isPump && (hasMint || concentrated)) || permanentDelegate || defaultFrozen
+              ? "high"
+              : "medium";
           const reasons: string[] = [];
           if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})`);
           if (hasMint) reasons.push(`mint authority (${meta.mintAuthority})`);
           if (concentrated) reasons.push(`top-10 holders control ${top10}% of supply`);
           if (isPump) reasons.push(`pump.fun token`);
+          if (permanentDelegate) reasons.push(`permanent delegate extension`);
+          if (defaultFrozen) reasons.push(`default account state: frozen`);
+          if (pausable) reasons.push(`pausable extension`);
+          if (foreignTransferHook) reasons.push(`transfer hook program (${meta.transferHook})`);
           anomalies.push({
             type: "TOXIC_MINT",
             wallet,
@@ -803,6 +821,10 @@ export function detectAnomalies(
               mintAuthority: meta.mintAuthority,
               top10Pct: top10,
               isPumpFun: isPump,
+              permanentDelegate,
+              defaultAccountStateFrozen: defaultFrozen,
+              pausable,
+              transferHook: meta.transferHook ?? null,
               sig: s.signature,
             },
             text: `Token ${m}: ${reasons.join("; ")}.`,

@@ -129,6 +129,135 @@ test("parseRpcAccountInfoResponse: parses standard Solana parsed account data", 
   assert.equal(parsed.freezeAuthority, null);
 });
 
+test("parseRpcAccountInfoResponse: no extensions array -> all Token-2022 fields undefined (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: { value: { data: { parsed: { info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1" }, type: "mint" }, program: "spl-token" } } },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.permanentDelegate, undefined);
+  assert.equal(parsed.pausable, undefined);
+  assert.equal(parsed.transferHook, undefined);
+  assert.equal(parsed.defaultAccountStateFrozen, undefined);
+});
+
+test("parseRpcAccountInfoResponse: parses permanentDelegate extension (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: {
+              mintAuthority: null,
+              freezeAuthority: null,
+              decimals: 6,
+              supply: "1",
+              extensions: [{ extension: "permanentDelegate", state: { delegate: "SomeDelegate1111111111111111111111111111111" } }],
+            },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.permanentDelegate, true);
+  assert.equal(parsed.pausable, undefined);
+  assert.equal(parsed.transferHook, undefined);
+  assert.equal(parsed.defaultAccountStateFrozen, undefined);
+});
+
+test("parseRpcAccountInfoResponse: parses pausableConfig extension (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1", extensions: [{ extension: "pausableConfig", state: { paused: false } }] },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.pausable, true);
+  assert.equal(parsed.permanentDelegate, undefined);
+});
+
+test("parseRpcAccountInfoResponse: parses transferHook extension program id (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: {
+              mintAuthority: null,
+              freezeAuthority: null,
+              decimals: 6,
+              supply: "1",
+              extensions: [{ extension: "transferHook", state: { authority: null, programId: "SomeHookProgram111111111111111111111111111" } }],
+            },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.transferHook, "SomeHookProgram111111111111111111111111111");
+});
+
+test("parseRpcAccountInfoResponse: parses defaultAccountState=frozen extension (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1", extensions: [{ extension: "defaultAccountState", state: { accountState: "frozen" } }] },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.defaultAccountStateFrozen, true);
+});
+
+test("parseRpcAccountInfoResponse: defaultAccountState=initialized does not flag frozen (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1", extensions: [{ extension: "defaultAccountState", state: { accountState: "initialized" } }] },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.defaultAccountStateFrozen, false);
+});
+
 test("collectCandidateMints: collects swap mints excluding MAJOR_MINTS", () => {
   const txs = [
     makeSwapTx("s1", USDC_MINT, TOXIC_MINT),
@@ -206,6 +335,81 @@ test("detectAnomalies TOXIC_MINT: renounced mint passes (no anomaly)", () => {
     },
   };
 
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): permanentDelegate fires high severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, permanentDelegate: true },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "high");
+  assert.equal(toxic.evidence.permanentDelegate, true);
+  assert.match(toxic.text, /permanent delegate/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): defaultAccountStateFrozen fires high severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, defaultAccountStateFrozen: true },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "high");
+  assert.equal(toxic.evidence.defaultAccountStateFrozen, true);
+  assert.match(toxic.text, /default account state: frozen/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): pausable fires medium severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, pausable: true },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "medium");
+  assert.equal(toxic.evidence.pausable, true);
+  assert.match(toxic.text, /pausable extension/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): transferHook pointing at a foreign program fires medium severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, transferHook: "SomeOtherProgram111111111111111111111111111" },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "medium");
+  assert.equal(toxic.evidence.transferHook, "SomeOtherProgram111111111111111111111111111");
+  assert.match(toxic.text, /transfer hook program/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): transferHook pointing at this project's OWN hook program does not fire by itself", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: {
+      mint: TOXIC_MINT,
+      freezeAuthority: null,
+      mintAuthority: null,
+      transferHook: "wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",
+    },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): all Token-2022 extension fields absent -> no anomaly (same as before B1)", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, SAFE_MINT, 1700000000)];
+  const mintRisk = {
+    [SAFE_MINT]: { mint: SAFE_MINT, freezeAuthority: null, mintAuthority: null },
+  };
   const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
   assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
 });

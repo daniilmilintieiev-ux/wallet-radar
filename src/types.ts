@@ -181,6 +181,16 @@ export interface MintRiskInfo {
   isPumpFun?: boolean;
   /** True when authorities are confirmed revoked (both mint and freeze are null). */
   isAuthorityRevoked?: boolean;
+  /**
+   * Token-2022 extensions (B1), parsed from the mint account's jsonParsed
+   * `extensions` array. `undefined` when the mint has no parsed extensions
+   * at all (legacy SPL Token mint, or extensions were not fetched).
+   */
+  permanentDelegate?: boolean;
+  pausable?: boolean;
+  /** Transfer hook program id, when the transferHook extension is present. `null` if the extension is absent. */
+  transferHook?: string | null;
+  defaultAccountStateFrozen?: boolean;
 }
 
 export type MintRiskMap = Record<string, MintRiskInfo>;
