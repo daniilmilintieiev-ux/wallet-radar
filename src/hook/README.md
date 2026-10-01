@@ -11,7 +11,7 @@ Autonomous on-chain risk gating for Solana SPL Token-22 transfers.
 - **Authority Rotation**: `set_authority` instruction enables rotating admin rights or delegating to a multisig/governance PDA.
 - **Dynamic Meta Updates**: `update_extra_account_meta_list` instruction (`buildUpdateExtraAccountMetaListInstruction`, discriminator `2c7d8de261b3a660`) allows updating extra account schemas on existing mints without re-initialization.
 - **Deterministic Evaluation**: Replicates the exact on-chain Anchor hook rule in TypeScript via `evaluateTransferRisk`.
-- **Live Devnet Program**: Deployed at [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet) with verified Anchor error `0x1771` (`DestinationHighRisk`).
+- **Live Devnet Program**: Deployed at [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet) with verified Anchor error `0x1771` (`CounterpartyFlagged`) — real example: [`3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj`](https://explorer.solana.com/tx/3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj?cluster=devnet) (devnet, `Custom: 6001`, verified via `getSignaturesForAddress`/`getTransaction`, stage 9B/9D).
 
 ## Usage
 

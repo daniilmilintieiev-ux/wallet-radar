@@ -37,9 +37,9 @@ available, unless you prefer otherwise.
 
 | Version | Supported |
 | ------- | --------- |
-| `0.1.x` (latest `main`) | Yes |
+| `1.0.0` (latest `main`, per `package.json`) | Yes |
 
-We support the latest published `0.1.x` release on the `main` branch. We do
+We support the latest published `1.0.0` release on the `main` branch. We do
 not actively backport fixes to older, unreferenced commits.
 
 ## Data handling & privacy
@@ -119,7 +119,7 @@ Public Solana transactions are visible in the mempool and on-chain blocks. To pr
 
 ## On-chain Token-22 Transfer Hook & ZK Oracle security
 
-The smart contract components have undergone 11 successive revisions of security hardening:
+The smart contract components have undergone 11 successive revisions of internal security review:
 
 - **Mint authority authentication.** Both `initialize` and `initialize_extra_account_meta_list` cryptographically unpack mint account data (`COption<Pubkey>`) and verify that the signer is the genuine `mint_authority` or designated hook config authority, preventing unauthorized configuration hijacking.
 - **Two-sided counterparty gating.** Transfer Hook evaluates risk records for both the sender (`source`) and recipient (`destination`) accounts via Token-22 CPI remaining accounts, preventing compromised entities from sending or receiving tokens.
@@ -169,7 +169,7 @@ When Active Defense is enabled (`src/defense.ts`):
 - **Deterministic Policy Compliance (`safe`):** A `safe` verdict indicates that within the evaluated historical window (the recent transaction batch and learned baseline profile), no configured anomaly rules or policy limits were triggered, and liquid capital met minimum requirements ($L \ge \$50$). It is an automated policy compliance check against known behavioral patterns, not a formal impossibility proof of novel or unobserved zero-day exploit techniques.
 - **Evaluation Depth & Sampling:** Live scans analyze up to 50–100 most recent transactions. Baselines require a minimum of 5 transactions before scoring behavioral drift, and `OFF_HOURS` requires at least 20 baseline transactions to establish a representative 24-hour UTC activity histogram.
 - **Timeout & Failure Boundaries:** RPC and Helius network queries are bounded by strict AbortSignal timeouts (10 seconds). In the event of an upstream network failure or incomplete historical data, the system conservatively falls back to `unknown` / `hold`, never blindly assuming safety.
-- **Adversarial Resilience:** Comprehensive attack vectors, simulation edge cases, and exploit scenario results are documented in [docs/ADVERSARIAL-TESTING.md](docs/ADVERSARIAL-TESTING.md).
+- **Adversarial Resilience:** Comprehensive attack vectors, simulation edge cases, and exploit scenario results are documented in [ADVERSARIAL-TESTING.md](ADVERSARIAL-TESTING.md).
 
 If you spot something in the code that does not match the above, please report
 it privately.

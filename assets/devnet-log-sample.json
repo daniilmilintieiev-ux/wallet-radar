@@ -1,0 +1,22 @@
+{
+  "_comment": "Real devnet transaction data, fetched via getTransaction (jsonParsed, maxSupportedTransactionVersion=1) against https://api.devnet.solana.com, stage 9B/9D. Not synthetic. scripts/render-video.py reads this file for slide 2's terminal-log recreation instead of hardcoding text.",
+  "signature": "3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj",
+  "explorerUrl": "https://explorer.solana.com/tx/3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj?cluster=devnet",
+  "slot": 503427570,
+  "blockTime": 1790246361,
+  "computeUnitsConsumed": 58808,
+  "err": { "InstructionError": [0, { "Custom": 6001 }] },
+  "logMessages": [
+    "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [1]",
+    "Program log: Instruction: TransferChecked",
+    "Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV invoke [2]",
+    "Program log: Instruction: Execute",
+    "Program log: RadarHook: evaluating destination 3JnUsJKmpgjDNpWJxaNkAfkD6EuEByEgBMguQVMe4pni (score: 70, verdict: 3, timestamp: 1790246360)",
+    "Program log: RadarHook: REJECTED - destination flagged with HIGH RISK verdict",
+    "Program log: AnchorError occurred. Error Code: CounterpartyFlagged. Error Number: 6001. Error Message: Destination wallet is flagged with HIGH RISK verdict on-chain.",
+    "Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV consumed 35249 of 176441 compute units",
+    "Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV failed: custom program error: 0x1771",
+    "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 58808 of 200000 compute units",
+    "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb failed: custom program error: 0x1771"
+  ]
+}

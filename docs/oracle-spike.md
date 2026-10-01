@@ -16,7 +16,7 @@ Wallet Radar monitors Solana wallets for behavioral anomalies, rug pulls, and co
 2. **Solana Actions & Blinks (Dialect + @solana/actions)**:
    - Exposes one-tap risk scans across Twitter/X feeds, Discord, Telegram, and Phantom/Solflare wallet extensions.
    - Interacts seamlessly with our x402 micro-payment protocol to monetize queries on-chain.
-3. **Agent SDK (`@sendaifun/wallet-radar-sdk`)**:
+3. **Agent SDK (`wallet-radar`, per `package.json`)**:
    - Programmatic TypeScript client allowing AI agents, trading bots, and AMMs to run pre-flight trust checks before executing transactions.
 
 ---

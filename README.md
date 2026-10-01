@@ -5,7 +5,7 @@
 [![Tests](https://img.shields.io/badge/tests-600%2B%20passing%20%7C%2028%20suites-3fb950.svg)](file:///test)
 [![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20revisions%20verified-blue.svg)](file:///SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
-[![ZK Compression](https://img.shields.io/badge/light%20protocol-408.2x%20rent%20savings-ffb000.svg)](file:///src/oracle)
+[![ZK Compression](https://img.shields.io/badge/light%20protocol-~400x%20less%20locked--up%20rent-ffb000.svg)](file:///src/oracle)
 [![License](https://img.shields.io/badge/license-MIT-informational.svg)](file:///LICENSE)
 
 ---
@@ -22,7 +22,7 @@ When an autonomous agent interacts with a wallet, it faces critical risks:
 **Wallet Radar is the pre-trade firewall that solves this.** Point-in-time scanners only answer *"what does this wallet hold right now?"* Wallet Radar answers **"what changed, does it matter, and is it safe to trade with right now?"**
 
 It enforces safety at two coordinated layers:
-- **Layer 1 (Off-Chain Pre-Trade Gate):** Sub-second risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
+- **Layer 1 (Off-Chain Pre-Trade Gate):** Offline analysis: milliseconds. Live check: about 1-2 seconds. Risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
 - **Layer 2 (On-Chain Hard Enforcement):** SPL Token-22 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level, backed by Light Protocol ZK compression (~0.000005 SOL audit attestations).
 
 ```
@@ -55,7 +55,7 @@ It enforces safety at two coordinated layers:
       │  │ SPL Token-22 Transfer Hook (Devnet)     │  │ Light Protocol ZK Scan Ledger     │ │
       │  │ • Program: wvN1kyvjoFSJq...MGSayAzHwoV  │  │ • RS01 Ed25519 Signed Attestations│ │
       │  │ • Two-Sided Counterparty Verification   │  │ • ~0.000005 SOL Rent-Free State   │ │
-      │  │ • Live CPI Revert on Flagged Accounts   │  │ • 408.2x Cheaper Than Normal PDAs │ │
+      │  │ • Live CPI Revert on Flagged Accounts   │  │ • ~400x Less Locked-Up Rent       │ │
       │  └─────────────────────────────────────────┘  └───────────────────────────────────┘ │
       └─────────────────────────────────────────────────────────────────────────────────────┘
                                                  ▲
@@ -77,13 +77,13 @@ It enforces safety at two coordinated layers:
 |---|---|---|
 | **Devnet Transfer Hook** | [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet) | **LIVE ON DEVNET** (ProgramData: 245,778 B, `d8f9a92`) |
 | **Hook Authority** | `4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY` | On-chain verified upgrade authority |
-| **Token-22 Test Mint** | `2YDsAV...` (configured with `TransferHook`) | Reverts on flagged transfer (`0x1771`) |
+| **Token-22 Test Mint** | [`2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV`](https://explorer.solana.com/address/2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV?cluster=devnet) (configured with `TransferHook`) | Reverts on flagged transfer (`0x1771`); full address found by searching the program's transaction history, stage 9B |
 | **A2A Agent Gate** | [`https://radar.cbellory.xyz`](https://radar.cbellory.xyz) | `POST /a2a`, `GET /.well-known/agent.json` |
 | **x402 Pay-per-Call** | [`https://pay.cbellory.xyz`](https://pay.cbellory.xyz) | `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC) |
 | **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | Monospace ZK Ledger & Active Defense UI |
 | **Trust Proof API** | `https://radar.cbellory.xyz/trust-proof?wallet=<addr>` | Verifiable on-chain attestation + x402 receipt |
 | **Actions & Blinks** | [`https://pay.cbellory.xyz/actions.json`](https://pay.cbellory.xyz/actions.json) | Phantom, Solflare, Dialect one-tap scan card |
-| **Canary Node** | Orange Pi 24/7 Node (`192.168.0.164`) | 1,500+ uninterrupted polling loops |
+| **Canary Node** | ARM64 board (12 cores, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
 
 ---
 
@@ -105,32 +105,27 @@ Where:
   - $w_{\text{high}} = 30$ (critical exploit signatures: toxic mint authorities, top-10 concentration $\ge 80\%$, multi-dimensional regime shifts, large unexpected swaps)
 - **Zero Black-Box Multipliers:** The core anomaly scorer intentionally uses pure integer addition without floating-point drift, ensuring 100% reproducible and verifiable verdicts. Multi-anomaly correlation (e.g. `REGIME_SHIFT` occurring alongside `WARMING` or multiple distinct anomaly classes) is handled explicitly by the `REGIME_SHIFT` meta-detector (escalating severity to `high`), rather than ungrounded multiplicative compounding.
 
-### 2. Decision Engine Mapping
+### 2. Decision Engine Mapping (verified against code, stage 9E)
 
-Continuous risk score $R$ and liquid capital $L_{\text{USD}}$ map deterministically to agent operational decisions:
+There is no single continuous risk-score axis mapping to `allow`/`throttle`/`block`. Three separate mechanisms are involved, each with its own thresholds:
 
-```
-                      Risk Score R ───────────►
-             0                     30                    70                   100
-             ┌─────────────────────┬─────────────────────┬─────────────────────┐
-L >= $50     │     ALLOW           │     THROTTLE        │      BLOCK          │
-             │ Full trade capacity │ Dynamic cap: 25%*L  │  Hard stop on-chain │
-             ├─────────────────────┼─────────────────────┼─────────────────────┤
-L < $50      │     THROTTLE        │     THROTTLE        │      BLOCK          │
-             │ Thin liquidity warn │ Low cap & cooldown  │  Counterparty risk  │
-             └─────────────────────┴─────────────────────┴─────────────────────┘
-Sparse/Null  │                MANUAL_REVIEW / UNKNOWN (Hold Verdict)           │
-History      │             Zero ungrounded assumptions: fails safe             │
-             └─────────────────────────────────────────────────────────────────┘
-```
+1. **Base trust verdict** (`safe` / `hold` / `unknown`, `src/trust.ts:130-153`): a binary check — `riskScore > maxRisk` (default **30**) and/or `liquidityUsd < minLiquidityUsd` (default **$50**) each push toward `hold`; `hold` if either reason fired, otherwise `safe`. There is no "70" anywhere in this check.
+2. **Agent-facing verdict** (`allow` / `throttle` / `block` / `manual_review`, `computeDecision`, `src/decision.ts:102-159`): **not** a numeric risk-score cutoff. `block` fires whenever *any* anomaly has `severity === "high"` other than `DORMANT_ACTIVE` (`decision.ts:118-126`) — regardless of the risk score's numeric value. Several rules (e.g. `LARGE_SWAP`) always carry a fixed `"high"` severity, not one scaled by magnitude — so a single qualifying anomaly forces `block` at whatever risk score that one anomaly contributes, no matter how large the underlying trade is past its trigger threshold. `manual_review`/`throttle` for the remaining cases come from the base verdict combined with `maxRisk × 1.5` / `minLiquidityUsd × 0.5` escalation multipliers (`decision.ts:136,147`) — again, no `30`/`70` split.
+3. **Simulation-time tiered limits** (`src/simulate.ts:104-121`, only reached inside `toolGateCopy` when both an amount and a mint are supplied — see `docs/PROPOSED-DESCRIPTIONS.md`): a literal `riskScore >= 70` zeroes out every payment tier ("Strictly blocked"). This governs per-tier `maxAmountUsd`/`allowed`, a different mechanism from `computeDecision`'s verdict field, though `toolGateCopy` folds the result into its own final answer.
 
-- **`allow`**: Safe execution path ($R \le 30, L \ge \$50$). Suggested limit capped at $\min(L, \$500)$.
-- **`throttle`**: Elevated risk or shallow liquidity ($30 < R \le 70$). Enforces cooldown (15m) and dynamic limit:
-  $$\text{Limit}_{\text{suggested}} = L \times 0.25 \times \max\left(0.1, 1 - \frac{R}{100}\right)$$
-- **`block`**: Critical threat detected ($R > 70$ or high-severity anomaly). In Transfer Hook mode, transactions unconditionally revert.
-- **`manual_review`**: Unverified account type, unpriced tokens, or zero historical baseline. Escalates to human or falls back to conservative hold.
+**Reproduced offline** (`scratch/task2-large-swap.mjs`, not committed — a single swap at 5×, 50×, and 500× the wallet's baseline median, all else identical): all three multiples produced the *identical* result — `riskScore: 30`, base verdict `safe` (30 is not `>` `maxRisk` 30), yet `computeDecision`'s verdict was `block` every time, because `LARGE_SWAP` is always severity `"high"`. **The trade's magnitude past the trigger threshold makes no difference to the verdict.** This directly contradicts a claim that "one large trade gives a hold, not a block, at any amount": in this reproduction, it is neither `hold` (the base verdict is actually `safe`) nor merely held back — `computeDecision` blocks it outright, independent of size.
 
-### 3. CI Regression Suite (synthetic fixtures, not an empirical benchmark)
+### 3. Risk Score vs. Defense State vs. Verdict — three distinct concepts
+
+These are computed by different code paths, on different timescales, and are easy to conflate:
+
+| Concept | Range / values | Computed by | Persists across calls? |
+|---|---|---|---|
+| **Risk score** | 0–100, integer | `computeRiskScore`, sum of firing anomalies' severity points (`src/analyzer.ts:1073-1085`; `low=5, medium=15, high=30`, capped at 100) | No — recomputed fresh each evaluation from the current anomaly list |
+| **Defense state** | `armed` → `alerting` → `gated` → `blocked` | `src/defense.ts:103-118` (`DEFENSE_THRESHOLDS`: `alerting: 30`, `gated: 50`, `blocked: 75`, plus any high-severity anomaly forces `blocked` directly) | **Yes** — a persistent per-wallet posture (Pillar 3, Active Defense) that escalates on repeated bad observations and only de-escalates after a quiet/clean streak (`defense.ts:173-220`) |
+| **Verdict** | `safe`/`hold`/`unknown` (trust) or `allow`/`throttle`/`block`/`manual_review` (decision) | `src/trust.ts:130-153` / `src/decision.ts:102-159` (see above) | No — a fresh, stateless answer for this one call, though `DecisionResult.enforcedByDefense` can note that a persistent defense state tightened it |
+
+### 4. CI Regression Suite (synthetic fixtures, not an empirical benchmark)
 
 **Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: a zero-network, fully reproducible regression harness executed on every build, using 24 versioned, hand-authored test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing). Each fixture's expected outcome is defined by construction (the author writes a transaction sequence designed to trigger, or not trigger, a specific rule) — this is a **regression test against the ruleset itself**, not an independent measurement against real-world wallets. It currently passes 24/24 (100% precision/recall/accuracy on this fixture set). Run locally via `npm run radar -- benchmark`.
 
@@ -141,6 +136,8 @@ This regression suite is a different kind of evidence than an empirical accuracy
 ## Статус независимой оценки
 
 Независимая проверка качества детекции на реальных ончейн-данных ещё не завершена: первый прогон (архив: [archive/exp1](archive/exp1), тег `exp1-invalid`) признан невалидным (метки перезаписывались собственными вердиктами радара, датасет не в git, состояние mint бралось на момент запуска, а не на дату сделки) и не подтверждает никаких процентных показателей точности. Числа `96.0%` / `98.0%` / `71 wallets`, ранее приводившиеся в этом README и в демо-материалах, не подкреплены воспроизводимым артефактом в этом репозитории и были удалены; независимая методология переразметки разрабатывается в [ground-truth/PROTOCOL.md](ground-truth/PROTOCOL.md).
+
+Полный протокол текущего прогона — включая критерии (a)/(b), пороги, классы исходов, правило подглядывания и журнал правок перед стартом — задокументирован заранее в [docs/PREREGISTRATION.md](docs/PREREGISTRATION.md). Живой тест уже идёт: сбор данных ведётся под тегом `shadow-v3` (`docs/PREREGISTRATION.md`, раздел 17в) и останавливается **2026-10-06 18:00 UTC**; финальный расчёт исходов запускается **2026-10-10**. Правила и пороги зафиксированы до этой даты и не меняются по итогам наблюдения. Результат «данных недостаточно» (INSUFFICIENT_DATA / «не созрело», в зависимости от того, что именно не набрало нужный объём) — допустимый исход и будет опубликован как есть, без подгонки под ожидание.
 
 ---
 
@@ -207,7 +204,7 @@ When a Token-22 mint enables Wallet Radar's hook, every `transfer_checked` instr
                                                               (CounterpartyFlagged)
 ```
 
-- **Deployed on Devnet**: Functional on Devnet (`wvN1ky...HwoV`), demonstrating live reverts with Anchor error code `0x1771` (`RadarHookError::DestinationHighRisk`). This is devnet functional testing, not adversarial testing at scale ("battle-tested" was an overstatement and has been removed). Mainnet deployment requires ~1.72 SOL rent-exemption for program account allocation and is scheduled alongside production token deployments.
+- **Deployed on Devnet**: Functional on Devnet (`wvN1ky...HwoV`), demonstrating live reverts with Anchor error code `0x1771` (`RadarHookError::CounterpartyFlagged`). Real example, verified via `getSignaturesForAddress` + `getTransaction` (stage 9B/9D): [`3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj`](https://explorer.solana.com/tx/3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj?cluster=devnet) (`InstructionError: [0, {"Custom":6001}]`). This is devnet functional testing, not adversarial testing at scale ("battle-tested" was an overstatement and has been removed). Mainnet deployment requires ~1.72 SOL rent-exemption for program account allocation and is scheduled alongside production token deployments.
 - **Two-Sided Counterparty Gate**: Evaluates remaining accounts for both destination AND sender, blocking transfers to compromised addresses and transfers out of drained wallets.
 - **Mint Authority Authentication**: Enforces that only the bona fide `mint_authority` can initialize configurations and register extra account metas, preventing front-running and hijacking.
 - **Deterministic Record PDAs**: Records derive from seeds `[b"radar_record", mint.key(), wallet.key()]` ensuring strict cross-mint isolation.
@@ -219,7 +216,7 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 
 | Metric | Traditional Solana PDA | Wallet Radar ZK Compressed State | Improvement |
 |---|---|---|---|
-| **Account Rent Deposit** | ~0.002039 SOL ($0.30+) | **~0.000005 SOL ($0.0007)** | **408.2x Cheaper** |
+| **Account Rent Deposit** | ~0.002039 SOL ($0.30+) | **~0.000005 SOL ($0.0007)** | **~400x less locked-up rent deposit** (a rent deposit is refundable on account close either way — this compares how much SOL is tied up while the account is open, not a fee) |
 | **State Storage** | Full validator RAM | Merkle tree compressed leaf | Zero validator bloat |
 | **Binary Encoding** | 500+ bytes Borsh | **34–130 bytes `RS01` header** | High-density packing |
 | **Cryptographic Proof** | Plain account data | **Ed25519 oracle signature trailer** | Verifiable off-chain |
@@ -235,12 +232,12 @@ Wallet Radar rejects opaque LLM prompts in the critical security path. Detection
 
 | Rule | Detection Trigger | Severity | Exploit Vector Mitigated |
 |---|---|---|---|
-| `TOXIC_MINT` | Mint has active freeze/mint authorities or top-10 holders control $\ge 60\%$ supply | Medium / High ($\ge 80\%$) | Honeypots, sudden freeze scams, rugpull dumps |
-| `REGIME_SHIFT` | Structural break: amount ($\ge 3\times$), venue/protocol ($\ge 60\%$), or cadence shift ($\ge 4\times$) | Medium (1 dim) / High ($\ge 2$ dims or $\ge 3$ classes) | Account takeover, private key compromise, bot automation |
+| `TOXIC_MINT` | Mint has an active freeze authority, OR an active mint authority, OR top-10 holders control $\ge 60\%$ supply | Medium, or High if the freeze authority is present, OR concentration $\ge 80\%$, OR (pump.fun token AND (mint authority OR $\ge 60\%$ concentration)) | Honeypots, sudden freeze scams, rugpull dumps |
+| `REGIME_SHIFT` | Structural break: amount ($\ge 3\times$), venue/protocol dominance ($\ge 70\%$), or cadence shift ($\ge 4\times$) | Medium (1 dim) / High ($\ge 2$ dims, or $\ge 3$ distinct anomaly categories with $\ge 2$ substantive ones, or $\ge 4$ categories) | Account takeover, private key compromise, bot automation |
 | `WARMING` | Thin historical baseline ($< 5$ txs) followed immediately by high-severity transactions | Medium | Manufactured reputation evasion by siphoners |
 | `LARGE_SWAP` | Swap size $> N\times$ the wallet's bounded USD median (Jupiter normalized) | High | Whale dumping, flash drain of treasury funds |
 | `ACTIVITY_BURST` | $K+$ transactions in a short window vs historical rate | Medium / High ($\ge 2K$) | Automated sweeping scripts, drainer extraction |
-| `DORMANT_ACTIVE` | Wallet reactivates after $N$ days of inactivity | High | Sleeping exploiter wallets returning to liquidate stolen assets |
+| `DORMANT_ACTIVE` | Wallet reactivates after $N$ days of inactivity | High (or Medium below a 60-day reactivation gap) | Sleeping exploiter wallets returning to liquidate stolen assets |
 | `CONCENTRATION` | Repeated high-frequency swaps into a single token | Medium | Coordinated wash trading, illiquid token pumping |
 | `NEW_VENUE` | First swap on a DEX venue not present in baseline profile | Medium | Unverified liquidity pools, malicious swap contracts |
 | `OFF_HOURS` | Batch $\ge 3$ txs with $\ge 2$ txs ($\ge 50\%$) landing in 0-baseline UTC hours (baseline $\ge 20$ txs) | Medium | Automated draining across sleeping timezones |
@@ -248,8 +245,10 @@ Wallet Radar rejects opaque LLM prompts in the critical security path. Detection
 ### Supporting Behavioral Signals
 In addition to the 9 primary rules, the engine tracks contextual signals that enrich anomaly evidence without causing unilateral blocks:
 - **`NEW_PROTOCOL` (Low Severity)**: Emitted upon first interaction with an on-chain program/contract not present in baseline history.
-- **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 60\%$ of counterparty interactions (min 5 txs) concentrate into a single address.
-- **`COUNTERPARTY_MEMORY`**: Detects relationship escalation, new counterparty emergence, and dominant hub routing.
+- **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 50\%$ of counterparty interactions (min 4 txs) concentrate into a single address.
+- **`COUNTERPARTY_MEMORY`**: Three underlying types (`NEW_COUNTERPARTY`, `COUNTERPARTY_HUB`, `COUNTERPARTY_ESCALATION`, defined in `src/counterparty.ts`) — detects relationship escalation, new counterparty emergence, and dominant hub routing.
+
+Дополнительно: проверка источника первого пополнения (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — срабатывает, если самый первый входящий перевод на кошелёк пришёл с адреса из списка известных эксплойтеров; проверяется **только первый** такой перевод, более поздние поступления от известных эксплойтеров повторно не проверяются. Это отдельная, независимая от девяти основных правил и от вспомогательных сигналов проверка; в счётчике «9 правил» она не участвует (см. `docs/KNOWN-ISSUES.md` про рассинхронизацию числа между этим README, `src/http-server.ts`/`src/mcp.ts` и `test/regime.test.ts`).
 
 ---
 
@@ -299,10 +298,10 @@ npm install
 npm run build
 ```
 
-### 2. Verify System Integrity (600+ Tests)
+### 2. Verify System Integrity (666 Tests)
 
 ```bash
-# Run the complete test suite (27 suites, 0 failures)
+# Run the complete test suite (29 suites, 0 failures)
 npm test
 
 # Run offline smoke selftest (no network or API keys required)
@@ -328,7 +327,7 @@ npm run radar -- trust <wallet-address> --max-risk 30 --min-liquidity 50
 
 `trust` answers the question every copy-trader and agent asks before copying or paying an unverified wallet: **"is it safe to trust this wallet right now?"**
 
-It combines the behavioral risk score (9 rules over the recent window) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
+It combines the behavioral risk score (9 rules over the recent window; `TOXIC_MINT` is one of the 9 but never actually fires on this specific path, since `runTrustCheck` does not fetch or pass mint risk data, `src/trust.ts:329`) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 - `safe`: risk under max and liquidity over min threshold.
 - `hold`: data available, but risk exceeds max or liquidity is below minimum.
 - `unknown`: insufficient historical data to safely evaluate (conservative fail-safe).
@@ -361,12 +360,12 @@ Add Wallet Radar to your MCP host configuration (`claude_desktop_config.json`, C
 ```
 
 **Exposed MCP Tools:**
-- `radar_scan`: Live Helius fetch + baseline + 9 rules $\rightarrow$ risk score, evidence, freshness.
+- `radar_scan`: Live Helius fetch + baseline + all 9 rules, including `TOXIC_MINT` (this endpoint does fetch mint risk data, unlike `radar_trust`) $\rightarrow$ risk score, evidence, freshness.
 - `radar_trust`: Binary gate before copy/payment $\rightarrow$ `safe` / `hold` / `unknown`.
 - `radar_simulate`: Pre-trade what-if simulation (liquidity stress, risk delta, limits).
 - `radar_batch`: Safety-gate up to 20 copy-trader wallets in a single deterministic pass.
 - `radar_analyze`: Offline anomaly analysis over pre-recorded transaction fixtures.
-- `radar_benchmark`: Deterministic 21-case quality evaluation report.
+- `radar_benchmark`: Deterministic 24-case quality evaluation report.
 - `radar_selftest`: System health check and self-test.
 
 ### 2. Autonomous Agent TypeScript SDK
@@ -492,11 +491,14 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 ### 2. The Pre-Window Leap Snapshot (`f2bc219`, 2026-09-14 11:05 UTC)
 - Landed as a consolidation commit before the hackathon kickoff: ZK scan ledger prototype, initial Agent SDK, Blinks draft, and early Transfer Hook scaffolding.
 
-### 3. In-Window Development (40+ Incremental Commits, 2026-09-14 15:00 UTC onward)
+### 3. In-Window Development (40 Incremental Commits as of the hackathon-submission checkpoint, 2026-09-14 15:00 UTC onward)
+
+> **Commit-count note:** `git rev-list --count f2bc219..3f299bf~1` = **40**, confirming the figure below as of the commit that first stated it (`3f299bf`). The branch has continued past the hackathon window since then (post-submission auditing, shadow-collector data-collection work) — `git rev-list --count f2bc219..HEAD` on the current commit returns a much larger number, which is **not** "hackathon in-window commits" and isn't a like-for-like comparison to the count below.
+
 - **Decision Engine & Pre-Trade Simulation**: Added `radar_simulate`, confidence scoring, and dynamic payment limits (`16b35f3`, `ccfc534`, `aebe35d`).
 - **Anti-Evasion & Calibration**: Created `WARMING` rule, multi-anomaly shift detection, and 21-case eval suite (`0d8a4dd`, `3e3150b`).
 - **Three Core Pillars**:
-  - *Pillar 1 (Economics)*: PnL engine and `/economics` self-funding ledger (`72ea65f`).
+  - *Pillar 1 (Economics)*: PnL engine and `/economics` unit-economics ledger (`72ea65f`).
   - *Pillar 2 (Consensus)*: Multi-agent consensus panel with weighted aggregation (`d7cc3cc`).
   - *Pillar 3 (Active Defense)*: Autonomous wallet stance escalation (`16ed9a4`).
 - **On-Chain Devnet Deployment**: Compiled Transfer Hook to SBF, deployed to Solana Devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), and verified live revert on flagged accounts (`886579b`, `56d3caa`, `d8f9a92`).
@@ -508,7 +510,73 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 ## Status
 
-**Early-access (v0.1.x)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
+**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
+
+## Статус функций
+
+Проверено на ветке `docs/claims-fix`, дата 2026-09-30.
+
+| Функция | Статус | Ограничение |
+|---|---|---|
+| CLI `radar selftest` | живой запуск | встроенная синтетическая фикстура, сеть не требуется |
+| CLI `radar benchmark` | живой запуск | 24 детерминированных кейса, сеть не требуется |
+| CLI `radar analyze` | живой запуск | локальный JSON-файл истории, сеть не требуется |
+| CLI `radar prices` | живой запуск | публичный GET к Jupiter Price API |
+| CLI `radar add` / `history` / `report` / `alerts` / `remove` | живой запуск | локальное чтение/запись SQLite, сеть не требуется |
+| CLI `radar digest` | живой запуск | локальный запуск без ключей Telegram |
+| CLI `radar replay` | тесты | без ключа Helius живым запуском не проверялся (6 тестов `test/replay.test.js`) |
+| CLI `radar scan` | только код | CLI-обёртка живым запуском не проверялась; HTTP `/scan` подтверждён отдельно (ниже) |
+| CLI `radar trust` | тесты | алгоритм проверен 34 тестами `test/trust.test.js`; живым запуском подтверждён только HTTP `/trust` |
+| CLI `radar watch` | тесты | цикл проверен тестами `test/watch.test.js`/`test/defense.test.js` и systemd-сервисом на плате |
+| `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` | живой запуск | без платного Helius-ключа (офлайн/публичные данные) |
+| `POST /analyze` | живой запуск | офлайн, медиана времени ответа 3.69 мс |
+| `POST /trust` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
+| `POST /scan` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
+| `POST /gate-copy` | живой запуск (ключ Helius, 1-2,5 с) | без авторизации по умолчанию, см. «Ограничения и известные проблемы» |
+| x402-платёж | живой запуск (один тестовый платёж 0,005 USDC) | подтверждает работу платёжного пути, не является внешней выручкой; см. «Ограничения и известные проблемы» |
+| `POST /simulate` | тесты | покрыт `test/simulate.test.js` |
+| `POST /batch` | тесты | покрыт `test/trust.test.js` |
+| MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | живой запуск | |
+| MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | тесты | покрыты `test/mcp.test.js` |
+| SPL Token-22 Transfer Hook (Devnet) | живой запуск | реальная транзакция с откатом `0x1771`/`CounterpartyFlagged` |
+| Демо `examples/copy-bot-firewall.ts` | не подтверждено | `fetchFn` — встроенные заглушки с зашитыми вердиктами, реального обращения к радару по умолчанию нет |
+| Запись аттестаций Light Protocol (ончейн, Devnet) | не подтверждено | `getCompressedAccountsByOwner` недоступен на обычном Devnet RPC (`-32601 Method not found`); подтверждена только офлайн-логика (`test/oracle.test.js`) |
+
+## Ограничения и известные проблемы
+
+Полный список с файл:строка — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). Кратко:
+
+- Версия в `package.json` (`1.0.0`) не совпадает с версией, которую отдаёт A2A-карточка (`src/http-server.ts:592`, `"0.3.0"`) — несвязанные поля, не синхронизированы.
+- Число правил: `analyzer.ts` реализует 9 правил, которые везде и посчитаны как «9», плюс отдельное `TAINTED_FUNDING`, не входящее в этот счётчик нигде в коде и тестах (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
+- `TAINTED_FUNDING` проверяет только самый первый входящий перевод на кошелёк за всю его историю — более позднее поступление от известного эксплойтера повторно не проверяется (см. описание правила выше).
+- `DORMANT_ACTIVE` может ложно срабатывать у кошелька, который торгует каждый день без реальных перерывов, из-за самой границы 7-дневного окна `trust`-проверки — воспроизведено офлайн на синтетической фикстуре (стадия 9E); требует проверки на живых данных после остановки сбора shadow-collector.
+- `/gate-copy` не входит ни в один из наборов авторизации (`isMutating`/`isHeavy`, `src/http-server.ts:108-131`) и не может быть закрыт `RADAR_API_TOKEN` ни при какой конфигурации; вызывает Helius и без токена вообще все маршруты открыты по умолчанию (`authorizeMutating`, `:115`).
+- Сбой `fetchMintMetadata`/`getTokenLargestAccounts` приводит к тихому пропуску метаданных (`src/mint.ts:496-524`) — `TOXIC_MINT` для этого mint просто не оценивается (fail open), а не считается безопасным или опасным (`src/analyzer.ts:780`).
+- `BLUECHIP_FALLBACK_PRICES` (`src/pricing.ts:115-128`) определён, но нигде не используется; при сбое Jupiter `LARGE_SWAP` работает только для SOL/USDC/USDT по сырым величинам.
+- `TOXIC_MINT` не учитывает расширения Token-2022 (`permanentDelegate`, `pausableConfig`, `transferHook`, `defaultAccountState`) — `MintRiskInfo` содержит только `mintAuthority`, `freezeAuthority`, `top10Pct`, `isPumpFun`.
+- x402: защита от повтора платежа синхронна и не имеет гонки внутри одного процесса, но между процессами возможна повторная доставка результата по одной подписи (`src/x402server.ts:1000-1005`, `:1161-1169`).
+- Сообщение об ошибке проверки платежа может включать `err.message` (`src/x402server.ts:492-493`); попадание URL с API-ключом в это сообщение не проверялось (нужен реальный сетевой сбой).
+- Transfer Hook: один upgrade authority у самой программы и один `config.authority` на mint (без мультисига на уровне протокола); `risk_score` в `write_scan_record` не ограничен явно значением ≤100 (`lib.rs:492`).
+- Качество тестов: мутации `REGIME_DOMINANT_RATIO` и `DEFENSE_THRESHOLDS.blocked` не роняют ни одного теста; 5 тестов сверяют результат с той же константой, что и проверяемый код (список в `docs/KNOWN-ISSUES.md`).
+- `npm audit`: 12 известных уязвимостей в дереве зависимостей (9 moderate, 3 high — `bigint-buffer`, `@solana/buffer-layout-utils`, `@solana/spl-token`), все через `@solana/spl-token@0.4.15`; влияние на проект не оценивалось.
+- Заявление «sub-second» было верно только для офлайн `/analyze` (медиана 3.69 мс); живая проверка `/trust` измерена в 1.0-2.4 с на 5 кошельках — формулировка ниже исправлена.
+- Демо `examples/copy-bot-firewall.ts` использует встроенные заглушки ответов и не обращается к реальному серверу, даже если он запущен.
+- Оракул Light Protocol: логика подтверждена тестами; реальная запись в сеть Light Protocol не проверялась в рамках этого аудита. `DEFAULT_ORACLE_PROGRAM_ID` (`src/oracle/ledger.ts:77`) — системная программа Light Protocol, не контракт этого проекта.
+
+## Как проверить
+
+Пять воспроизводимых команд (каждая проверена в рамках этапов 9B–9E):
+
+1. **Полный набор тестов**: `npm test` → 666/666, 29 suites.
+2. **Детерминированный бенчмарк**: `npm run radar -- benchmark` → 24/24 на версионированном синтетическом наборе фикстур (это регрессионный тест на самих правилах, не независимый замер точности на реальных данных — см. «Статус независимой оценки»).
+3. **Офлайн self-test**: `npm run radar -- selftest` → без сети и API-ключей, прогоняет полный конвейер детекции на синтетическом кошельке.
+4. **Детерминированный replay**: `node dist/src/cli.js replay <wallet> --since <unix-ts> --until <unix-ts>` → повторно прогоняет детектор по историческому окну реального кошелька; одинаковые входные данные всегда дают одинаковый вердикт.
+5. **Живой девнет-хук** (публичный RPC, только чтение):
+   ```bash
+   curl -s https://api.devnet.solana.com -X POST -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",{"encoding":"base64"}]}'
+   ```
+   → подтверждает `executable: true`, владелец — upgradeable BPF loader.
 
 ## Support
 
@@ -525,6 +593,9 @@ Wallet Radar is read-only and custody-free: it reads public on-chain data via He
 - [CHANGELOG.md](CHANGELOG.md) — release history and leap entries.
 - [SECURITY.md](SECURITY.md) — security policy, disclosure, data handling.
 - [docs/trust-spec.md](docs/trust-spec.md) — trust-check architecture and decision boundaries.
+- [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) — tracked documentation/code inconsistencies, with file:line citations.
+- [docs/PROPOSED-DESCRIPTIONS.md](docs/PROPOSED-DESCRIPTIONS.md) — proposed corrected tool/endpoint descriptions, not yet applied to `src/`.
+- [ADVERSARIAL-TESTING.md](ADVERSARIAL-TESTING.md) — adversarial test matrix for the x402 server and Transfer Hook.
 
 ## License
 

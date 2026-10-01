@@ -1,6 +1,15 @@
+import json
 import os
 import subprocess
 from PIL import Image, ImageDraw, ImageFont
+
+def load_devnet_log_sample():
+    """Real devnet transaction data (assets/devnet-log-sample.json), fetched via
+    getTransaction against https://api.devnet.solana.com, stage 9B/9D -- not a
+    hardcoded/synthetic terminal simulation."""
+    path = os.path.join(os.path.dirname(__file__), "..", "assets", "devnet-log-sample.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 WIDTH = 1920
 HEIGHT = 1080
@@ -102,31 +111,39 @@ def render_slide_2(lang="ru"):
     f_tit = get_font(42, bold=True)
     f_desc = get_font(22)
     
+    log_sample = load_devnet_log_sample()
+
     draw.text((80, 110), "02 // ON-CHAIN ENFORCEMENT LAYER", fill=AMBER, font=f_eye)
     draw.text((80, 145), "SPL Token-2022 Transfer Hook Live on Solana Devnet", fill=TEXT_WHITE, font=f_tit)
-    draw.text((80, 205), "Hardened across 11 internal audit revisions. Autonomous revert 0x1771 (DestinationHighRisk).", fill=TEXT_MUTED, font=f_desc)
-    
+    draw.text((80, 205), "Hardened across 11 internal audit revisions. Autonomous revert 0x1771 (CounterpartyFlagged).", fill=TEXT_MUTED, font=f_desc)
+
     # Terminal frame
     draw.rounded_rectangle([80, 280, 1840, 840], radius=16, fill=(0, 0, 0), outline=BORDER_COLOR, width=2)
-    
+
     f_term = get_font(18)
-    trace = [
-        ("[19:14:02.102] solana transaction simulate --devnet --commitment confirmed", TEXT_WHITE),
-        ("[19:14:02.140] > Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV invoke [1]", CYAN),
-        ("[19:14:02.142]   Program log: Instruction: TransferHookExecute", TEXT_MUTED),
-        ("[19:14:02.145]   Program log: Validating destination scan record PDA [b\"radar_record\", mint, wallet]...", TEXT_MUTED),
-        ("[19:14:02.148]   Program log: Attestation age: 14s (within MAX_ATTESTATION_AGE_SEC = 300s)", GREEN),
-        ("[19:14:02.152]   Program log: Verification: TOXIC_MINT active freeze authority (HiMSSzzw...)", AMBER),
-        ("[19:14:02.155]   Program log: Destination posture: BLOCKED (spend limit: $0)", RED),
-        ("[19:14:02.158]   Program log: Custom program error: 0x1771 (DestinationHighRisk)", RED),
-        ("[19:14:02.162] < Program wvN1... consumed 24,190 compute units; failed with error 0x1771", RED),
-        ("[19:14:02.170] RESULT: TRANSACTION INTERCEPTED AND REVERTED ON-CHAIN BEFORE BALANCE TRANSFER", GREEN),
-    ]
-    
-    y = 320
+    # Built from a real devnet transaction's actual logMessages (assets/devnet-log-sample.json,
+    # stage 9B/9D) -- not a hand-typed simulation. Solana program logs carry no per-line
+    # wall-clock timestamp, so none is invented here; only the real signature/slot/compute
+    # units from that transaction's meta are shown.
+    trace = [(f"$ solana confirm {log_sample['signature']} --url devnet", TEXT_WHITE)]
+    for line in log_sample["logMessages"]:
+        if "failed" in line or "REJECTED" in line or "CounterpartyFlagged" in line:
+            col = RED
+        elif "invoke" in line:
+            col = CYAN
+        else:
+            col = TEXT_MUTED
+        trace.append((f"  {line}", col))
+    trace.append((
+        f"RESULT: TRANSACTION REVERTED ON-CHAIN (slot {log_sample['slot']}, "
+        f"{log_sample['computeUnitsConsumed']} compute units consumed) -- BALANCE TRANSFER BLOCKED",
+        GREEN,
+    ))
+
+    y = 300
     for line, col in trace:
         draw.text((120, y), line, fill=col, font=f_term)
-        y += 48
+        y += 40
         
     sub = "Первое: ончейн-защита на SPL Token-2022 Transfer Hook развернута в Devnet. Пройдено 11 ревизий аудита..." if lang == "ru" else "First: on-chain defense via SPL Token-2022 Transfer Hook is live on Devnet across 11 audit revisions..."
     draw_footer(draw, sub)
@@ -192,7 +209,7 @@ def render_slide_4(lang="ru"):
     f_desc = get_font(22)
     
     draw.text((80, 110), "04 // EDGE DEPLOYMENT", fill=AMBER, font=f_eye)
-    draw.text((80, 145), "24/7 Orange Pi Node · Independent Validation Pending", fill=TEXT_WHITE, font=f_tit)
+    draw.text((80, 145), "Continuous Orange Pi Node · Independent Validation Pending", fill=TEXT_WHITE, font=f_tit)
     draw.text((80, 205), "Autonomous hardware node active. Walk-forward accuracy claim retracted pending ground-truth review (see ground-truth/PROTOCOL.md).", fill=TEXT_MUTED, font=f_desc)
 
     # 4 Stat Pillars
@@ -203,7 +220,7 @@ def render_slide_4(lang="ru"):
     stats = [
         ("N/A", "WALK-FORWARD ACCURACY", "Retracted -- independent validation not yet complete", TEXT_MUTED),
         ("N/A", "FALSE BLOCKS ON DEX", "Retracted -- independent validation not yet complete", TEXT_MUTED),
-        ("62 MB", "EDGE NODE RAM FOOTPRINT", "Physical Orange Pi 3B (ARM64) 24/7 daemon", AMBER),
+        ("~150 MB", "EDGE NODE RAM FOOTPRINT (RSS, stage 9C measurement)", "Physical Orange Pi (ARM64, Armbian) daemon, continuous monitoring", AMBER),
         ("665", "PASSING UNIT TESTS", "0 failures · CI regression suite (not an accuracy claim)", GREEN)
     ]
 
@@ -218,11 +235,11 @@ def render_slide_4(lang="ru"):
         
     # Bottom info box
     draw.rounded_rectangle([80, 640, 1840, 840], radius=16, fill=PANEL_COLOR, outline=BORDER_COLOR, width=2)
-    draw.text((120, 675), "PHYSICAL NODE DEPLOYMENT (Orange Pi 3B @ 192.168.0.164)", fill=AMBER, font=get_font(20, bold=True))
+    draw.text((120, 675), "PHYSICAL NODE DEPLOYMENT (Orange Pi, ARM64/Armbian, @ 192.168.0.164)", fill=AMBER, font=get_font(20, bold=True))
     draw.text((120, 725), "• Services active: radar-http, radar-watch (daily alert mode), x402server, canary-agent", fill=TEXT_WHITE, font=get_font(16))
     draw.text((120, 765), "• Daily Telegram Digest scheduled at 07:00 UTC+3 with rich HTML summary and zero day-time spam", fill=TEXT_MUTED, font=get_font(16))
     
-    sub = "Третье: независимая проверка точности History Machine ещё не завершена (см. ground-truth/PROTOCOL.md). Orange Pi нода в 62 МБ RAM..." if lang == "ru" else "Third: independent accuracy validation of History Machine is not yet complete (see ground-truth/PROTOCOL.md). Orange Pi node in 62 MB RAM..."
+    sub = "Третье: независимая проверка точности History Machine ещё не завершена (см. ground-truth/PROTOCOL.md). Orange Pi (ARM64, Armbian), непрерывный мониторинг..." if lang == "ru" else "Third: independent accuracy validation of History Machine is not yet complete (see ground-truth/PROTOCOL.md). Orange Pi (ARM64, Armbian), continuous monitoring..."
     draw_footer(draw, sub)
     return img
 
@@ -242,7 +259,7 @@ def render_slide_5(lang="ru"):
     cards = [
         ("01", "COPY-TRADING BOT SDK", "One-line screening middleware for Jupiter and Raydium bots.\nIntercepts toxic counterparties before order submission.\nSupports Solana Agent Kit & ElizaOS plugins.", AMBER),
         ("02", "DIALECT BLINKS (ACTIONS)", "One-tap wallet safety scans directly in Twitter/X and Discord.\nx402 micropayments (0.005 USDC) with instant attestation.\nStandard Solana Actions manifest live at pay.cbellory.xyz.", CYAN),
-        ("03", "SCALED WATCHLIST (100-300)", "Expanding 24/7 background monitoring on the Orange Pi node.\nAutomated harvester dataset across top institutional actors.\nContinuous anomaly telemetry without RPC overuse.", GREEN)
+        ("03", "SCALED WATCHLIST (100-300)", "Expanding continuous background monitoring on the Orange Pi node.\nAutomated harvester dataset across top institutional actors.\nContinuous anomaly telemetry without RPC overuse.", GREEN)
     ]
     
     for i, (num, title, desc, col) in enumerate(cards):

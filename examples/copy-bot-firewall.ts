@@ -2,7 +2,7 @@
  * Wallet Radar — Copy-Trading Bot Firewall Integration Example
  *
  * Demonstrates how a copy-trading bot (e.g. Photon, Trojan, Maestro, or custom AI agent)
- * uses Wallet Radar SDK (@sendaifun/wallet-radar-sdk) to safety-gate every copy signal
+ * uses Wallet Radar SDK (`wallet-radar`, per package.json) to safety-gate every copy signal
  * BEFORE executing any on-chain transaction.
  *
  * Usage:

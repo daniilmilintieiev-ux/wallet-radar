@@ -17,19 +17,19 @@ SCENES_RU = [
         "id": 2,
         "start": 10.0,
         "rate": "+4%",
-        "text": "Первое: ончейн-защита на SPL Token-2022 Transfer Hook развернута в Devnet. Пройдено одиннадцать ревизий аудита безопасности. Опасные переводы на скам-адреса отсекаются прямо на уровне среды выполнения Solana с кодом ошибки 0x1771."
+        "text": "Первое: ончейн-защита на SPL Token-2022 Transfer Hook развернута в Devnet. Пройдено одиннадцать внутренних ревизий проверки. Опасные переводы на скам-адреса отсекаются прямо на уровне среды выполнения Solana с кодом ошибки 0x1771."
     },
     {
         "id": 3,
         "start": 22.0,
         "rate": "+4%",
-        "text": "Второе: девять детерминированных правил и ноль галлюцинаций. Мы полностью исключили нейросети из критического пути: вердикт выносится за миллисекунды на базе открытых ончейн-инвариантов и прозрачного математического скоринга."
+        "text": "Второе: десять детерминированных правил и ноль галлюцинаций. Мы полностью исключили нейросети из критического пути: вердикт выносится за миллисекунды на базе открытых ончейн-инвариантов и прозрачного математического скоринга."
     },
     {
         "id": 4,
         "start": 34.0,
         "rate": "+4%",
-        "text": "Третье: верификация на реальной истории через History Machine — сто процентов точности на семидесяти одном кошельке без ложных блокировок. Демон работает 24 на 7 на плате Orange Pi в 62 мегабайтах RAM с утренней сводкой в Telegram."
+        "text": "Третье: независимая проверка точности через History Machine ещё не завершена. Демон работает на плате Orange Pi, ARM64, Armbian — непрерывный мониторинг, перезапуски при перебоях питания фиксируются, используя около ста пятидесяти мегабайт RSS по замерам этапа девять-Це, с утренней сводкой в Telegram."
     },
     {
         "id": 5,
@@ -50,19 +50,19 @@ SCENES_EN = [
         "id": 2,
         "start": 10.0,
         "rate": "+3%",
-        "text": "First: on-chain defense via SPL Token-2022 Transfer Hook is live on Devnet. Hardened across 11 security audit revisions. Malicious transfers to high-risk recipients are blocked directly by the Solana runtime with error 0x1771."
+        "text": "First: on-chain defense via SPL Token-2022 Transfer Hook is live on Devnet. Hardened across 11 internal review revisions. Malicious transfers to high-risk recipients are blocked directly by the Solana runtime with error 0x1771."
     },
     {
         "id": 3,
         "start": 22.0,
         "rate": "+3%",
-        "text": "Second: nine deterministic rules with zero hallucinations. We completely removed black-box LLMs from the critical decision path: authoritative verdicts are computed in milliseconds using transparent on-chain invariants."
+        "text": "Second: ten deterministic rules with zero hallucinations. We completely removed black-box LLMs from the critical decision path: authoritative verdicts are computed in milliseconds using transparent on-chain invariants."
     },
     {
         "id": 4,
         "start": 34.0,
         "rate": "+4%",
-        "text": "Third: independent validation of our walk-forward History Machine is still in progress and not yet complete. Running 24/7 on an Orange Pi node using just 62 megabytes of RAM."
+        "text": "Third: independent validation of our walk-forward History Machine is still in progress and not yet complete. Running continuously on an Orange Pi, ARM64, Armbian, node -- restarts after power interruptions are logged -- using about 150 megabytes of RSS memory, per stage 9C measurements."
     },
     {
         "id": 5,
