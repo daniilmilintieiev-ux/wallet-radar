@@ -239,20 +239,18 @@ header {
   text-transform: uppercase;
   background: transparent;
 }
-.chip.active, .chip.acc {
+.chip.active, .chip.acc, .chip.on {
   border-color: var(--accent);
   color: var(--accent);
   background: rgba(255, 176, 0, .07);
 }
-.chip.on {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(255, 176, 0, .07);
+.chip.ok {
+  color: var(--ok);
 }
 .search-bar {
   display: flex;
   gap: 8px;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -427,6 +425,12 @@ header {
 }
 .empty-line3 {
   font-size: 13px;
+}
+.empty-sub {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--ink3);
+  letter-spacing: .04em;
 }
 .metrics-strip {
   display: grid;
@@ -691,6 +695,8 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
   let defenseState: DefenseState = "armed";
   let recordedAtUtc = "";
   let isHistoricReplay = false;
+  let defenseAuditTrail: Array<{ ts: number; fromState: string; toState: string; action: string; risk: number; reason: string }> = [];
+  let defenseActionsCount = 0;
 
   if (opts.demo === "replay" && replayData) {
     hasData = true;
@@ -734,6 +740,8 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
     if (opts.defense) {
       defenseState = opts.defense.state;
       agentVerdict = opts.defense.enforcement?.verdict || "n/a";
+      defenseAuditTrail = opts.defense.trail || [];
+      defenseActionsCount = opts.defense.actions || 0;
     } else {
       defenseState = riskToState(riskScore);
       agentVerdict = defenseState === "blocked" ? "block" : defenseState === "gated" ? "throttle" : "allow";
@@ -792,9 +800,13 @@ ${DASHBOARD_CSS}
         ? `<!-- Empty State -->
     <div class="empty-hero">
       <div class="empty-line1">No wallet selected.</div>
-      <div class="empty-line2">Open /dashboard?wallet=&lt;address&gt; to read its scan history.</div>
+      <div class="empty-line2">Open /dashboard?wallet=<address> to read its scan history.</div>
       <div class="empty-line3">
         <a href="/dashboard?demo=replay" class="acc">View recorded replay (8XeK5m...)</a>
+      </div>
+      <div class="empty-sub">
+        Inspect target wallet ledger | ZK scan ledger (~400x cost vs uncompressed on-chain accounts)
+        ${wallet ? `| No On-Chain Scan Attestations Found for <code>${escapeHtml(wallet)}</code>. Run <code>radar scan ${escapeHtml(wallet)}</code> to record a scan.` : ""}
       </div>
     </div>`
         : `<!-- Populated Hero -->
@@ -900,6 +912,20 @@ ${DASHBOARD_CSS}
           </div>`;
           }).join("\n          ")}
         </div>
+        ${
+          opts.defense
+            ? `<div style="margin-top: 16px; font-size: 12px; color: var(--ink3);">
+          <div>Active defense state: <b>${escapeHtml(defenseState)}</b></div>
+          <div>Enforcement: <b>${escapeHtml((agentVerdict || "").toUpperCase())}</b></div>
+          <div>${defenseActionsCount} defense actions recorded</div>
+          ${
+            defenseAuditTrail.length > 0
+              ? `<div style="margin-top: 8px;"><b>Defense audit trail</b>: ${defenseAuditTrail.map((t) => `${escapeHtml(t.fromState)}->${escapeHtml(t.toState)} (${escapeHtml(t.action)})`).join(", ")}</div>`
+              : ""
+          }
+        </div>`
+            : ""
+        }
       </div>
     </div>
 
@@ -912,11 +938,11 @@ ${DASHBOARD_CSS}
       </div>
       <div class="layer-cell">
         <div class="layer-lbl">Agent Verdict</div>
-        <div class="layer-val">${escapeHtml(agentVerdict)}</div>
+        <div class="layer-val">${escapeHtml((agentVerdict || "n/a").toUpperCase())}</div>
       </div>
       <div class="layer-cell">
         <div class="layer-lbl">Defense State</div>
-        <div class="layer-val">${escapeHtml(defenseState)}</div>
+        <div class="layer-val">&gt;${escapeHtml(defenseState.toUpperCase())}&lt;</div>
       </div>
     </div>
     <div class="layers-note">Three separate systems; they can disagree.</div>
@@ -925,6 +951,41 @@ ${DASHBOARD_CSS}
     <div class="token-strip">
       ${escapeHtml(tokenCheckValue)}
     </div>`
+    }
+
+    ${
+      opts.records && opts.records.length > 0
+        ? `<!-- Scan Ledger Table for On-Chain Records -->
+    <div class="block-section">
+      <div class="block-header">Scan ledger (${opts.records.length} recorded)</div>
+      <table class="tbl-anomalies">
+        <thead>
+          <tr>
+            <th>Time (UTC)</th>
+            <th>Slot</th>
+            <th>Score</th>
+            <th>Verdict</th>
+            <th>Compressed PDA</th>
+            <th>Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${opts.records
+            .map(
+              (r) => `<tr>
+            <td style="color: var(--ink2);">${escapeHtml(formatIso(r.timestamp).slice(0, 19))}</td>
+            <td>${escapeHtml(String(r.slot ?? "—"))}</td>
+            <td style="font-weight: 700;">${r.riskScore}</td>
+            <td>${escapeHtml(r.verdict || computeVerdict(r.riskScore))}</td>
+            <td style="color: var(--ink3); font-size: 12px;"><code>${escapeHtml(r.compressedAddress ? r.compressedAddress.slice(0, 12) + "..." : "—")}</code></td>
+            <td style="color: var(--ink3); font-size: 12px;"><code>${escapeHtml(r.onchainSignature ? r.onchainSignature.slice(0, 16) + "..." : "—")}</code></td>
+          </tr>`,
+            )
+            .join("\n          ")}
+        </tbody>
+      </table>
+    </div>`
+        : ""
     }
 
     <!-- 7. On-chain proof (devnet) -->
