@@ -490,7 +490,10 @@ export async function verifySolanaPaymentRpc(
       recipient: requirement.recipient,
     };
   } catch (err) {
-    return { valid: false, error: `Verification exception: ${err instanceof Error ? err.message : String(err)}` };
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const sanitized = sanitizeVerificationError(rawMsg);
+    console.error(`[x402] Verification exception: ${sanitized}`);
+    return { valid: false, error: `Verification exception: ${sanitized}` };
   }
 }
 
@@ -573,6 +576,15 @@ export function extractPaymentProof(req: http.IncomingMessage, body?: any): Paym
   return null;
 }
 
+export function sanitizeVerificationError(raw?: string): string {
+  if (!raw) return "";
+  let s = String(raw);
+  s = s.replace(/https?:\/\/[^\s"')]+/gi, "[REDACTED_URL]");
+  s = s.replace(/api[_-]?key=[^\s&"']+/gi, "[REDACTED_KEY]");
+  s = s.replace(/api[_-]?key/gi, "[REDACTED]");
+  return s;
+}
+
 export function send402(
   res: http.ServerResponse,
   endpoint: string,
@@ -580,6 +592,7 @@ export function send402(
   recipient: string,
   detail?: string,
 ): void {
+  const sanitizedDetail = detail ? sanitizeVerificationError(detail) : undefined;
   res.writeHead(402, {
     "Content-Type": "application/json",
     "X-Payment-Required": "true",
@@ -591,9 +604,9 @@ export function send402(
     JSON.stringify(
       {
         error: "Payment Required",
-        ...(detail ? { detail } : {}),
-        message: detail
-          ? `Payment error for ${endpoint}: ${detail}`
+        ...(sanitizedDetail ? { detail: sanitizedDetail } : {}),
+        message: sanitizedDetail
+          ? `Payment error for ${endpoint}: ${sanitizedDetail}`
           : `Payment of ${requiredAmount} USDC required for ${endpoint}. Recipient: ${recipient}`,
         x402: {
           version: "1.0",
@@ -1005,17 +1018,28 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
         inFlightPayments.add(proof.signature);
         try {
           // 3. Verify payment
-          const verResult = await verifier(proof, {
-            endpoint: pathname,
-            recipient: activeRecipient,
-            minAmount: requiredPrice,
-            maxAgeSec: options.maxAgeSec,
-            mint: USDC_MINT,
-            targetWallet: typeof body?.wallet === "string" ? body.wallet : undefined,
-          });
+          let verResult;
+          try {
+            verResult = await verifier(proof, {
+              endpoint: pathname,
+              recipient: activeRecipient,
+              minAmount: requiredPrice,
+              maxAgeSec: options.maxAgeSec,
+              mint: USDC_MINT,
+              targetWallet: typeof body?.wallet === "string" ? body.wallet : undefined,
+            });
+          } catch (verErr: any) {
+            const rawMsg = verErr instanceof Error ? verErr.message : String(verErr);
+            const sanitized = sanitizeVerificationError(rawMsg);
+            console.error(`[x402] Payment verification exception for ${pathname}: ${sanitized}`);
+            send402(res, pathname, requiredPrice, activeRecipient, `Verification exception: ${sanitized}`);
+            return;
+          }
 
           if (!verResult.valid) {
-            send402(res, pathname, requiredPrice, activeRecipient, verResult.error || "Payment verification failed");
+            const sanitized = sanitizeVerificationError(verResult.error || "Payment verification failed");
+            console.error(`[x402] Payment verification rejected for ${pathname}: ${sanitized}`);
+            send402(res, pathname, requiredPrice, activeRecipient, sanitized);
             return;
           }
 

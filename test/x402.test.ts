@@ -1602,3 +1602,52 @@ test("audit revision 11 WR-CRIT-01: verifySolanaPaymentRpc rejects transactions 
   }
 });
 
+test("A2: payment verification error message strips URL and api-key", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
+
+  const originalConsoleError = console.error;
+  let loggedErrors: string[] = [];
+  console.error = (...args: any[]) => {
+    loggedErrors.push(args.map(a => String(a)).join(" "));
+  };
+
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async () => {
+      throw new Error("RPC request failed: https://x.test/?api-key=SECRETVALUE");
+    },
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": "sig_leak_test",
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: "11111111111111111111111111111111" }),
+    });
+
+    assert.equal(res.status, 402);
+    const text = await res.text();
+
+    assert.equal(text.includes("SECRETVALUE"), false, "Response body must not contain SECRETVALUE");
+    assert.equal(text.includes("api-key"), false, "Response body must not contain 'api-key'");
+
+    const logs = loggedErrors.join("\n");
+    assert.equal(logs.includes("SECRETVALUE"), false, "console.error must not contain SECRETVALUE");
+    assert.equal(logs.includes("api-key"), false, "console.error must not contain 'api-key'");
+  } finally {
+    console.error = originalConsoleError;
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
