@@ -253,10 +253,59 @@ a separate, future change.
 - Reported packages: `bigint-buffer`, `@solana/buffer-layout-utils`,
   `@solana/spl-token` — all reachable through `@solana/spl-token@0.4.15`'s
   own dependency tree, not a direct top-level choice.
-- Impact on this project's actual usage was not assessed this stage (no
-  exploitability analysis of which code paths touch the vulnerable
-  functions).
-- **Status:** finding, fix planned after 2026-10-06.
+- Re-confirmed on branch `fixes-b` via `npm audit` (2026-10-01): still 12
+  vulnerabilities (9 moderate, 3 high) — unchanged from report 11B. No
+  dependency was changed by this update.
+
+### B7: reachability analysis (stage 15B) — dependency versions NOT changed
+
+Every place `src/` imports `@solana/spl-token`, and whether the specific
+flagged `bigint-buffer` functions (`toBigIntLE`, `toBigIntBE`, `toBufferLE`,
+`toBufferBE`) are actually reachable with externally-sourced data (RPC
+responses, user input) through those import sites:
+
+- **All `@solana/spl-token` imports in `src/`** (confirmed exhaustive via
+  `grep -rn "@solana/spl-token" src/*.ts src/**/*.ts`): exactly two files,
+  each importing exactly one function, `createAssociatedTokenAccountIdempotentInstruction`:
+  - `src/blink/index.ts:10` (import), called at `src/blink/index.ts:225-226`.
+  - `src/sdk/index.ts:3` (import), called at `src/sdk/index.ts:372-373`.
+  - No other `@solana/spl-token` export is imported anywhere in `src/`.
+- **Call-graph trace for `createAssociatedTokenAccountIdempotentInstruction`**
+  (`node_modules/@solana/spl-token/lib/esm/instructions/associatedTokenAccount.js:31-33`):
+  delegates to `buildAssociatedTokenAccountInstruction`, which only builds a
+  `TransactionInstruction` from a fixed 1-byte data buffer and account
+  pubkeys (`new PublicKey(...)`/`.toBuffer()` calls) — it does not decode any
+  on-chain account data. Its only other import from `spl-token` is
+  `getAssociatedTokenAddressSync` (`../state/mint.js:124-129`), which is pure
+  PDA derivation (`PublicKey.isOnCurve`, `PublicKey.findProgramAddressSync`)
+  and likewise never touches a byte-layout codec.
+- **Where `toBigIntLE`/`toBigIntBE`/`toBufferLE`/`toBufferBE` actually live**:
+  `node_modules/@solana/buffer-layout-utils/lib/cjs/bigint.js:21` (decode,
+  `toBigIntLE`/`toBigIntBE`) and `:32` (encode, `toBufferLE`/`toBufferBE`),
+  inside that package's `u64`/`u128`-style layout codec. `state/mint.js:1-2`
+  imports this codec (`@solana/buffer-layout-utils`'s `bool`/`publicKey`/`u64`)
+  at module scope for its OTHER exports (`MintLayout`, `unpackMint`, binary
+  decoders of on-chain mint accounts) — so the vulnerable package is loaded
+  into the process (an ES module's top-level imports always execute), but
+  `getAssociatedTokenAddressSync` specifically never calls into that codec.
+- **No other file under `src/` imports `@solana/buffer-layout-utils` or
+  `bigint-buffer` directly** (confirmed via
+  `grep -rn "buffer-layout-utils\|bigint-buffer" src/*.ts src/**/*.ts` —
+  no match).
+- **Classification for all four flagged functions** (`toBigIntLE`,
+  `toBigIntBE`, `toBufferLE`, `toBufferBE`): **недостижимо** (unreachable)
+  through this project's actual code — the only two call sites into
+  `@solana/spl-token` use a function whose own call graph never reaches the
+  codec that wraps these, and no other path into `bigint-buffer` exists in
+  `src/`. This is a reachability finding based on static tracing of the
+  exact functions called, not a claim that the dependency itself is safe to
+  leave unpatched, and it does not account for any future code change that
+  imports a different `@solana/spl-token` export (e.g. `unpackMint`,
+  `getAccount`) that WOULD reach this codec.
+- **Status:** reachability analysis complete (this stage, branch `fixes-b`,
+  not deployed) — dependency versions unchanged, `npm audit` still reports
+  the same 12 vulnerabilities; this entry documents exploitability through
+  this project's own code, it does not resolve the underlying advisories.
 
 ## "Sub-second" latency claim holds for offline `/analyze` only, not for live `/trust`
 
