@@ -48,7 +48,7 @@ a separate, future change.
 
 ## DORMANT_ACTIVE observation: the default 7-day trust window may itself manufacture the "dormancy" gap
 
-- **Naблюдение из офлайн-воспроизведения (stage 9E task 3), нужна проверка на живых данных после остановки сбора.**
+- **Observation from offline reproduction (stage 9E task 3), live data validation needed after collection stops.**
 - `src/trust.ts:277-288` (`selectScoring`): splits a wallet's fetched history
   at `windowStart = now - windowDays*86400` (default `windowDays = 7`,
   `TRUST_DEFAULTS.windowDays`) into `priorTxs` (strictly older than
@@ -120,7 +120,7 @@ a separate, future change.
 
 ## `/gate-copy` cannot be gated by any authentication, and is open by default
 
-- Источник: отчёт 11A, п.2.
+- Source: report 11A, item 2.
 - `src/http-server.ts:108-131` (`authorizeMutating`): line 115, `if (!token)
   return true;` — without `RADAR_API_TOKEN` set (the out-of-the-box
   default), every route is authorized, including the mutating set
@@ -135,12 +135,12 @@ a separate, future change.
   (confirmed via `grep -n "gate-copy" src/x402server.ts` — no match) — so
   it is both unauthenticated-by-default and free, while still incurring
   real Helius API cost.
-- **Status:** находка, исправление запланировано после 2026-10-06 (`src/`
-  вне области этого этапа).
+- **Status:** finding, fix planned after 2026-10-06 (`src/`
+  is out of scope for this stage).
 
 ## `fetchMintMetadata`/`getTokenLargestAccounts` failure silently skips TOXIC_MINT for that mint (fails open)
 
-- Источник: отчёт 11A, п.1(а).
+- Source: report 11A, item 1(a).
 - `src/mint.ts:496-524` (`fetchSwapMintRisk`): a per-mint fetch failure is
   caught (`:516-518`) and that mint is simply omitted from the returned
   `MintRiskMap` — not recorded as `null`, just absent.
@@ -148,11 +148,11 @@ a separate, future change.
   // Fetch failed or no metadata: skip rule for this mint` — a mint whose
   metadata fetch failed receives no TOXIC_MINT evaluation at all,
   regardless of its actual risk.
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## `BLUECHIP_FALLBACK_PRICES` is defined but never used; price-feed failure degrades LARGE_SWAP to major-mints-only
 
-- Источник: отчёт 11A, п.1(в).
+- Source: report 11A, item 1(c).
 - `src/pricing.ts:115-128` defines a hardcoded fallback USD price table
   (SOL, USDC, USDT, WBTC, WETH, mSOL, bSOL, JitoSOL, JUP, RAY, BONK, PYTH).
   `grep -rn "BLUECHIP_FALLBACK_PRICES" src/*.ts` finds only this
@@ -162,11 +162,11 @@ a separate, future change.
   comparing raw token quantities restricted to `MAJOR_MINTS` (SOL/USDC/
   USDT) only (`analyzer.ts:661-681`) — non-major mints get no LARGE_SWAP
   detection at all during a price-feed outage, not stale hardcoded prices.
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## TOXIC_MINT does not consider Token-2022 extensions
 
-- Источник: отчёт 11A, п.1(б).
+- Source: report 11A, item 1(b).
 - `grep -rn "permanentDelegate|pausable|transferHook|defaultAccountState"
   src/mint.ts src/types.ts src/analyzer.ts` — zero matches.
 - `MintRiskInfo` (`src/mint.ts:9-46`, `:48-73`) only ever extracts
@@ -176,11 +176,11 @@ a separate, future change.
   halt, `transferHook` — arbitrary on-transfer logic, `defaultAccountState`
   — new accounts start frozen) are not read or evaluated by TOXIC_MINT at
   all.
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## x402 replay protection is per-process; cross-process concurrent delivery is possible
 
-- Источник: отчёт 11A, п.3.
+- Source: report 11A, item 3.
 - `src/x402server.ts:1000-1005`: the replay check (`inFlightPayments.has()
   || store.hasSettledPayment()`) and `inFlightPayments.add()` are fully
   synchronous with no `await` between them — not racy within one process.
@@ -197,11 +197,11 @@ a separate, future change.
   prevents a duplicate database row, not duplicate delivery.
 - Confirmed by reading the code; not exercised under real multi-process
   concurrency (out of scope, no network/process orchestration this stage).
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## Payment-verification error message may include `err.message`; whether it can contain the RPC URL (with the API key) is unconfirmed
 
-- Источник: отчёт 11A, п.1(г)/п.3.
+- Source: report 11A, item 1(d)/item 3.
 - `src/mint.ts:411`, `src/trust.ts:336`, `src/x402server.ts:180` all embed
   `HELIUS_API_KEY` directly into the RPC URL as a query parameter
   (`?api-key=...`).
@@ -209,14 +209,14 @@ a separate, future change.
   \`Verification exception: ${err.message}\` } }` — this `error` field is
   returned in the public HTTP response to the paying client.
 - Whether a failed `fetch()` call's `.message` can ever contain the
-  request URL (and thus the embedded key) — НЕ ПРОВЕРЕНО: confirming this
+  request URL (and thus the embedded key) — NOT VERIFIED: confirming this
   requires triggering a real network failure against a key-bearing URL,
   which this stage's rules do not permit.
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## Transfer Hook: single program upgrade authority, single per-mint config authority, no explicit risk_score bound
 
-- Источник: отчёт 11A, п.4.
+- Source: report 11A, item 4.
 - The program's own upgrade authority (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`,
   confirmed stage 9B) is a single key that can redeploy the entire program
   for every mint that uses it — no multisig/timelock observed on-chain
@@ -229,11 +229,11 @@ a separate, future change.
 - `write_scan_record`'s `risk_score: u8` parameter (`lib.rs:492`) has no
   explicit `<= 100` bounds check — low severity, since only the trusted
   `config.authority` can call this instruction.
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## Test-quality: two constants have zero test coverage at their boundary, five tests are tautological
 
-- Источник: отчёт 11A, п.5.
+- Source: report 11A, item 5.
 - Mutating `REGIME_DOMINANT_RATIO` (`analyzer.ts:256`, 0.7 → 0.4) and
   `DEFENSE_THRESHOLDS.blocked` (`defense.ts:109`, 75 → 90) each produced
   **zero** failures across `test/analyzer.test.js`, `test/defense.test.js`,
@@ -256,33 +256,33 @@ a separate, future change.
      `riskScore` (`:68`).
   5. `test/defense.test.ts:62` — "escalates to gated at risk >= gated
      threshold" — same pattern with `DEFENSE_THRESHOLDS.gated` (`:63`).
-- **Status:** находка, исправление запланировано после 2026-10-06 (`test/`
-  вне области этого этапа).
+- **Status:** finding, fix planned after 2026-10-06 (`test/`
+  is out of scope for this stage).
 
 ## `npm audit`: 12 known vulnerabilities in the dependency tree (9 moderate, 3 high)
 
-- Источник: отчёт 11B.
+- Source: report 11B.
 - Reported packages: `bigint-buffer`, `@solana/buffer-layout-utils`,
   `@solana/spl-token` — all reachable through `@solana/spl-token@0.4.15`'s
   own dependency tree, not a direct top-level choice.
 - Impact on this project's actual usage was not assessed this stage (no
   exploitability analysis of which code paths touch the vulnerable
   functions).
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
 ## "Sub-second" latency claim holds for offline `/analyze` only, not for live `/trust`
 
-- Источник: отчёт 11B.
+- Source: report 11B.
 - Offline `/analyze` (pre-recorded fixtures, no network): median 3.69ms.
 - Live `/trust` (real Helius history fetch + RPC balance query): measured
   1.0–2.4s across 5 wallets.
 - README wording corrected this stage (see below) to distinguish the two.
-- **Status:** находка, исправление запланировано после 2026-10-06 (wording
+- **Status:** finding, fix planned after 2026-10-06 (wording
   fixed this stage; no code change proposed).
 
 ## `examples/copy-bot-firewall.ts` demo uses a built-in mock `fetchFn`, never calls a real server
 
-- Источник: отчёт 11A/11B.
+- Source: report 11A/11B.
 - `examples/copy-bot-firewall.ts:74-94`: `createRadarClient` is
   constructed with a `fetchFn` that always returns canned, hardcoded
   responses keyed on specific example wallet addresses ("Mock fallback
@@ -291,12 +291,12 @@ a separate, future change.
   `RADAR_API_URL`/a real running server, regardless of whether one exists.
 - Not a bug — the demo is explicitly designed to run standalone — but
   worth stating plainly rather than implying it exercises a live gate.
-- **Status:** находка, исправление запланировано после 2026-10-06 (demo
+- **Status:** finding, fix planned after 2026-10-06 (demo
   behavior, not incorrect, just undocumented until now).
 
 ## Light Protocol oracle: logic confirmed in tests, on-chain write path unverified; the program ID is Light's own, not project-specific
 
-- Источник: отчёт 11B.
+- Source: report 11B.
 - `src/oracle/ledger.ts:77`: `DEFAULT_ORACLE_PROGRAM_ID = new
   PublicKey("SySTEM1eSU2p4BGQfQpimFEWWSC1XDFeun3Nqzz3rT7")` — the comment
   directly above it states "Defaults to Light Protocol System Program" —
@@ -306,67 +306,24 @@ a separate, future change.
   exists. Not confirmed this stage: an actual write to Light Protocol's
   compressed-account state on a live network (would require network
   access, out of scope).
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- **Status:** finding, fix planned after 2026-10-06.
 
-## Публичный сервер `radar.cbellory.xyz`: read-only маршруты открыты за Cloudflare без авторизации
+## Public server `radar.cbellory.xyz`: read-only routes open behind Cloudflare without authentication
 
-- Источник: проверено пользователем напрямую на публичном сервере (живая
-  проверка, вне инструментов этой сессии — сетевой доступ к внешним
-  хостам в этом этапе не выполнялся).
-- Пользователь подтвердил: `GET /watch`, `GET /alerts`, `GET /defense`,
-  `GET /dashboard`, `GET /economics` на `radar.cbellory.xyz` (за Cloudflare)
-  отвечают без какой-либо авторизации; содержимое ответов проверено
-  пользователем — чувствительных данных (ключей, приватных балансов,
-  адресов за пределами публичного watchlist) в них нет.
-- Независимо подтверждено чтением кода (эта сессия, без сети): все эти
-  маршруты зарегистрированы как `GET` (`src/http-server.ts:53,56,57,58,
-  63,66`), а `authorizeMutating` (`http-server.ts:108-131`) проверяет
-  авторизацию только для `method === "POST"` (`:116-122`) — GET-маршруты
-  **структурно не могут быть закрыты** этим механизмом ни при какой
-  конфигурации `RADAR_API_TOKEN`, не только «открыты по умолчанию», как
-  уже отмечено для POST-маршрутов (см. запись 1 выше про `/gate-copy`).
-- `POST /gate-copy`, `POST /scan`, `POST /trust`, `POST /batch` на этом
-  публичном сервере пользователем не проверялись (живой запрос не
-  выполнялся); по коду (`authorizeMutating:115`, запись 1 выше) они не
-  защищены, если `RADAR_API_TOKEN` не задан — то есть открыты, если это
-  единственная защита и токен не сконфигурирован.
-- HSTS: заголовок `Strict-Transport-Security` в приложении нигде не
-  выставляется (`grep -rn "Strict-Transport-Security" src/` — совпадений
-  нет); включён ли он на уровне Cloudflare — по наблюдению пользователя,
-  на публичном сервере не включён.
-- CORS: `Access-Control-Allow-Origin: *` подтверждено чтением кода —
-  `src/config.ts:71`, действует, когда `RADAR_CORS_ORIGINS` не задан.
-- Выручка по `/economics` на публичном сервере на момент проверки
-  пользователем: 0,005 USDC (один платёж) — наблюдение пользователя, не
-  измерялось этой сессией.
-- **Status:** находка, исправление запланировано после 2026-10-06.
+- Source: verified by user directly on the public server (live check, outside the tools of this session — network access to external hosts was not performed in this stage).
+- User confirmed: `GET /watch`, `GET /alerts`, `GET /defense`, `GET /dashboard`, `GET /economics` on `radar.cbellory.xyz` (behind Cloudflare) respond without any authentication; response contents checked by user — contain no sensitive data (keys, private balances, addresses outside the public watchlist).
+- Independently confirmed by code reading (this session, without network): all these routes are registered as `GET` (`src/http-server.ts:53,56,57,58,
+  63,66`), and `authorizeMutating` (`http-server.ts:108-131`) checks authorization only for `method === "POST"` (`:116-122`) — GET routes **structurally cannot be gated** by this mechanism under any `RADAR_API_TOKEN` configuration, not merely "open by default" as already noted for POST routes (see entry 1 above regarding `/gate-copy`).
+- `POST /gate-copy`, `POST /scan`, `POST /trust`, `POST /batch` on this public server were not verified by user (live request was not performed); per code (`authorizeMutating:115`, entry 1 above) they are unprotected if `RADAR_API_TOKEN` is not set — i.e., open if this is the sole defense and token is unconfigured.
+- HSTS: `Strict-Transport-Security` header is nowhere set in the application (`grep -rn "Strict-Transport-Security" src/` — zero matches); whether it is enabled at the Cloudflare level — per user observation, not enabled on the public server.
+- CORS: `Access-Control-Allow-Origin: *` confirmed by reading code — `src/config.ts:71`, active when `RADAR_CORS_ORIGINS` is not set.
+- Revenue via `/economics` on the public server at the time of user check: 0.005 USDC (single payment) — user observation, not measured by this session.
+- **Status:** finding, fix planned after 2026-10-06.
 
-## Единственный x402-платёж: подтверждает путь, не выручку; опечатка в адресе плательщика в daily-digest.ts
+## Sole x402 payment: confirms pipeline, not revenue; typo in payer address in daily-digest.ts
 
-- Источник: отчёт 11E.
-- (а) Единственный платёж в истории получателя
-  `F6wWPy4c3fXTJDqU19Nax8FhQumeMcsSVpD2YwxLpBNR`: 0,005 USDC, 18.09.2026,
-  плательщик `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (подписан
-  «x402 Payer» в `src/daily-digest.ts:24` — номер строки проверен
-  `git grep -n "x402 Payer" -- src/daily-digest.ts`, совпадает). Платёж
-  подтверждает, что платёжный путь (proof → verify → settle) работает
-  на реальной транзакции; это **не** внешняя выручка — единственный
-  известный платёж за всё время, от адреса, не отличимого пока от
-  тестового/внутреннего.
-- (б) Upgrade authority программы Transfer Hook на devnet
-  (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`) — обычный ключ:
-  `owner` = System Program, `space` = 0, признаков мультисига
-  (Squads и т.п.) нет. Не перепроверялось этой сессией (сетевой доступ
-  в этом этапе не выполнялся) — источник: отчёт 11E.
-- (в) Опечатка в адресе: `src/daily-digest.ts:24` содержит
-  `"3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh"` — 43 символа. Проверено
-  этой сессией напрямую (base58-декодирование): эта строка декодируется
-  в **31 байт**, а не в 32, как требуется для валидного Solana-адреса;
-  настоящий адрес плательщика (44 символа, декодируется в 32 байта) —
-  `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (см. пункт (а) выше).
-  Строки отличаются, хотя визуально похожи (общий префикс `3fNN`,
-  общий суффикс `5eYh`). Тот же неверный адрес в списке наблюдения
-  `radar-watch` даёт ошибку Helius 400 каждые 5 минут (по отчёту 11E,
-  не воспроизводилось этой сессией — сеть не использовалась).
-- **Status:** находка, исправление запланировано после 2026-10-06
-  (`src/` вне области этого этапа).
+- Source: report 11E.
+- (a) Sole payment in the recipient history of `F6wWPy4c3fXTJDqU19Nax8FhQumeMcsSVpD2YwxLpBNR`: 0.005 USDC, 2026-09-18, payer `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (labeled "x402 Payer" in `src/daily-digest.ts:24` — line number verified via `git grep -n "x402 Payer" -- src/daily-digest.ts`, matches). The payment confirms that the payment pipeline (proof → verify → settle) executes on a real transaction; this is **not** external revenue — sole known payment across all time, from an address as yet indistinguishable from test/internal.
+- (b) Upgrade authority of the Transfer Hook program on devnet (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`) — regular key: `owner` = System Program, `space` = 0, no indication of multisig (Squads, etc.). Not re-verified in this session (network access was not performed in this stage) — source: report 11E.
+- (c) Typo in address: `src/daily-digest.ts:24` contains `"3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh"` — 43 characters. Directly verified in this session (base58 decoding): this string decodes to **31 bytes**, not 32 as required for a valid Solana address; the actual payer address (44 characters, decodes to 32 bytes) is `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (see item (a) above). The strings differ, though visually similar (shared prefix `3fNN`, shared suffix `5eYh`). The same invalid address in the `radar-watch` watchlist produces a Helius 400 error every 5 minutes (per report 11E, not reproduced in this session — network was not used).
+- **Status:** finding, fix planned after 2026-10-06 (`src/` is out of scope for this stage).
