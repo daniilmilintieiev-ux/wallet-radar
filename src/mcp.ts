@@ -393,6 +393,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             allow: false,
             reason: `BLOCKED by pre-trade firewall: ${reasonsStr}`,
             action: "block",
+            tokenCheck: "skipped_base_verdict",
             riskScore: trustResult.riskScore,
             maxSafeAmountUsd: 0,
             executionTier: "blocked",
@@ -404,24 +405,33 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             allow: false,
             reason: "HOLD: insufficient historical data or unverified balance to establish trust baseline",
             action: "manual_review",
+            tokenCheck: "skipped_base_verdict",
             riskScore: trustResult.riskScore,
             maxSafeAmountUsd: 0,
             details: { trust: trustResult },
           });
         }
 
+        const hasMint = Boolean(mint && isValidBase58(mint));
+        const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
+        const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
+          ? "skipped_no_mint"
+          : !hasAmount
+          ? "skipped_no_amount"
+          : "applied";
+
         let simRes: any;
-        if (copyAmountUsd !== undefined && copyAmountUsd > 0) {
+        if (hasAmount) {
           let mintRisk = null;
-          if (mint && isValidBase58(mint)) {
+          if (hasMint) {
             try {
               const fetchMintMetadataFn = options.fetchMintMetadata ?? fetchMintMetadata;
-              mintRisk = await fetchMintMetadataFn(mint, { apiKey, store: options.store });
+              mintRisk = await fetchMintMetadataFn(mint!, { apiKey, store: options.store });
             } catch {}
           }
           simRes = simulatePayment({
             wallet: targetWallet,
-            amountUsd: copyAmountUsd,
+            amountUsd: copyAmountUsd!,
             balances: trustResult.balances ?? { sol: 0, usdc: 0, usdt: 0 },
             solPrice: trustResult.solPrice,
             riskScore: trustResult.riskScore,
@@ -443,6 +453,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               allow: false,
               reason: simRes.recommendation || `BLOCKED: simulated payment exceeds risk capacity (${(simRes.decision as any)?.reasons?.join("; ") || "unacceptable risk"})`,
               action: "block",
+              tokenCheck,
               riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
               maxSafeAmountUsd: 0,
               executionTier: "blocked",
@@ -458,6 +469,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               allow: true,
               reason: `THROTTLED: ${simRes.recommendation || "payment permitted up to tiered limit"}`,
               action: "throttle",
+              tokenCheck,
               riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
               maxSafeAmountUsd: maxSafe,
               executionTier: simRes.executionTier ?? "guarded",
@@ -472,6 +484,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               allow: false,
               reason: simRes.recommendation || `HOLD: simulated payment cannot be safely executed as requested`,
               action: "manual_review",
+              tokenCheck,
               riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
               maxSafeAmountUsd: (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? 0,
               executionTier: simRes.executionTier ?? "standard",
@@ -487,6 +500,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           allow: true,
           reason: `VERIFIED_SAFE: risk ${trustResult.riskScore ?? 0} <= ${maxRisk ?? 30}, liquidity $${trustResult.liquidityUsd} >= $${minLiquidityUsd ?? 50}${simRes?.executionTier ? ` (Tier: ${simRes.executionTier.toUpperCase()})` : ""}`,
           action: "allow",
+          tokenCheck,
           riskScore: trustResult.riskScore,
           maxSafeAmountUsd: safeMax,
           executionTier: simRes?.executionTier ?? "instant",

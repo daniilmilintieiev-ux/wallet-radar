@@ -455,6 +455,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       allow: false,
       reason: `BLOCKED by pre-trade firewall: ${reasonsStr}`,
       action: "block",
+      tokenCheck: "skipped_base_verdict",
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
       executionTier: "blocked",
@@ -466,23 +467,32 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       allow: false,
       reason: "HOLD: insufficient historical data or unverified balance to establish trust baseline",
       action: "manual_review",
+      tokenCheck: "skipped_base_verdict",
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
       details: { trust: trustResult },
     };
   }
 
+  const hasMint = Boolean(mint && isBase58Address(mint));
+  const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
+  const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
+    ? "skipped_no_mint"
+    : !hasAmount
+    ? "skipped_no_amount"
+    : "applied";
+
   let simRes: any;
-  if (copyAmountUsd !== undefined && copyAmountUsd > 0) {
+  if (hasAmount) {
     let mintRisk = null;
-    if (mint && isBase58Address(mint)) {
+    if (hasMint) {
       try {
-        mintRisk = await fetchMintMetadata(mint, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
+        mintRisk = await fetchMintMetadata(mint!, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
       } catch {}
     }
     simRes = simulatePayment({
       wallet: targetWallet as string,
-      amountUsd: copyAmountUsd,
+      amountUsd: copyAmountUsd!,
       balances: trustResult.balances ?? { sol: 0, usdc: 0, usdt: 0 },
       solPrice: trustResult.solPrice,
       riskScore: trustResult.riskScore,
@@ -504,6 +514,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         allow: false,
         reason: simRes.recommendation || `BLOCKED: simulated payment exceeds risk capacity (${(simRes.decision as any)?.reasons?.join("; ") || "unacceptable risk"})`,
         action: "block",
+        tokenCheck,
         riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
         maxSafeAmountUsd: 0,
         executionTier: "blocked",
@@ -519,6 +530,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         allow: true,
         reason: `THROTTLED: ${simRes.recommendation || "payment permitted up to tiered limit"}`,
         action: "throttle",
+        tokenCheck,
         riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
         maxSafeAmountUsd: maxSafe,
         executionTier: simRes.executionTier ?? "guarded",
@@ -533,6 +545,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         allow: false,
         reason: simRes.recommendation || `HOLD: simulated payment cannot be safely executed as requested`,
         action: "manual_review",
+        tokenCheck,
         riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
         maxSafeAmountUsd: (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? 0,
         executionTier: simRes.executionTier ?? "standard",
@@ -548,6 +561,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
     allow: true,
     reason: `VERIFIED_SAFE: risk ${trustResult.riskScore ?? 0} <= ${maxRisk}, liquidity $${trustResult.liquidityUsd} >= $${minLiquidityUsd}${simRes?.executionTier ? ` (Tier: ${simRes.executionTier.toUpperCase()})` : ""}`,
     action: "allow",
+    tokenCheck,
     riskScore: trustResult.riskScore,
     maxSafeAmountUsd: safeMax,
     executionTier: simRes?.executionTier ?? "instant",

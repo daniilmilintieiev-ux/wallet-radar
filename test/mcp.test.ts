@@ -309,3 +309,113 @@ test("A7: radar_trust and radar_batch validate address bounds and base58 charset
   }
 });
 
+test("A8: MCP radar_gate_copy returns tokenCheck ('applied', 'skipped_no_mint', 'skipped_no_amount', 'skipped_base_verdict')", async () => {
+  const originalFetch = globalThis.fetch;
+  const savedApiKey = process.env.HELIUS_API_KEY;
+  process.env.HELIUS_API_KEY = "test_api_key";
+  const safeWallet = "SafeWa11et1111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    if (urlStr.includes(unknownWallet)) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([
+          { signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (urlStr.includes("jup.ag")) {
+      return new Response(JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 150 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        if (parsed.params?.[0] === unknownWallet) {
+          return new Response(JSON.stringify({ error: "not found" }), { status: 500 });
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (parsed?.method === "getAccountInfo") {
+        const address = parsed.params?.[0];
+        if (address === testMint) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { type: "mint", info: { freezeAuthority: null, mintAuthority: null, isInitialized: true } } } } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111" } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  const client = await createTestClient();
+  try {
+    // 1. skipped_base_verdict
+    const resBase = await client.request("tools/call", {
+      name: "radar_gate_copy",
+      arguments: { targetWallet: unknownWallet, copyAmountUsd: 50, mint: testMint },
+    });
+    const parsedBase = JSON.parse(resBase.result.content[0].text);
+    assert.equal(parsedBase.tokenCheck, "skipped_base_verdict");
+
+    // 2. skipped_no_mint
+    const resNoMint = await client.request("tools/call", {
+      name: "radar_gate_copy",
+      arguments: { targetWallet: safeWallet, copyAmountUsd: 50 },
+    });
+    const parsedNoMint = JSON.parse(resNoMint.result.content[0].text);
+    assert.equal(parsedNoMint.tokenCheck, "skipped_no_mint");
+
+    // 3. skipped_no_amount
+    const resNoAmount = await client.request("tools/call", {
+      name: "radar_gate_copy",
+      arguments: { targetWallet: safeWallet, mint: testMint },
+    });
+    const parsedNoAmount = JSON.parse(resNoAmount.result.content[0].text);
+    assert.equal(parsedNoAmount.tokenCheck, "skipped_no_amount");
+
+    // 4. applied
+    const resApplied = await client.request("tools/call", {
+      name: "radar_gate_copy",
+      arguments: { targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint },
+    });
+    const parsedApplied = JSON.parse(resApplied.result.content[0].text);
+    assert.equal(parsedApplied.tokenCheck, "applied");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedApiKey !== undefined) process.env.HELIUS_API_KEY = savedApiKey;
+    else delete process.env.HELIUS_API_KEY;
+    await client.close();
+  }
+});
+
+

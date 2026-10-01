@@ -1578,6 +1578,127 @@ test("A7: POST /trust and /batch reject invalid base58 and length bounds with 40
   }
 });
 
+test("A8: /gate-copy returns tokenCheck ('applied', 'skipped_no_mint', 'skipped_no_amount', 'skipped_base_verdict')", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  const originalFetch = globalThis.fetch;
+  const safeWallet = "SafeWa11et1111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    if (urlStr.startsWith("http://127.0.0.1")) {
+      return originalFetch(input, init);
+    }
+
+    if (urlStr.includes(unknownWallet)) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([
+          { signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (urlStr.includes("jup.ag")) {
+      return new Response(JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 150 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        if (parsed.params?.[0] === unknownWallet) {
+          return new Response(JSON.stringify({ error: "not found" }), { status: 500 });
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (parsed?.method === "getAccountInfo") {
+        const address = parsed.params?.[0];
+        if (address === testMint) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { type: "mint", info: { freezeAuthority: null, mintAuthority: null, isInitialized: true } } } } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111" } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    // 1. skipped_base_verdict
+    const resBase = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: unknownWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(resBase.status, 200);
+    const dataBase = (await resBase.json()) as any;
+    assert.equal(dataBase.tokenCheck, "skipped_base_verdict");
+
+    // 2. skipped_no_mint
+    const resNoMint = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50 }),
+    });
+    assert.equal(resNoMint.status, 200);
+    const dataNoMint = (await resNoMint.json()) as any;
+    assert.equal(dataNoMint.tokenCheck, "skipped_no_mint");
+
+    // 3. skipped_no_amount
+    const resNoAmount = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, mint: testMint }),
+    });
+    assert.equal(resNoAmount.status, 200);
+    const dataNoAmount = (await resNoAmount.json()) as any;
+    assert.equal(dataNoAmount.tokenCheck, "skipped_no_amount");
+
+    // 4. applied
+    const resApplied = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(resApplied.status, 200);
+    const dataApplied = (await resApplied.json()) as any;
+    assert.equal(dataApplied.tokenCheck, "applied");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+
 
 
 
