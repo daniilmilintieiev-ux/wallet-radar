@@ -1465,6 +1465,51 @@ test("A5: error messages and method hints for /watch, /unwatch, /poll, /defense/
   }
 });
 
+test("A6(a)+(b): trust, batch, and gate-copy descriptions document token mint check scope", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    const endpoints = body.endpoints as Array<{ path: string; description: string }>;
+
+    const trustEp = endpoints.find((e) => e.path === "/trust");
+    assert.ok(trustEp, "Endpoint /trust must exist");
+    assert.ok(
+      trustEp.description.includes("Does not check the token mint; use radar_gate_copy for token checks."),
+      "/trust description must state it does not check token mint"
+    );
+
+    const batchEp = endpoints.find((e) => e.path === "/batch");
+    assert.ok(batchEp, "Endpoint /batch must exist");
+    assert.ok(
+      batchEp.description.includes("Does not check the token mint; use radar_gate_copy for token checks."),
+      "/batch description must state it does not check token mint"
+    );
+
+    const gateCopyEp = endpoints.find((e) => e.path === "/gate-copy");
+    assert.ok(gateCopyEp, "Endpoint /gate-copy must exist");
+    assert.ok(
+      gateCopyEp.description.includes("When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution."),
+      "/gate-copy description must match PROPOSED-DESCRIPTIONS.md"
+    );
+
+    // Also check src/mcp.ts
+    const mcpSource = fs.readFileSync(path.resolve(process.cwd(), "src/mcp.ts"), "utf8");
+    assert.ok(
+      mcpSource.includes("Does not check the token mint; use radar_gate_copy for token checks."),
+      "mcp.ts must document token check scope in trust/batch"
+    );
+    assert.ok(
+      mcpSource.includes("When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution."),
+      "mcp.ts must document token check scope in radar_gate_copy"
+    );
+  } finally {
+    await r.close();
+  }
+});
+
+
 
 
 

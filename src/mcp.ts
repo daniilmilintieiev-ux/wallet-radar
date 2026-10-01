@@ -196,7 +196,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_trust",
     {
       description:
-        "Pre-flight trust check for agent payments (x402 / agent-to-agent): combines Wallet Radar's behavioral risk score (9 deterministic rules over the recent window) with the wallet's payment capacity (SOL + USDC/USDT liquidity in USD) into one verdict — safe, hold, or unknown. Deterministic, no LLM in the verdict path; every verdict comes with machine-readable verdict reasons, a per-rule anomaly breakdown, a one-line summary, and data freshness. Use before paying or trusting an unverified counterparty wallet.",
+        "Pre-flight trust check for agent payments (x402 / agent-to-agent): combines Wallet Radar's behavioral risk score (9 deterministic rules over the recent window) with the wallet's payment capacity (SOL + USDC/USDT liquidity in USD) into one verdict — safe, hold, or unknown. Deterministic, no LLM in the verdict path; every verdict comes with machine-readable verdict reasons, a per-rule anomaly breakdown, a one-line summary, and data freshness. Does not check the token mint; use radar_gate_copy for token checks. Use before paying or trusting an unverified counterparty wallet.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
         maxRisk: z
@@ -246,7 +246,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_batch",
     {
       description:
-        "Batch pre-flight trust-gate over a set of Solana wallets (up to 20): runs the behavioral risk + payment-capacity trust check on each and returns a deterministic shortlist — which wallets are safe to copy/deal with right now (ranked by risk, then liquidity), plus the hold and unknown buckets. Use to gate an entire copy-trading book in one call. Requires HELIUS_API_KEY.",
+        "Batch pre-flight trust-gate over a set of Solana wallets (up to 20): runs the behavioral risk + payment-capacity trust check on each and returns a deterministic shortlist — which wallets are safe to copy/deal with right now (ranked by risk, then liquidity), plus the hold and unknown buckets. Does not check the token mint; use radar_gate_copy for token checks. Use to gate an entire copy-trading book in one call. Requires HELIUS_API_KEY.",
       inputSchema: {
         wallets: z
           .array(z.string())
@@ -354,7 +354,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_gate_copy",
     {
       description:
-        "Pre-trade copy-trading firewall for autonomous agents: gates a proposed copy-trade, swap, or payment before execution on Solana. Evaluates behavioral risk, token mint freeze/mint authority honeypots, and pre-trade simulation with tiered execution limits (instant/standard/guarded). Returns an immediate ALLOW, THROTTLE, or BLOCK verdict.",
+        "Pre-trade copy-trading firewall: gates a proposed copy-trade, swap, or payment before execution. Evaluates behavioral risk against the wallet's history. When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution. Returns an immediate ALLOW, THROTTLE, or BLOCK verdict.",
       inputSchema: {
         targetWallet: z.string().describe("Target trader or counterparty Solana wallet address (base58)"),
         copyAmountUsd: z.number().positive().optional().describe("Proposed trade or copy amount in USD (e.g. 50)"),
