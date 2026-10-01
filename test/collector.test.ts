@@ -4,7 +4,7 @@ import { fetchWalletTransactions, fetchWalletHistory, HttpError } from "../src/c
 import { USDC_MINT } from "../src/types.js";
 import type { EnhancedTx } from "../src/types.js";
 
-const WALLET = "WappetTest1111111111111111111111111111";
+const WALLET = "WappetTest111111111111111111111111111111111";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

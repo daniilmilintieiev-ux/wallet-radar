@@ -30,7 +30,7 @@ import { buildEnvHookBridge } from "./hook/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
-import { isValidBase58, validateConfig, corsHeaders } from "./config.js";
+import { isValidSolanaAddress, validateConfig, corsHeaders } from "./config.js";
 import { buildTrustProof } from "./trust-proof.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 
@@ -165,7 +165,7 @@ async function readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promis
 }
 
 function isBase58Address(v: unknown): v is string {
-  return typeof v === "string" && isValidBase58(v);
+  return typeof v === "string" && isValidSolanaAddress(v);
 }
 
 async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {

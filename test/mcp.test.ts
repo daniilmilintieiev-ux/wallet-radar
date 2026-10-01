@@ -142,7 +142,7 @@ test("MCP radar_scan: reports error when HELIUS_API_KEY is not set", async () =>
   try {
     const res = await client.request("tools/call", {
       name: "radar_scan",
-      arguments: { wallet: "DemoWallet" },
+      arguments: { wallet: "11111111111111111111111111111111" },
     });
     assert.equal(res.result.isError, true);
     assert.match(res.result.content[0].text, /HELIUS_API_KEY is not set/);
@@ -156,7 +156,7 @@ test("MCP radar_gate_copy: fetches mintRisk for body.mint and blocks on freezeAu
   const originalFetch = globalThis.fetch;
   const savedApiKey = process.env.HELIUS_API_KEY;
   process.env.HELIUS_API_KEY = "test_api_key";
-  const targetWallet = "WappetTest1111111111111111111111111111";
+  const targetWallet = "WappetTest111111111111111111111111111111111";
   const toxicMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -313,8 +313,8 @@ test("A8: MCP radar_gate_copy returns tokenCheck ('applied', 'skipped_no_mint', 
   const originalFetch = globalThis.fetch;
   const savedApiKey = process.env.HELIUS_API_KEY;
   process.env.HELIUS_API_KEY = "test_api_key";
-  const safeWallet = "SafeWa11et1111111111111111111111111111";
-  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111111";
   const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

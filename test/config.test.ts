@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { validateConfig, ConfigError } from "../src/config.js";
+import { validateConfig, ConfigError, isValidBase58, isValidSolanaAddress } from "../src/config.js";
 import { loadConfig, DEFAULT_CONFIG } from "../src/types.js";
 
 describe("startup config validation", () => {
@@ -194,5 +194,31 @@ describe("RADAR_THRESHOLD_SCALE direction (audit 4.5)", () => {
   it("scale=1.0 returns the defaults unchanged", () => {
     process.env.RADAR_THRESHOLD_SCALE = "1.0";
     assert.deepEqual(loadConfig(), DEFAULT_CONFIG);
+  });
+});
+
+describe("B0a: isValidSolanaAddress (true base58-decode, exactly 32 bytes)", () => {
+  // Known 43-char typo: passes the regex-only isValidBase58 (32-44 chars,
+  // valid alphabet) but decodes to 31 bytes, not 32.
+  const TYPO = "3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh";
+  // Real 44-char address, decodes to exactly 32 bytes.
+  const REAL = "3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh";
+
+  it("isValidBase58 (regex-only) accepts the typo -- demonstrates the gap this closes", () => {
+    assert.equal(isValidBase58(TYPO), true);
+  });
+
+  it("isValidSolanaAddress rejects the 31-byte typo address", () => {
+    assert.equal(isValidSolanaAddress(TYPO), false);
+  });
+
+  it("isValidSolanaAddress accepts the real 32-byte address", () => {
+    assert.equal(isValidSolanaAddress(REAL), true);
+  });
+
+  it("isValidSolanaAddress rejects non-base58 and wrong-length garbage", () => {
+    assert.equal(isValidSolanaAddress(""), false);
+    assert.equal(isValidSolanaAddress("not-a-valid-solana-address"), false);
+    assert.equal(isValidSolanaAddress("11111111111111111111111111111111"), true); // system program, 32 bytes
   });
 });

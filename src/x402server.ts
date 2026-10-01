@@ -19,7 +19,7 @@ import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js"
 import { computeVerdict } from "./htmlreport.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
-import { isValidBase58, validateConfig } from "./config.js";
+import { isValidBase58, isValidSolanaAddress, validateConfig } from "./config.js";
 import { recordHeliusCost, recordOracleCommitCost } from "./economics.js";
 import { buildTrustProof } from "./trust-proof.js";
 import { clientIp, createRateLimiter, applyDefense } from "./http-server.js";
@@ -925,7 +925,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           res.end(JSON.stringify({ error: "wallet query parameter is required (Solana base58 address)." }));
           return;
         }
-        if (!isValidBase58(wallet)) {
+        if (!isValidSolanaAddress(wallet)) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "wallet query parameter must be a Solana base58 address." }));
           return;
@@ -1047,7 +1047,7 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           // request that is missing its parameters 400s without marking the
           // signature settled
           if (pathname === "/scan") {
-            if (typeof body?.wallet !== "string" || !isValidBase58(body.wallet)) {
+            if (typeof body?.wallet !== "string" || !isValidSolanaAddress(body.wallet)) {
               res.writeHead(400, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ error: "body.wallet must be a Solana base58 address" }));
               return;

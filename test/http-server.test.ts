@@ -1559,7 +1559,11 @@ test("A7: POST /trust and /batch reject invalid base58 and length bounds with 40
       const data32 = (await res32.json()) as any;
       assert.equal(data32.verdict, "unknown");
 
-      const valid44 = "1".repeat(44);
+      // A real 44-char base58 string that decodes to exactly 32 bytes (32
+      // 0xff bytes) -- "1".repeat(44) decodes to 44 bytes, not 32, so it was
+      // never actually a valid address; it only passed the old regex-only
+      // isValidBase58 check (32-44 chars, valid alphabet), not a true decode.
+      const valid44 = "JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG";
       const res44 = await originalFetch(`${r.base}/trust`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1582,8 +1586,8 @@ test("A8: /gate-copy returns tokenCheck ('applied', 'skipped_no_mint', 'skipped_
   const { store, dir } = tmpStore();
   const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
   const originalFetch = globalThis.fetch;
-  const safeWallet = "SafeWa11et1111111111111111111111111111";
-  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111111";
   const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

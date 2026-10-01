@@ -6,7 +6,7 @@ import { maxOf } from "./stats.js";
 import { fetchWalletHistory } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
 import { anomalyReasons, anomalySummary, buildFreshness, buildAuditTrail, type AnomalyReason, type AuditTrail } from "./explain.js";
-import { isValidBase58 } from "./config.js";
+import { isValidSolanaAddress } from "./config.js";
 import { computeDecision, type DecisionResult } from "./decision.js";
 import {
   aggregateConsensus,
@@ -209,7 +209,7 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
  * program-derived (PDA) accounts.
  */
 export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise<string | null> {
-  if (!isValidBase58(wallet)) throw new Error("Invalid Solana wallet address");
+  if (!isValidSolanaAddress(wallet)) throw new Error("Invalid Solana wallet address");
   const res = (await rpcCall(rpcUrl, "getAccountInfo", [wallet, { encoding: "base64" }])) as
     | { value: { owner: string } | null }
     | null;
@@ -221,12 +221,12 @@ export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise
  * Only these are counted — deliberately conservative.
  */
 export async function fetchLiquidity(rpcUrl: string, wallet: string): Promise<TrustBalances> {
-  if (!isValidBase58(wallet)) throw new Error("Invalid Solana wallet address");
+  if (!isValidSolanaAddress(wallet)) throw new Error("Invalid Solana wallet address");
   const balRes = (await rpcCall(rpcUrl, "getBalance", [wallet])) as { value: number };
   const sol = balRes.value / 1e9;
 
   async function stableBalance(mint: string): Promise<number> {
-    if (!isValidBase58(mint)) throw new Error("Invalid token mint address");
+    if (!isValidSolanaAddress(mint)) throw new Error("Invalid token mint address");
     const res = (await rpcCall(rpcUrl, "getTokenAccountsByOwner", [
       wallet,
       { mint },
@@ -298,7 +298,7 @@ export async function runTrustCheck(
   wallet: string,
   opts: TrustCheckOptions = {},
 ): Promise<TrustResult> {
-  if (!isValidBase58(wallet)) {
+  if (!isValidSolanaAddress(wallet)) {
     throw new Error(`wallet must be a Solana base58 address (32-44 characters): got "${wallet}"`);
   }
   const windowDays = opts.windowDays ?? TRUST_DEFAULTS.windowDays;
@@ -475,7 +475,7 @@ export async function runTrustChecks(
   opts: TrustCheckOptions = {},
 ): Promise<TrustResult[]> {
   for (const w of wallets) {
-    if (!isValidBase58(w)) {
+    if (!isValidSolanaAddress(w)) {
       throw new Error(`wallet must be a Solana base58 address (32-44 characters): got "${w}"`);
     }
   }

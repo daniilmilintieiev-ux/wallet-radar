@@ -10,7 +10,7 @@ import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions, ENHANCED_TX_SCHEMA } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk, fetchMintMetadata } from "./mint.js";
-import { isValidBase58 } from "./config.js";
+import { isValidSolanaAddress } from "./config.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment } from "./simulate.js";
@@ -65,6 +65,12 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ wallet }) => {
+      if (!isValidSolanaAddress(wallet)) {
+        return {
+          content: [{ type: "text", text: `Invalid Solana wallet address: "${wallet}". Must be 32-44 base58 characters.` }],
+          isError: true,
+        };
+      }
       const apiKey = process.env.HELIUS_API_KEY || (options.fetchTxs ? "mock-helius-key" : undefined);
       if (!apiKey) {
         return {
@@ -220,7 +226,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ wallet, maxRisk, minLiquidityUsd, windowDays }) => {
-      if (!isValidBase58(wallet)) {
+      if (!isValidSolanaAddress(wallet)) {
         return {
           content: [{ type: "text", text: `Invalid Solana wallet address: "${wallet}". Must be 32-44 base58 characters.` }],
           isError: true,
@@ -281,7 +287,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     },
     async ({ wallets, maxRisk, minLiquidityUsd, windowDays }) => {
       for (const w of wallets) {
-        if (!isValidBase58(w)) {
+        if (!isValidSolanaAddress(w)) {
           return {
             content: [{ type: "text", text: `Invalid Solana wallet address in batch: "${w}". Must be 32-44 base58 characters.` }],
             isError: true,
@@ -412,7 +418,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           });
         }
 
-        const hasMint = Boolean(mint && isValidBase58(mint));
+        const hasMint = Boolean(mint && isValidSolanaAddress(mint));
         const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
         const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
           ? "skipped_no_mint"

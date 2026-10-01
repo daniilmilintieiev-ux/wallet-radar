@@ -39,7 +39,7 @@ function startServer(server: http.Server): Promise<{ port: number; close: () => 
 }
 
 describe("Agent SDK v1 (src/sdk)", () => {
-  const targetWallet = "DemoTargetWappet1111111111111111111111111";
+  const targetWallet = "DemoTargetWappet111111111111111111111111111";
   // Must be a valid base58 32-byte key: the on-chain payment path parses it
   const recipient = Keypair.generate().publicKey.toBase58();
   const payerKeypair = Keypair.generate();
