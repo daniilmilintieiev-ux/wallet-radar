@@ -1182,8 +1182,18 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               endpoint: pathname,
               wallet: typeof body.wallet === "string" ? body.wallet : undefined,
             });
-            if (!settled && process.env.RADAR_DEBUG === "1") {
-              console.warn("[x402] payment signature settled concurrently; scan still delivered");
+            if (!settled) {
+              if (process.env.RADAR_DEBUG === "1") {
+                console.warn("[x402] payment signature settled concurrently; scan rejected with 409");
+              }
+              res.writeHead(409, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  error: "Conflict",
+                  message: "payment signature already used",
+                }),
+              );
+              return;
             }
             const resHeaders: Record<string, string> = { "Content-Type": "application/json" };
             if (req.headers["prefer"] === "respond-async") {
@@ -1204,8 +1214,18 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               endpoint: pathname,
               wallet: typeof body.wallet === "string" ? body.wallet : undefined,
             });
-            if (!settled && process.env.RADAR_DEBUG === "1") {
-              console.warn("[x402] payment signature settled concurrently; analyze still delivered");
+            if (!settled) {
+              if (process.env.RADAR_DEBUG === "1") {
+                console.warn("[x402] payment signature settled concurrently; analyze rejected with 409");
+              }
+              res.writeHead(409, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  error: "Conflict",
+                  message: "payment signature already used",
+                }),
+              );
+              return;
             }
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(analyzeRes, null, 2));
