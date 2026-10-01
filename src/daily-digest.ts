@@ -21,7 +21,7 @@ export const KNOWN_WALLET_LABELS: Record<string, string> = {
   "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j": "Dormant Whale",
   "scs1NCSTafrUX6RBx113B9YDCepo1QdEzU8WwEkf25i": "Validator Vote",
   "DfYMQQM7C1T4vEXWjQuKq5yFC3XScvgcGTmG3uZ1R6Vh": "Deployer Baseline",
-  "3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh": "x402 Payer",
+  "3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh": "x402 Payer",
   "2pcVVJtijz7o1GzJrq3o13CWdMe2iyHj8wDc22tnBC99": "Whale Reference",
 };
 

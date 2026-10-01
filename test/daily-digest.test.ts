@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PublicKey } from "@solana/web3.js";
 import { Store } from "../src/store.js";
 import {
   buildDailyDigestData,
@@ -10,6 +11,7 @@ import {
   sendDailyDigest,
   shortAddress,
   escapeHtml,
+  KNOWN_WALLET_LABELS,
 } from "../src/daily-digest.js";
 import { TelegramSink, makeSink } from "../src/alerts.js";
 
@@ -242,3 +244,11 @@ test("buildDailyDigestData: soft anomalies spread over 24h do not flag healthy a
     assert.equal(data.safeWalletsCount, 1);
   });
 });
+
+test("A10: all known wallet addresses in daily-digest.ts decode to valid 32-byte base58 public keys", () => {
+  for (const [addr, label] of Object.entries(KNOWN_WALLET_LABELS)) {
+    const pk = new PublicKey(addr);
+    assert.equal(pk.toBytes().length, 32, `Address for '${label}' (${addr}) must decode to exactly 32 bytes`);
+  }
+});
+
