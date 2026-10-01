@@ -414,6 +414,92 @@ test("detectAnomalies TOXIC_MINT (B1): all Token-2022 extension fields absent ->
   assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
 });
 
+test("B6: with RADAR_ISSUER_MINTS_FILE unset, freeze-authority TOXIC_MINT behavior is unchanged (high severity, issuer_listed: false)", () => {
+  const prev = process.env.RADAR_ISSUER_MINTS_FILE;
+  delete process.env.RADAR_ISSUER_MINTS_FILE;
+  try {
+    const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+    const mintRisk = { [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: FREEZE_AUTH, mintAuthority: null } };
+    const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+    const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+    assert.ok(toxic);
+    assert.equal(toxic.severity, "high", "default (env unset) behavior must be unchanged -- still high");
+    assert.equal(toxic.evidence.issuer_listed, false);
+  } finally {
+    if (prev !== undefined) process.env.RADAR_ISSUER_MINTS_FILE = prev;
+    else delete process.env.RADAR_ISSUER_MINTS_FILE;
+  }
+});
+
+test("B6: a freeze-authority mint listed in RADAR_ISSUER_MINTS_FILE is downgraded to medium with issuer_listed: true", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const prev = process.env.RADAR_ISSUER_MINTS_FILE;
+  const tmpFile = path.join(os.tmpdir(), `radar-issuer-mints-${Date.now()}.json`);
+  fs.writeFileSync(tmpFile, JSON.stringify([TOXIC_MINT]));
+  process.env.RADAR_ISSUER_MINTS_FILE = tmpFile;
+  try {
+    const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+    const mintRisk = { [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: FREEZE_AUTH, mintAuthority: null } };
+    const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+    const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+    assert.ok(toxic);
+    assert.equal(toxic.severity, "medium", "a freeze-authority finding on an issuer-listed mint must be downgraded to medium");
+    assert.equal(toxic.evidence.issuer_listed, true);
+    assert.match(toxic.text, /issuer-controlled mint/);
+  } finally {
+    if (prev !== undefined) process.env.RADAR_ISSUER_MINTS_FILE = prev;
+    else delete process.env.RADAR_ISSUER_MINTS_FILE;
+    fs.rmSync(tmpFile, { force: true });
+  }
+});
+
+test("B6: issuer-listing does NOT downgrade other independent 'high' triggers (very high concentration stays high even if listed)", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const prev = process.env.RADAR_ISSUER_MINTS_FILE;
+  const tmpFile = path.join(os.tmpdir(), `radar-issuer-mints-${Date.now()}.json`);
+  fs.writeFileSync(tmpFile, JSON.stringify([TOXIC_MINT]));
+  process.env.RADAR_ISSUER_MINTS_FILE = tmpFile;
+  try {
+    const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+    // No freeze authority, but top10Pct is above TOP10_HIGH_PCT (80) -> veryConcentrated, independently `high`.
+    const mintRisk = { [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, top10Pct: 85 } };
+    const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+    const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+    assert.ok(toxic);
+    assert.equal(toxic.severity, "high", "issuer-listing only downgrades the freeze-authority trigger, not other independent high triggers");
+  } finally {
+    if (prev !== undefined) process.env.RADAR_ISSUER_MINTS_FILE = prev;
+    else delete process.env.RADAR_ISSUER_MINTS_FILE;
+    fs.rmSync(tmpFile, { force: true });
+  }
+});
+
+test("B6: ground-truth/issuer-controlled-mints.jsonl is NOT referenced by any file under src/", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const srcDir = path.resolve(process.cwd(), "src");
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, out);
+      else if (entry.name.endsWith(".ts")) out.push(full);
+    }
+    return out;
+  }
+  for (const file of walk(srcDir)) {
+    const content = fs.readFileSync(file, "utf8");
+    assert.equal(
+      content.includes("issuer-controlled-mints.jsonl"),
+      false,
+      `${file} must not reference ground-truth/issuer-controlled-mints.jsonl (B6 is a separate, opt-in product feature)`,
+    );
+  }
+});
+
 test("detectAnomalies TOXIC_MINT: skips MAJOR_MINTS even if passed in mintRisk", () => {
   const txs = [makeSwapTx("s1", SOL_MINT, USDC_MINT, 1700000000)];
   const mintRisk = {

@@ -17,6 +17,41 @@ import { median, maxOf, minOf } from "./stats.js";
 import { classifyWalletArchetype, WalletArchetype } from "./archetype.js";
 import { KNOWN_SAFE_MINTS, KNOWN_AMM_OWNERS } from "./mint.js";
 import { DEFAULT_HOOK_PROGRAM_ID } from "./hook/index.js";
+import fs from "node:fs";
+
+/**
+ * B6: optional, default-OFF issuer-controlled-mint list. Unset by default ->
+ * empty set -> no behavior change. Loaded from the JSON array of mint
+ * address strings at RADAR_ISSUER_MINTS_FILE, e.g. ["Mint1...", "Mint2..."].
+ * Deliberately NOT the ground-truth audit dataset's own issuer-mints list
+ * (kept under ground-truth/) -- that stays an audit artifact, not a product
+ * input; wiring it in here would make the product trust its own audit
+ * dataset as "fact".
+ * Cached by file path value so tests can change/unset the env var and get
+ * a fresh read, without re-reading the file on every call when it's stable.
+ */
+let issuerMintsCacheKey: string | undefined;
+let issuerMintsCacheSet: Set<string> = new Set();
+function loadIssuerControlledMints(): Set<string> {
+  const filePath = process.env.RADAR_ISSUER_MINTS_FILE;
+  if (filePath === issuerMintsCacheKey) return issuerMintsCacheSet;
+  issuerMintsCacheKey = filePath;
+  issuerMintsCacheSet = new Set();
+  if (filePath) {
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const m of parsed) {
+          if (typeof m === "string") issuerMintsCacheSet.add(m);
+        }
+      }
+    } catch {
+      // Missing/unreadable/malformed file: treat as empty list, not an error.
+    }
+  }
+  return issuerMintsCacheSet;
+}
 
 /** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
 export const TOP10_CONCENTRATION_PCT = 60;
@@ -801,12 +836,22 @@ export function detectAnomalies(
           flaggedMints.add(m);
           const veryConcentrated = top10 != null && top10 >= TOP10_HIGH_PCT;
           const isPump = Boolean(meta.isPumpFun || m.toLowerCase().endsWith("pump"));
+          // B6 (optional, default off via RADAR_ISSUER_MINTS_FILE): a
+          // freeze-authority finding on an issuer-controlled mint is
+          // downgraded from `high` to `medium` -- other independent `high`
+          // triggers (extreme concentration, a pump.fun combo, permanentDelegate,
+          // a frozen defaultAccountState) are NOT affected by this listing.
+          const isIssuerListed = loadIssuerControlledMints().has(m);
           const severity: Severity =
-            hasFreeze || veryConcentrated || (isPump && (hasMint || concentrated)) || permanentDelegate || defaultFrozen
+            (hasFreeze && !isIssuerListed) ||
+            veryConcentrated ||
+            (isPump && (hasMint || concentrated)) ||
+            permanentDelegate ||
+            defaultFrozen
               ? "high"
               : "medium";
           const reasons: string[] = [];
-          if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})`);
+          if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})${isIssuerListed ? ", issuer-controlled mint" : ""}`);
           if (hasMint) reasons.push(`mint authority (${meta.mintAuthority})`);
           if (concentrated) reasons.push(`top-10 holders control ${top10}% of supply`);
           if (isPump) reasons.push(`pump.fun token`);
@@ -829,6 +874,7 @@ export function detectAnomalies(
               defaultAccountStateFrozen: defaultFrozen,
               pausable,
               transferHook: meta.transferHook ?? null,
+              issuer_listed: isIssuerListed,
               sig: s.signature,
             },
             text: `Token ${m}: ${reasons.join("; ")}.`,
