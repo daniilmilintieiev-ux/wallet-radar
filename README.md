@@ -139,6 +139,8 @@ Independent validation of detection quality on real on-chain data is not yet com
 
 The full protocol of the current run — including criteria (a)/(b), thresholds, outcome classes, lookahead rules, and pre-start amendment log — is documented in advance in [docs/PREREGISTRATION.md](docs/PREREGISTRATION.md). The live test is already underway: data collection is conducted under tag `shadow-v3` (`docs/PREREGISTRATION.md`, section 17c) and halts on **2026-10-06 18:00 UTC**; final outcome computation runs on **2026-10-10**. Rules and thresholds are frozen until that date and will not change based on observation results. An outcome of "insufficient data" (INSUFFICIENT_DATA / "unmatured", depending on which specific metric did not reach target volume) is an acceptable outcome and will be published as is, without fitting to expectations.
 
+English translations of the protocol documents are provided next to the Russian originals (docs/PREREGISTRATION.en.md, docs/TESTER-SPEC.en.md, docs/SHADOW-COLLECTOR.en.md, docs/SHADOW-RUNBOOK.en.md, ground-truth/PROTOCOL.en.md); the Russian text is authoritative.
+
 ---
 
 ## Modular Multi-Layer Architecture

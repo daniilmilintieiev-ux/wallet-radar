@@ -43,7 +43,7 @@ a separate, future change.
   consistently) requires editing `src/` and `test/`, both out of scope for
   stage 9D (`src/` per the branch's explicit restriction; the shadow
   collector's live run is preregistered and locked until it stops on
-  2026-10-06 18:00 UTC per `docs/PREREGISTRATION.md`, section 15zh) —
+  2026-10-06 18:00 UTC per `docs/PREREGISTRATION.md`, section 15g) —
   synchronize after that date.
 
 ## DORMANT_ACTIVE observation: the default 7-day trust window may itself manufacture the "dormancy" gap
@@ -77,7 +77,7 @@ a separate, future change.
 - **Status:** not fixed this stage (`src/` out of scope). Needs confirmation
   against real, live wallet data — safe to attempt only after the shadow
   collector's data collection stops (2026-10-06 18:00 UTC,
-  `docs/PREREGISTRATION.md` section 15zh), so as not to interfere with the
+  `docs/PREREGISTRATION.md` section 15g), so as not to interfere with the
   live run.
 
 ## TAINTED_FUNDING checks only the wallet's very first incoming transfer
