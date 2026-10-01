@@ -76,7 +76,7 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       generatedAt: 1726300500,
     });
 
-    assert.ok(html.includes("WALLET RADAR"));
+    assert.ok(html.includes("Wallet Radar"));
     assert.ok(html.includes("wallet-input"));
     assert.ok(html.includes("Targ")); // watchlist chip short-addr
     assert.ok(html.includes("No wallet selected."));
@@ -107,7 +107,7 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
 
     // Check top bar + wallet
     assert.ok(html.includes(testWallet));
-    assert.ok(html.includes("WALLET RADAR"));
+    assert.ok(html.includes("Wallet Radar"));
 
     // Check readout + scan ledger
     assert.ok(html.includes("85")); // score
@@ -116,14 +116,14 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     assert.ok(html.includes("LARGE_SWAP"));
 
     // Check decision layers
-    assert.ok(html.includes("Three Decision Layers"));
-    assert.ok(html.includes("Base Verdict"));
+    assert.ok(html.includes("Decision in three layers"));
+    assert.ok(html.includes("Base verdict"));
 
     // Check watchlist chip active state
-    assert.ok(html.includes('class="chip on active"'));
+    assert.ok(html.includes('class="chip mono active on"'));
   });
 
-  test("renderDashboardHtml: renders defense stance, enforcement, and ladder", () => {
+  test("renderDashboardHtml: renders defense stance, enforcement, and 3 layers", () => {
     const html = renderDashboardHtml({
       wallet: testWallet,
       records: [mockRecords[0]],
@@ -142,11 +142,10 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       },
     });
 
-    // Defense state and ladder
-    assert.ok(html.includes("Defense Ladder"));
+    // Defense state and enforcement in 3 layers
+    assert.ok(html.includes("Decision in three layers"));
     assert.ok(html.includes("gated"));
-    assert.ok(html.includes("THROTTLE"));
-    assert.ok(html.includes("NOW"));
+    assert.ok(html.includes("throttle"));
   });
 
   test("renderDashboardHtml: deterministic output for identical options", () => {
@@ -502,12 +501,13 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
   });
 
   // (c) Color tokens, zero border-radius, no box-shadow, no gradient
-  test("(c) All required design color tokens present, no box-shadow, gradient, or non-zero border-radius", () => {
+  // (c) Color tokens, zero border-radius except 50%, no box-shadow, text-shadow only on hero number
+  test("(c) All required design color tokens present, no box-shadow, text-shadow only on hero, border-radius only 0 or 50%", () => {
     const html = renderDashboardHtml({
       wallet: testWallet,
       records: mockRecords,
     });
-    // Required tokens from w2_update.html
+    // Required tokens from w2_update.html palette
     const requiredTokens = [
       "--bg",
       "--panel",
@@ -534,15 +534,19 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.ok(html.includes(tok), `Required token missing: ${tok}`);
     }
 
-    // No box-shadow
+    // No box-shadow anywhere
     assert.ok(!/box-shadow/i.test(html), "HTML must not contain box-shadow");
-    // No gradient
-    assert.ok(!/gradient/i.test(html), "HTML must not contain gradients");
-    // No non-zero border-radius
+
+    // Text-shadow only on hero risk number
+    const textShadowMatches = html.match(/text-shadow\s*:[^;]+;/gi) || [];
+    assert.equal(textShadowMatches.length, 1, "text-shadow should appear only on hero risk number");
+    assert.ok(textShadowMatches[0].includes("rgba(255, 176, 0, .25)"));
+
+    // No border-radius except 0, 0px, 0%, or 50%
     const radiusMatches = html.match(/border-radius\s*:\s*([^;]+)/gi) || [];
     for (const rm of radiusMatches) {
       const val = rm.split(":")[1].trim();
-      assert.ok(/^0(px)?$/.test(val), `border-radius must be 0, got: ${rm}`);
+      assert.ok(/^0(px|%)?$|^50%$/.test(val), `border-radius must be 0 or 50%, got: ${rm}`);
     }
   });
 
@@ -558,14 +562,84 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
   test("(e) Recorded replay has note 'historical replay, not a confirmed incident'", () => {
     const html = renderDashboardHtml({ demo: "replay" });
     assert.ok(html.includes("historical replay, not a confirmed incident"));
-    assert.ok(html.includes("RECORDED REPLAY, historical window"));
+    assert.ok(html.includes("Recorded replay, historical window"));
   });
 
   // (f) Independent test block with null result does not display result numbers
   test("(f) Independent test block with null result does not display any result numbers", () => {
     const html = renderDashboardHtml({ wallet: testWallet, records: mockRecords });
-    assert.ok(html.includes("Result will be published as computed, including 'insufficient data'."));
+    assert.ok(html.includes("Result is published as computed, including 'insufficient data'."));
     assert.ok(!html.includes("Result: 100"));
     assert.ok(!html.includes("Result: 9"));
+    assert.ok(!html.includes("Score: 100"));
+  });
+
+  // (g) No '>' or '<' in values of 3 layers
+  test("(g) No '>' or '<' in rendered 3 layers values", () => {
+    const html = renderDashboardHtml({
+      wallet: testWallet,
+      records: mockRecords,
+      defense: {
+        state: "gated",
+        riskAt: 55,
+        setAt: 1726299000,
+        quietStreak: 0,
+        actions: 1,
+        enforcement: { verdict: "throttle", limitUsd: null, gating: true },
+        trail: [],
+      },
+      baseVerdict: "hold",
+    });
+    const layerVals = html.match(/<div class="layer-val[^"]*">([^<]+)<\/div>/g) || [];
+    assert.ok(layerVals.length >= 3);
+    for (const lv of layerVals) {
+      assert.ok(!lv.includes("&gt;"), `Layer value must not contain &gt;: ${lv}`);
+      assert.ok(!lv.includes("&lt;"), `Layer value must not contain &lt;: ${lv}`);
+    }
+  });
+
+  // (h) Mono font class used only for addresses, hashes, signatures, timestamps, and logs
+  test("(h) mono font class used only for addresses, hashes, signatures, timestamps, and logs", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(!html.includes('class="top-bar-title mono"'));
+    assert.ok(!html.includes('class="section-header mono"'));
+    assert.ok(!html.includes('class="radar-caption mono"'));
+    assert.ok(!html.includes('class="risk-verdict mono"'));
+  });
+
+  // (i) Replay Base/Agent/Defense are 'n/a (not in replay data)' and Liquidity tile absent
+  test("(i) For replay, Base/Agent/Defense are 'n/a (not in replay data)' and Liquidity tile is absent without data", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes("n/a (not in replay data)"));
+    assert.ok(!html.includes("<div class=\"metric-box-lbl\">Liquidity</div>"));
+    assert.ok(html.includes("Median swap"));
+    assert.ok(html.includes("$844.10"));
+  });
+
+  // (j) Static preview contains 'n/a (static)'
+  test("(j) Static preview contains 'n/a (static)' in service status", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes("n/a (static)"));
+  });
+
+  // (k) Number of radar dots equals number of anomalies in replay data
+  test("(k) Number of radar dots equals the number of anomalies in replay data", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    const dots = html.match(/class="[^"]*\bradar-dot\b/g) || [];
+    assert.equal(dots.length, 8, "Expected 8 radar dots for 8 anomalies in replay");
+  });
+
+  // (l) For two anomalies with identical timestamp, their angles differ
+  test("(l) For two anomalies with identical timestamp, radar angles differ", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    // Find all animation-delay values on radar-dot elements
+    const delays = (html.match(/class="radar-dot[^"]*"[^>]*style="animation-delay:\s*([0-9.]+)s/g) || []).map((m) => {
+      const match = m.match(/animation-delay:\s*([0-9.]+)s/);
+      return match ? parseFloat(match[1]) : 0;
+    });
+    assert.ok(delays.length >= 2, "Expected at least 2 radar dots with animation delays");
+    // Anomalies 0 and 1 have the exact same timestamp (1788163072)
+    assert.notEqual(delays[0], delays[1], "Delays (and angles) for identical timestamps must differ");
+    assert.ok(Math.abs(delays[0] - delays[1]) > 0.005, "Difference between delays must reflect degree offset");
   });
 });
