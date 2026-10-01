@@ -15,10 +15,7 @@ a separate, future change.
   the only two `0.3.0` occurrences in the repository are this literal and an
   unrelated transitive dependency version (`@solana/buffer-layout-utils`,
   `package-lock.json:196-197`, not a project version at all).
-- **Status:** not fixed this stage (`src/` out of scope for stage 9D). The
-  A2A card's `version` field should either track `package.json`'s version or
-  be documented as an independent protocol-card version number, whichever is
-  intended.
+- **Status:** fixed in branch fixes-a (commit 53f1701), not deployed.
 
 ## Rule count: analyzer.ts implements a 9th independent check not reflected in the "9 rules" count anywhere
 
@@ -37,14 +34,7 @@ a separate, future change.
   to avoid breaking `test/regime.test.ts`, which also asserts against
   `src/http-server.ts`/`src/mcp.ts` text that stage 9D is not permitted to
   change).
-- **Status:** not fixed this stage. Synchronizing the count (updating
-  `src/http-server.ts`, `src/mcp.ts`, and `test/regime.test.ts` to say "10"
-  and re-verifying README.md/docs/index.html can then also say "10"
-  consistently) requires editing `src/` and `test/`, both out of scope for
-  stage 9D (`src/` per the branch's explicit restriction; the shadow
-  collector's live run is preregistered and locked until it stops on
-  2026-10-06 18:00 UTC per `docs/PREREGISTRATION.md`, section 15g) —
-  synchronize after that date.
+- **Status:** fixed in branch fixes-a (commit bb1e9bf), not deployed.
 
 ## DORMANT_ACTIVE observation: the default 7-day trust window may itself manufacture the "dormancy" gap
 
@@ -135,8 +125,7 @@ a separate, future change.
   (confirmed via `grep -n "gate-copy" src/x402server.ts` — no match) — so
   it is both unauthenticated-by-default and free, while still incurring
   real Helius API cost.
-- **Status:** finding, fix planned after 2026-10-06 (`src/`
-  is out of scope for this stage).
+- **Status:** fixed in branch fixes-a (commit f816910), not deployed.
 
 ## `fetchMintMetadata`/`getTokenLargestAccounts` failure silently skips TOXIC_MINT for that mint (fails open)
 
@@ -197,7 +186,7 @@ a separate, future change.
   prevents a duplicate database row, not duplicate delivery.
 - Confirmed by reading the code; not exercised under real multi-process
   concurrency (out of scope, no network/process orchestration this stage).
-- **Status:** finding, fix planned after 2026-10-06.
+- **Status:** fixed in branch fixes-a (commit 0e50956), not deployed.
 
 ## Payment-verification error message may include `err.message`; whether it can contain the RPC URL (with the API key) is unconfirmed
 
@@ -212,7 +201,7 @@ a separate, future change.
   request URL (and thus the embedded key) — NOT VERIFIED: confirming this
   requires triggering a real network failure against a key-bearing URL,
   which this stage's rules do not permit.
-- **Status:** finding, fix planned after 2026-10-06.
+- **Status:** fixed in branch fixes-a (commit 27145ac), not deployed.
 
 ## Transfer Hook: single program upgrade authority, single per-mint config authority, no explicit risk_score bound
 
@@ -256,8 +245,7 @@ a separate, future change.
      `riskScore` (`:68`).
   5. `test/defense.test.ts:62` — "escalates to gated at risk >= gated
      threshold" — same pattern with `DEFENSE_THRESHOLDS.gated` (`:63`).
-- **Status:** finding, fix planned after 2026-10-06 (`test/`
-  is out of scope for this stage).
+- **Status:** fixed in branch fixes-a (commit e0dc8d9), not deployed.
 
 ## `npm audit`: 12 known vulnerabilities in the dependency tree (9 moderate, 3 high)
 
@@ -318,7 +306,7 @@ a separate, future change.
 - HSTS: `Strict-Transport-Security` header is nowhere set in the application (`grep -rn "Strict-Transport-Security" src/` — zero matches); whether it is enabled at the Cloudflare level — per user observation, not enabled on the public server.
 - CORS: `Access-Control-Allow-Origin: *` confirmed by reading code — `src/config.ts:71`, active when `RADAR_CORS_ORIGINS` is not set.
 - Revenue via `/economics` on the public server at the time of user check: 0.005 USDC (single payment) — user observation, not measured by this session.
-- **Status:** finding, fix planned after 2026-10-06.
+- **Status:** fixed in branch fixes-a (commit f816910), not deployed.
 
 ## Sole x402 payment: confirms pipeline, not revenue; typo in payer address in daily-digest.ts
 
@@ -326,4 +314,4 @@ a separate, future change.
 - (a) Sole payment in the recipient history of `F6wWPy4c3fXTJDqU19Nax8FhQumeMcsSVpD2YwxLpBNR`: 0.005 USDC, 2026-09-18, payer `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (labeled "x402 Payer" in `src/daily-digest.ts:24` — line number verified via `git grep -n "x402 Payer" -- src/daily-digest.ts`, matches). The payment confirms that the payment pipeline (proof → verify → settle) executes on a real transaction; this is **not** external revenue — sole known payment across all time, from the operator's own demo wallet (per project notes).
 - (b) Upgrade authority of the Transfer Hook program on devnet (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`) — regular key: `owner` = System Program, `space` = 0, no indication of multisig (Squads, etc.). Not re-verified in this session (network access was not performed in this stage) — source: report 11E.
 - (c) Typo in address: `src/daily-digest.ts:24` contains `"3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh"` — 43 characters. Directly verified in this session (base58 decoding): this string decodes to **31 bytes**, not 32 as required for a valid Solana address; the actual payer address (44 characters, decodes to 32 bytes) is `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (see item (a) above). The strings differ, though visually similar (shared prefix `3fNN`, shared suffix `5eYh`). The same invalid address in the `radar-watch` watchlist produces a Helius 400 error every 5 minutes (per report 11E, not reproduced in this session — network was not used).
-- **Status:** finding, fix planned after 2026-10-06 (`src/` is out of scope for this stage).
+- **Status:** fixed in branch fixes-a (commit 4478183), not deployed.
