@@ -558,3 +558,48 @@ Commit and tag dates in git are set locally (by client at command execution) and
 ### 19d. Collection Data Not Published Prior to Final Computation
 
 Copy of collection data (`shadow.db`, `shadow_trades`, `pool_candidates`, `error_logs`) is not published and not attached to repository prior to final outcome computation (**2026-10-10 09:00 UTC**, §15g). Prior to that date, only code, preregistered protocol (this document), and individual explicitly marked observations (e.g. §18) remain publicly accessible — not the full database dump.
+
+---
+
+## 20. Pre-Outcome Analysis Rules: Code Implementation and Version Lock (Stage 15C)
+
+Recorded **before** computing any outcomes (collection on Pi continues, final outcome evaluation — **2026-10-10 09:00 UTC**, §15g). Sections 1–19 are not rewritten.
+
+### 20a. Implemented Changes in analyze.mjs
+
+The analysis script (`scripts/shadow/analyze.mjs`) implements the rules preregistered in §18b and §18c:
+1. **Exclusion of records with gap `seen_at − t > 1000` minutes**:
+   Records where the gap between `seen_at` of the matching selected candidate (`pool_candidates`, `selected = 1`, matched on `pool === pair`) and the trade purchase timestamp `shadow_trades.t` strictly exceeds 1000 minutes (`(new Date(candidate.seen_at).getTime() - row.t * 1000) / 60000 > 1000`) are excluded from primary (Tables 1 and 2 across strata A and B) and secondary (response forms, simulation split, one record per buyer) analysis tables. In the report (`formatReport`), such records are reported on a separate line:
+   `excluded as violating sampling frame: N` with record identifiers (`ids: ...`).
+2. **Separation of NO_BUYER and UNCLASSIFIED in response forms table**:
+   Records without a buyer (`buyer is null`), where `/gate-copy` was never invoked, are displayed in the response forms table on a separate line `"no buyer"` rather than bundled into `UNCLASSIFIED` (`countRowsByForm`, `dangerousShareByForm`). The `UNCLASSIFIED` line is reserved strictly for genuine unparsed server responses.
+3. **Mode `--counters-only` continues to never output outcomes**:
+   The counters mode (`formatCountersOnlyReport`) reports response form distributions (including the `"no buyer"` line), the `seen_at − t` gap distribution, skip counters, and candidate counts, but strictly neither computes nor displays outcomes (`DANGEROUS`, `SAFE`, `RESOLVED`, danger shares, Wilson intervals, and Tables 1/2).
+
+### 20b. Invariance of Threshold and Rule Formulation Relative to §18b
+
+The 1000-minute threshold and the exclusion rule formulation established in §18b prior to computing outcomes were ported to the analysis code without alterations:
+- cutoff criterion remains strictly greater than 1000 minutes (`> 1000`, not `>= 1000`);
+- excluded records are credited toward neither `DANGEROUS`, nor `SAFE`, nor any other outcome class;
+- threshold was fixed prior to viewing outcome results and was not retrofitted to data (rule 4 of this document).
+
+### 20c. Development and Testing Exclusively on Synthetic Data without Access to Live Outcomes
+
+All implementation and unit tests (`test/shadow-analyze.test.mjs`) were written and verified exclusively offline on synthetic in-memory databases (`:memory:`):
+- without connecting to the live `shadow.db` database on Orange Pi and without network access;
+- without reading live records and without computing real on-chain outcomes;
+- tests explicitly verify five synthetic scenarios:
+  - gap 1258803.97 minutes (analog of record id=66) is excluded from Tables 1/2 and reported on a separate line;
+  - boundary gap 999 minutes is not excluded and enters table calculations;
+  - boundary gap of exactly 1000 minutes is not excluded (strict inequality `> 1000`);
+  - `NO_BUYER` is displayed on a separate line `"no buyer"` and does not enter `UNCLASSIFIED`;
+  - mode `--counters-only` contains zero mentions of outcomes (`DANGEROUS`, `SAFE`, `RESOLVED`, `CI95`, Tables 1/2).
+
+### 20d. Outcome Computation Module Unchanged (outcomes-v1)
+
+The on-chain outcome evaluation code (`scripts/shadow/outcomes.mjs`), database schema (`scripts/shadow/db.mjs`), data collector (`scripts/shadow/collect.mjs`, `preflight.mjs`), detection engine (`src/`), and tag `outcomes-v1` were not modified in this stage.
+
+### 20e. Code Version and Analysis Execution Schedule
+
+1. **Code version**: implementation is locked with annotated tag `analysis-v1` on the final commit of the `analysis` branch.
+2. **Execution schedule**: data analysis (`scripts/shadow/analyze.mjs`) will be performed on a separate copy of the live database strictly after completion of the collection window and outcome computation — after **2026-10-10 09:00 UTC** (§15g).
