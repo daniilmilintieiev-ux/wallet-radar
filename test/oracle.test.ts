@@ -476,6 +476,42 @@ describe("ZK scan ledger oracle", () => {
     assert.equal(verifyAttestation({ ...record, ...forged }, oracleKp.publicKey.toBase58()), false);
   });
 
+  test("B8: sign a record, verify (true), flip one byte of the signature (false), change a signed field (false) -- raw results shown", () => {
+    const oracleKp = Keypair.generate();
+    const targetWallet = Keypair.generate().publicKey.toBase58();
+    const record = {
+      wallet: targetWallet,
+      riskScore: 85,
+      verdict: "HIGH RISK",
+      timestamp: 1726300000,
+    };
+
+    // Step 1: sign, then verify the untouched record.
+    const signed = signAttestation(record, oracleKp);
+    const fullRecord = { ...record, ...signed };
+    const result1_validSignature = verifyAttestation(fullRecord, oracleKp.publicKey.toBase58());
+    console.log(`B8 step 1 (valid signature, unmodified record): verifyAttestation() -> ${result1_validSignature}`);
+    assert.equal(result1_validSignature, true);
+
+    // Step 2: flip one byte of the SIGNATURE itself (not the record), leaving
+    // the record's data fields untouched.
+    const sigBytes = bs58.decode(signed.signature);
+    const flippedSigBytes = Buffer.from(sigBytes);
+    flippedSigBytes[0] = flippedSigBytes[0] ^ 0xff; // flip every bit of byte 0 -- guaranteed to differ
+    const tamperedSigRecord = { ...record, signature: bs58.encode(flippedSigBytes), oraclePublicKey: signed.oraclePublicKey };
+    const result2_flippedSignatureByte = verifyAttestation(tamperedSigRecord, oracleKp.publicKey.toBase58());
+    console.log(`B8 step 2 (one byte of the signature flipped): verifyAttestation() -> ${result2_flippedSignatureByte}`);
+    assert.equal(result2_flippedSignatureByte, false);
+
+    // Step 3: keep the ORIGINAL valid signature, but change one signed field
+    // (riskScore) in the record passed to verifyAttestation -- the digest it
+    // recomputes from the record no longer matches what was signed.
+    const changedFieldRecord = { ...fullRecord, riskScore: fullRecord.riskScore + 1 };
+    const result3_changedRiskScore = verifyAttestation(changedFieldRecord, oracleKp.publicKey.toBase58());
+    console.log(`B8 step 3 (original signature, riskScore changed ${record.riskScore} -> ${changedFieldRecord.riskScore}): verifyAttestation() -> ${result3_changedRiskScore}`);
+    assert.equal(result3_changedRiskScore, false);
+  });
+
   test("audit 1.2: serializeScanRecord and deserializeScanRecord: RS01-trailer roundtrip and legacy compatibility", () => {
     const oracleKp = Keypair.generate();
     const targetWallet = Keypair.generate().publicKey.toBase58();
