@@ -1273,4 +1273,105 @@ test("http-server: createRateLimiter protects blocked IPs from eviction by spoof
   assert.equal(recheckAbusive.ok, false);
 });
 
+test("A1: /gate-copy isHeavy auth, RADAR_PROTECT_READS, and RADAR_LIVE_RATE_LIMIT_PER_MIN", async () => {
+  const { store, dir } = tmpStore();
+  const prevToken = process.env.RADAR_API_TOKEN;
+  const prevHeavy = process.env.RADAR_AUTH_HEAVY;
+  const prevReads = process.env.RADAR_PROTECT_READS;
+  const prevLiveLimit = process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN;
+
+  try {
+    process.env.RADAR_API_TOKEN = "secret-token-123";
+    process.env.RADAR_AUTH_HEAVY = "1";
+    process.env.RADAR_PROTECT_READS = "1";
+    delete process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN; // defaults to 30
+
+    const r = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 100 });
+    try {
+      // 1. /gate-copy without token gets 401
+      const resGateUnauth = await fetch(`${r.base}/gate-copy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+      });
+      assert.equal(resGateUnauth.status, 401, "/gate-copy without auth must return 401 when RADAR_AUTH_HEAVY=1");
+
+      // 2. /gate-copy with token is authorized (not 401)
+      const resGateAuth = await fetch(`${r.base}/gate-copy`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer secret-token-123",
+        },
+        body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+      });
+      assert.notEqual(resGateAuth.status, 401, "/gate-copy with auth must not be 401");
+
+      // 3. GET /watch, /alerts, /defense, /poll without token get 401 under RADAR_PROTECT_READS=1
+      for (const p of ["/watch", "/alerts", "/defense", "/poll"]) {
+        const resReadUnauth = await fetch(`${r.base}${p}`);
+        assert.equal(resReadUnauth.status, 401, `GET ${p} without auth must return 401 when RADAR_PROTECT_READS=1`);
+
+        const resReadAuth = await fetch(`${r.base}${p}`, {
+          headers: { "Authorization": "Bearer secret-token-123" },
+        });
+        assert.notEqual(resReadAuth.status, 401, `GET ${p} with auth must not be 401`);
+      }
+
+    } finally {
+      await r.close();
+    }
+
+    // 4. Rate limiting on live Helius routes (RADAR_LIVE_RATE_LIMIT_PER_MIN = 30 default)
+    // Exactly 30 requests should succeed (not 429), 31st must receive 429
+    const rLimit = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 100, liveRateLimitPerMin: 30 });
+    try {
+      let got429 = false;
+      for (let i = 1; i <= 31; i++) {
+        const res = await fetch(`${rLimit.base}/gate-copy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer secret-token-123",
+          },
+          body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+        });
+        if (i <= 30) {
+          assert.notEqual(res.status, 429, `Request ${i} should not be 429`);
+        } else {
+          assert.equal(res.status, 429, `31st request must receive 429`);
+          got429 = true;
+        }
+      }
+      assert.equal(got429, true, "31st request should trigger 429");
+    } finally {
+      await rLimit.close();
+    }
+
+    // 5. Without token, behavior is unchanged (no 401)
+    delete process.env.RADAR_API_TOKEN;
+    delete process.env.RADAR_AUTH_HEAVY;
+    delete process.env.RADAR_PROTECT_READS;
+    const rNoToken = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+    try {
+      const res = await fetch(`${rNoToken.base}/gate-copy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+      });
+      assert.notEqual(res.status, 401, "Without token, /gate-copy must not return 401");
+    } finally {
+      await rNoToken.close();
+    }
+  } finally {
+    store.close();
+    cleanup(dir);
+    if (prevToken !== undefined) process.env.RADAR_API_TOKEN = prevToken; else delete process.env.RADAR_API_TOKEN;
+    if (prevHeavy !== undefined) process.env.RADAR_AUTH_HEAVY = prevHeavy; else delete process.env.RADAR_AUTH_HEAVY;
+    if (prevReads !== undefined) process.env.RADAR_PROTECT_READS = prevReads; else delete process.env.RADAR_PROTECT_READS;
+    if (prevLiveLimit !== undefined) process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN = prevLiveLimit; else delete process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN;
+  }
+});
+
+
 

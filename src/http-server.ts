@@ -102,7 +102,7 @@ function timingSafeEqualStr(a: string, b: string): boolean {
  * API auth (opt-in via RADAR_API_TOKEN): only the mutating watch/defense
  * endpoints are gated; read endpoints stay open.
  * When authHeavy is enabled (Audit 1.3), resource-intensive endpoints
- * (/batch, /scan, /trust, /simulate) also require authorization.
+ * (/batch, /scan, /trust, /simulate, /gate-copy) also require authorization.
  * Returns true when the request is allowed, false when it must be rejected with 401.
  */
 function authorizeMutating(
@@ -111,6 +111,7 @@ function authorizeMutating(
   req: http.IncomingMessage,
   token: string | undefined,
   authHeavy: boolean = false,
+  protectReads: boolean = false,
 ): boolean {
   if (!token) return true;
   const isMutating =
@@ -119,9 +120,13 @@ function authorizeMutating(
   const isHeavy =
     authHeavy &&
     method === "POST" &&
-    (p === "/batch" || p === "/scan" || p === "/trust" || p === "/simulate");
+    (p === "/batch" || p === "/scan" || p === "/trust" || p === "/simulate" || p === "/gate-copy");
+  const isProtectedRead =
+    protectReads &&
+    method === "GET" &&
+    (p === "/watch" || p === "/alerts" || p === "/defense" || p.startsWith("/defense/") || p === "/poll");
 
-  if (!isMutating && !isHeavy) return true;
+  if (!isMutating && !isHeavy && !isProtectedRead) return true;
   const header = req.headers.authorization;
   const provided =
     typeof header === "string" && header.startsWith("Bearer ")
@@ -834,10 +839,15 @@ export interface RequestContext {
   }) => Promise<Record<string, unknown>>;
   /**
    * When true (or RADAR_AUTH_HEAVY=1 / RADAR_REQUIRE_AUTH=1 in env), heavy POST
-   * endpoints (/batch, /scan, /trust, /simulate) require the Bearer apiToken to
+   * endpoints (/batch, /scan, /trust, /simulate, /gate-copy) require the Bearer apiToken to
    * prevent DoS and API key exhaustion (Audit 1.3).
    */
   authHeavy?: boolean;
+  /**
+   * When true (or RADAR_PROTECT_READS=1 in env), GET /watch, /alerts, /defense,
+   * and /poll endpoints require the Bearer apiToken.
+   */
+  protectReads?: boolean;
 }
 
 function requireStore(ctx: RequestContext): Store {
@@ -871,7 +881,10 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const authHeavy =
       ctx.authHeavy ??
       (process.env.RADAR_AUTH_HEAVY === "1" || process.env.RADAR_REQUIRE_AUTH === "1");
-    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy)) {
+    const protectReads =
+      ctx.protectReads ??
+      (process.env.RADAR_PROTECT_READS === "1");
+    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy, protectReads)) {
       throw new HttpError(401, "Unauthorized: provide Authorization: Bearer <RADAR_API_TOKEN> (or x-api-token).");
     }
 
@@ -1214,11 +1227,24 @@ export interface ServerOptions {
   }) => Promise<Record<string, unknown>>;
   /** Shared API token for mutating endpoints (env RADAR_API_TOKEN if omitted). */
   apiToken?: string;
+  /** When true, heavy POST endpoints require apiToken. */
+  authHeavy?: boolean;
+  /** When true, GET /watch, /alerts, /defense, /poll require apiToken. */
+  protectReads?: boolean;
+  /** Custom rate limit per min for live Helius endpoints (default 30 from RADAR_LIVE_RATE_LIMIT_PER_MIN). */
+  liveRateLimitPerMin?: number;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
   const limit = options.rateLimitPerMin ?? Number(process.env.RADAR_RATE_LIMIT_PER_MIN ?? 120);
   const rateLimiter = limit > 0 ? createRateLimiter(limit) : null;
+  const defaultLiveLimit = Number(process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN ?? 30);
+  const liveLimit = options.liveRateLimitPerMin ??
+    (options.rateLimitPerMin !== undefined
+      ? (options.rateLimitPerMin === 0 ? 0 : Math.max(defaultLiveLimit, options.rateLimitPerMin))
+      : defaultLiveLimit);
+  const liveRateLimiter = liveLimit > 0 ? createRateLimiter(liveLimit) : null;
+
   const ctx: RequestContext = {
     store: options.store,
     sink: options.sink,
@@ -1230,6 +1256,8 @@ export function createServer(options: ServerOptions = {}): http.Server {
     fetchPrices: options.fetchPrices,
     fetchMintRisk: options.fetchMintRisk,
     hookBridge: options.hookBridge,
+    authHeavy: options.authHeavy,
+    protectReads: options.protectReads,
   };
   const server = http.createServer((req, res) => {
     const rawUrl = req.url ?? "/";
@@ -1239,6 +1267,20 @@ export function createServer(options: ServerOptions = {}): http.Server {
     if (rateLimiter && !isExempt) {
       const ip = clientIp(req);
       const rl = rateLimiter.check(ip);
+      if (!rl.ok) {
+        res.writeHead(429, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": String(rl.retryAfterSec ?? 60),
+          ...corsHeaders(reqOrigin),
+        });
+        res.end(JSON.stringify({ error: "Too Many Requests", retryAfterSec: rl.retryAfterSec ?? 60 }));
+        return;
+      }
+    }
+    const isLiveHelius = LIVE_HELIUS_PATHS.has(pathname);
+    if (liveRateLimiter && isLiveHelius && !isExempt) {
+      const ip = clientIp(req);
+      const rl = liveRateLimiter.check(ip);
       if (!rl.ok) {
         res.writeHead(429, {
           "Content-Type": "application/json; charset=utf-8",
