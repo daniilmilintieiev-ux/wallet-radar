@@ -234,7 +234,7 @@ Wallet Radar rejects opaque LLM prompts in the critical security path. Detection
 
 | Rule | Detection Trigger | Severity | Exploit Vector Mitigated |
 |---|---|---|---|
-| `TOXIC_MINT` | Mint has an active freeze authority, OR an active mint authority, OR top-10 holders control $\ge 60\%$ supply | Medium, or High if the freeze authority is present, OR concentration $\ge 80\%$, OR (pump.fun token AND (mint authority OR $\ge 60\%$ concentration)) | Honeypots, sudden freeze scams, rugpull dumps |
+| `TOXIC_MINT` | Mint has an active freeze authority, OR an active mint authority, OR top-10 holders control $\ge 60\%$ supply, OR (Token-2022) a `permanentDelegate`/frozen `defaultAccountState`/`pausable`/foreign `transferHook` extension | Medium, or High if the freeze authority is present, OR concentration $\ge 80\%$, OR (pump.fun token AND (mint authority OR $\ge 60\%$ concentration)), OR `permanentDelegate`/frozen `defaultAccountState` (Token-2022: `pausable`/foreign `transferHook` are Medium) | Honeypots, sudden freeze scams, rugpull dumps, Token-2022 clawback/freeze/pause/transfer-hook mints |
 | `REGIME_SHIFT` | Structural break: amount ($\ge 3\times$), venue/protocol dominance ($\ge 70\%$), or cadence shift ($\ge 4\times$) | Medium (1 dim) / High ($\ge 2$ dims, or $\ge 3$ distinct anomaly categories with $\ge 2$ substantive ones, or $\ge 4$ categories) | Account takeover, private key compromise, bot automation |
 | `WARMING` | Thin historical baseline ($< 5$ txs) followed immediately by high-severity transactions | Medium | Manufactured reputation evasion by siphoners |
 | `LARGE_SWAP` | Swap size $> N\times$ the wallet's bounded USD median (Jupiter normalized) | High | Whale dumping, flash drain of treasury funds |
@@ -244,13 +244,18 @@ Wallet Radar rejects opaque LLM prompts in the critical security path. Detection
 | `NEW_VENUE` | First swap on a DEX venue not present in baseline profile | Medium | Unverified liquidity pools, malicious swap contracts |
 | `OFF_HOURS` | Batch $\ge 3$ txs with $\ge 2$ txs ($\ge 50\%$) landing in 0-baseline UTC hours (baseline $\ge 20$ txs) | Medium | Automated draining across sleeping timezones |
 
+`TOXIC_MINT`'s Token-2022 extension fields are populated only via the RPC `getAccountInfo` jsonParsed
+fallback path (`parseRpcAccountInfoResponse`), not the Helius DAS `getAsset` path; and this extended
+check is not currently wired into `/gate-copy`'s own mint check (`simulate.ts`'s TOXIC_MINT-equivalent
+logic there only looks at `freezeAuthority`/`top10Pct`) — see `docs/KNOWN-ISSUES.md`.
+
 ### Supporting Behavioral Signals
 In addition to the 9 primary rules, the engine tracks contextual signals that enrich anomaly evidence without causing unilateral blocks:
 - **`NEW_PROTOCOL` (Low Severity)**: Emitted upon first interaction with an on-chain program/contract not present in baseline history.
 - **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 50\%$ of counterparty interactions (min 4 txs) concentrate into a single address.
 - **`COUNTERPARTY_MEMORY`**: Three underlying types (`NEW_COUNTERPARTY`, `COUNTERPARTY_HUB`, `COUNTERPARTY_ESCALATION`, defined in `src/counterparty.ts`) — detects relationship escalation, new counterparty emergence, and dominant hub routing.
 
-Additionally: first-funding source check (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — triggers if the very first inbound transfer to the wallet came from an address on the known exploiter list; **only the first** such transfer is checked, subsequent transfers from known exploiters are not re-checked. This is a distinct check, independent of the nine core rules and auxiliary signals; it does not count toward the "9 rules" total (see `docs/KNOWN-ISSUES.md` regarding the count desynchronization between this README, `src/http-server.ts`/`src/mcp.ts`, and `test/regime.test.ts`).
+Additionally: funding source check (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — triggers on the earliest incoming transfer in the supplied history that came from an address on the known exploiter list; checks every incoming native transfer, not just the first one found. This is a distinct check, independent of the nine core rules and auxiliary signals; it does not count toward the "9 rules" total (see `docs/KNOWN-ISSUES.md` regarding the count desynchronization between this README, `src/http-server.ts`/`src/mcp.ts`, and `test/regime.test.ts`).
 
 ---
 
@@ -478,6 +483,9 @@ Wallet Radar has undergone **11 consecutive security hardening revisions** (deta
 | `RADAR_X402_RECIPIENT` | — | Recipient USDC address for x402 micropayments |
 | `RADAR_WATCH` | `0` | Set to `1` to start continuous watchlist monitoring service |
 | `WEBHOOK_URL` | — | Webhook destination for structured JSON anomaly alerts |
+| `RADAR_ISSUER_MINTS_FILE` | — | Path to a JSON array of issuer-controlled mint addresses; a freeze-authority `TOXIC_MINT` finding on a listed mint is downgraded from High to Medium. Optional, off by default (empty list when unset) |
+
+See `docs/DEPLOY-CHECKLIST.md` for the auth/rate-limit env vars (`RADAR_API_TOKEN`, `RADAR_AUTH_HEAVY`/`RADAR_REQUIRE_AUTH`, `RADAR_PROTECT_READS`, `RADAR_TRUST_PROXY`, `RADAR_LIVE_RATE_LIMIT_PER_MIN`) relevant to a public-facing deployment.
 
 ---
 
@@ -550,17 +558,17 @@ Full list with file:line — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). In br
 
 - Version in `package.json` (`1.0.0`) does not match the version returned by the A2A card (`src/http-server.ts:592`, `"0.3.0"`) — unrelated fields, not synchronized.
 - Rule count: `analyzer.ts` implements 9 rules, counted everywhere as "9", plus a separate `TAINTED_FUNDING` not included in this count anywhere in code or tests (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
-- `TAINTED_FUNDING` checks only the very first inbound transfer to the wallet in its entire history — subsequent transfers from a known exploiter are not re-checked (see rule description above).
-- `DORMANT_ACTIVE` may false-positive on a wallet that trades daily without real gaps, due to the boundary of the 7-day `trust` check window — reproduced offline on a synthetic fixture (stage 9E); requires live data validation after shadow collector stops.
+- ~~`TAINTED_FUNDING` checks only the very first inbound transfer~~ — fixed in branch `fixes-b` (not deployed): now checks every incoming transfer in the supplied history.
+- ~~`DORMANT_ACTIVE` may false-positive on a wallet that trades daily without real gaps~~ — fixed in branch `fixes-b` (not deployed): the `trust` path now measures the dormancy gap from the evaluated batch's earliest tx (`RadarConfig.dormantMeasure: "first"`) instead of its newest; the `scan`/walk-forward path is unchanged (`"newest"`, the default). Confirmed against `benchmarks/history-cache` (1001 wallets, offline): `DORMANT_ACTIVE` firings on the `trust` path dropped from 197 to 133; live-data confirmation after shadow collector stops is still open.
 - `/gate-copy` is not part of either authorization set (`isMutating`/`isHeavy`, `src/http-server.ts:108-131`) and cannot be gated by `RADAR_API_TOKEN` under any configuration; calls Helius and without a token all routes are open by default (`authorizeMutating`, `:115`).
-- `fetchMintMetadata`/`getTokenLargestAccounts` failure leads to silently skipping metadata (`src/mint.ts:496-524`) — `TOXIC_MINT` for that mint is simply not evaluated (fail open), rather than judged safe or dangerous (`src/analyzer.ts:780`).
-- `BLUECHIP_FALLBACK_PRICES` (`src/pricing.ts:115-128`) is defined but never used; on Jupiter failure `LARGE_SWAP` only works for SOL/USDC/USDT by raw quantities.
-- `TOXIC_MINT` does not take into account Token-2022 extensions (`permanentDelegate`, `pausableConfig`, `transferHook`, `defaultAccountState`) — `MintRiskInfo` contains only `mintAuthority`, `freezeAuthority`, `top10Pct`, `isPumpFun`.
+- ~~`fetchMintMetadata`/`getTokenLargestAccounts` failure leads to silently skipping metadata~~ — fixed in branch `fixes-b` (not deployed) for `/gate-copy` specifically: a failed mint check now sets `tokenCheck: "unavailable"`, emits a `TOKEN_CHECK_UNAVAILABLE` anomaly, and caps the verdict at `manual_review` when `copyAmountUsd > 0`. `/scan`/`/trust`'s batch mint-risk path (`fetchSwapMintRisk`, `src/analyzer.ts:780`) still fails open — out of this stage's scope.
+- `BLUECHIP_FALLBACK_PRICES` (`src/pricing.ts:115-128`) stays defined (kept for `scripts/audit/*.mjs`'s offline replay) but is now explicitly commented as not-for-live-use; `/scan`, `/trust`/`/batch`, and `/gate-copy` report `degraded: ["PRICES_UNAVAILABLE"]` when the price fetch actually fails.
+- ~~`TOXIC_MINT` does not take into account Token-2022 extensions~~ — fixed in branch `fixes-b` (not deployed) for the RPC `getAccountInfo` jsonParsed fallback path: `MintRiskInfo` gained `permanentDelegate`, `pausable`, `transferHook`, `defaultAccountStateFrozen`. Not yet extended to the Helius DAS path or to `/gate-copy`'s own (separate, simpler) mint check in `simulate.ts`.
 - x402: payment replay protection is synchronous and non-racy within a single process, but across processes duplicate delivery for a single signature is possible (`src/x402server.ts:1000-1005`, `:1161-1169`).
 - Payment verification error message may include `err.message` (`src/x402server.ts:492-493`); inclusion of URL with API key in this message was not tested (requires a real network failure).
 - Transfer Hook: single upgrade authority for the program itself and single `config.authority` per mint (no multisig at protocol level); `risk_score` in `write_scan_record` is not explicitly bounded to <= 100 (`lib.rs:492`).
 - Test quality: mutating `REGIME_DOMINANT_RATIO` and `DEFENSE_THRESHOLDS.blocked` breaks zero tests; 5 tests verify results against the exact constant read by tested code (list in `docs/KNOWN-ISSUES.md`).
-- `npm audit`: 12 known vulnerabilities in dependency tree (9 moderate, 3 high — `bigint-buffer`, `@solana/buffer-layout-utils`, `@solana/spl-token`), all via `@solana/spl-token@0.4.15`; impact on project was not assessed.
+- `npm audit`: 12 known vulnerabilities in dependency tree (9 moderate, 3 high — `bigint-buffer`, `@solana/buffer-layout-utils`, `@solana/spl-token`), all via `@solana/spl-token@0.4.15`, unchanged as of branch `fixes-b`. Reachability analysis (branch `fixes-b`, not a fix — no dependency changed): the only `@solana/spl-token` function this project calls (`createAssociatedTokenAccountIdempotentInstruction`) never reaches the flagged `bigint-buffer` functions through its own call graph — see `docs/KNOWN-ISSUES.md` for the full trace.
 - The "sub-second" claim held only for offline `/analyze` (median 3.69 ms); live check `/trust` measured at 1.0-2.4 s across 5 wallets — wording below is corrected.
 - Demo `examples/copy-bot-firewall.ts` uses built-in mock responses and does not query a real server even if running.
 - Light Protocol oracle: logic confirmed in tests; real write to Light Protocol network was not verified during this audit. `DEFAULT_ORACLE_PROGRAM_ID` (`src/oracle/ledger.ts:77`) is Light Protocol's system program, not a contract of this project.
