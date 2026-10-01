@@ -129,15 +129,15 @@ These are computed by different code paths, on different timescales, and are eas
 
 **Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: a zero-network, fully reproducible regression harness executed on every build, using 24 versioned, hand-authored test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing). Each fixture's expected outcome is defined by construction (the author writes a transaction sequence designed to trigger, or not trigger, a specific rule) — this is a **regression test against the ruleset itself**, not an independent measurement against real-world wallets. It currently passes 24/24 (100% precision/recall/accuracy on this fixture set). Run locally via `npm run radar -- benchmark`.
 
-This regression suite is a different kind of evidence than an empirical accuracy claim on real mainnet wallets, and should not be read as one. See **Статус независимой оценки** below for where that empirical validation currently stands.
+This regression suite is a different kind of evidence than an empirical accuracy claim on real mainnet wallets, and should not be read as one. See **Status of independent evaluation** below for where that empirical validation currently stands.
 
 ---
 
-## Статус независимой оценки
+## Status of independent evaluation
 
-Независимая проверка качества детекции на реальных ончейн-данных ещё не завершена: первый прогон (архив: [archive/exp1](archive/exp1), тег `exp1-invalid`) признан невалидным (метки перезаписывались собственными вердиктами радара, датасет не в git, состояние mint бралось на момент запуска, а не на дату сделки) и не подтверждает никаких процентных показателей точности. Числа `96.0%` / `98.0%` / `71 wallets`, ранее приводившиеся в этом README и в демо-материалах, не подкреплены воспроизводимым артефактом в этом репозитории и были удалены; независимая методология переразметки разрабатывается в [ground-truth/PROTOCOL.md](ground-truth/PROTOCOL.md).
+Independent validation of detection quality on real on-chain data is not yet complete: the first run (archive: [archive/exp1](archive/exp1), tag `exp1-invalid`) was declared invalid (labels were overwritten by the radar's own verdicts, dataset was not in git, mint state was captured at script runtime rather than at the transaction date) and does not support any accuracy percentage claims. The numbers `96.0%` / `98.0%` / `71 wallets` previously stated in this README and in demo materials were not supported by a reproducible artifact in this repository and have been removed; an independent relabeling methodology is under development in [ground-truth/PROTOCOL.md](ground-truth/PROTOCOL.md).
 
-Полный протокол текущего прогона — включая критерии (a)/(b), пороги, классы исходов, правило подглядывания и журнал правок перед стартом — задокументирован заранее в [docs/PREREGISTRATION.md](docs/PREREGISTRATION.md). Живой тест уже идёт: сбор данных ведётся под тегом `shadow-v3` (`docs/PREREGISTRATION.md`, раздел 17в) и останавливается **2026-10-06 18:00 UTC**; финальный расчёт исходов запускается **2026-10-10**. Правила и пороги зафиксированы до этой даты и не меняются по итогам наблюдения. Результат «данных недостаточно» (INSUFFICIENT_DATA / «не созрело», в зависимости от того, что именно не набрало нужный объём) — допустимый исход и будет опубликован как есть, без подгонки под ожидание.
+The full protocol of the current run — including criteria (a)/(b), thresholds, outcome classes, lookahead rules, and pre-start amendment log — is documented in advance in [docs/PREREGISTRATION.md](docs/PREREGISTRATION.md). The live test is already underway: data collection is conducted under tag `shadow-v3` (`docs/PREREGISTRATION.md`, section 17c) and halts on **2026-10-06 18:00 UTC**; final outcome computation runs on **2026-10-10**. Rules and thresholds are frozen until that date and will not change based on observation results. An outcome of "insufficient data" (INSUFFICIENT_DATA / "unmatured", depending on which specific metric did not reach target volume) is an acceptable outcome and will be published as is, without fitting to expectations.
 
 ---
 
@@ -248,7 +248,7 @@ In addition to the 9 primary rules, the engine tracks contextual signals that en
 - **`COUNTERPARTY_CLUSTER` (Low Severity)**: Emitted when $\ge 50\%$ of counterparty interactions (min 4 txs) concentrate into a single address.
 - **`COUNTERPARTY_MEMORY`**: Three underlying types (`NEW_COUNTERPARTY`, `COUNTERPARTY_HUB`, `COUNTERPARTY_ESCALATION`, defined in `src/counterparty.ts`) — detects relationship escalation, new counterparty emergence, and dominant hub routing.
 
-Дополнительно: проверка источника первого пополнения (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — срабатывает, если самый первый входящий перевод на кошелёк пришёл с адреса из списка известных эксплойтеров; проверяется **только первый** такой перевод, более поздние поступления от известных эксплойтеров повторно не проверяются. Это отдельная, независимая от девяти основных правил и от вспомогательных сигналов проверка; в счётчике «9 правил» она не участвует (см. `docs/KNOWN-ISSUES.md` про рассинхронизацию числа между этим README, `src/http-server.ts`/`src/mcp.ts` и `test/regime.test.ts`).
+Additionally: first-funding source check (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — triggers if the very first inbound transfer to the wallet came from an address on the known exploiter list; **only the first** such transfer is checked, subsequent transfers from known exploiters are not re-checked. This is a distinct check, independent of the nine core rules and auxiliary signals; it does not count toward the "9 rules" total (see `docs/KNOWN-ISSUES.md` regarding the count desynchronization between this README, `src/http-server.ts`/`src/mcp.ts`, and `test/regime.test.ts`).
 
 ---
 
@@ -512,72 +512,71 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 
 **Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
-## Статус функций
+## Feature status
 
-Проверено на ветке `docs/claims-fix`, дата 2026-09-30.
+Verified on branch `docs/claims-fix`, date 2026-09-30.
 
-| Функция | Статус | Ограничение |
+| Feature | Status | Limitation |
 |---|---|---|
-| CLI `radar selftest` | живой запуск | встроенная синтетическая фикстура, сеть не требуется |
-| CLI `radar benchmark` | живой запуск | 24 детерминированных кейса, сеть не требуется |
-| CLI `radar analyze` | живой запуск | локальный JSON-файл истории, сеть не требуется |
-| CLI `radar prices` | живой запуск | публичный GET к Jupiter Price API |
-| CLI `radar add` / `history` / `report` / `alerts` / `remove` | живой запуск | локальное чтение/запись SQLite, сеть не требуется |
-| CLI `radar digest` | живой запуск | локальный запуск без ключей Telegram |
-| CLI `radar replay` | тесты | без ключа Helius живым запуском не проверялся (6 тестов `test/replay.test.js`) |
-| CLI `radar scan` | только код | CLI-обёртка живым запуском не проверялась; HTTP `/scan` подтверждён отдельно (ниже) |
-| CLI `radar trust` | тесты | алгоритм проверен 34 тестами `test/trust.test.js`; живым запуском подтверждён только HTTP `/trust` |
-| CLI `radar watch` | тесты | цикл проверен тестами `test/watch.test.js`/`test/defense.test.js` и systemd-сервисом на плате |
-| `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` | живой запуск | без платного Helius-ключа (офлайн/публичные данные) |
-| `POST /analyze` | живой запуск | офлайн, медиана времени ответа 3.69 мс |
-| `POST /trust` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
-| `POST /scan` | живой запуск (ключ Helius, 1-2,5 с) | проверено на 5 кошельках |
-| `POST /gate-copy` | живой запуск (ключ Helius, 1-2,5 с) | без авторизации по умолчанию, см. «Ограничения и известные проблемы» |
-| x402-платёж | живой запуск (один тестовый платёж 0,005 USDC) | подтверждает работу платёжного пути, не является внешней выручкой; см. «Ограничения и известные проблемы» |
-| `POST /simulate` | тесты | покрыт `test/simulate.test.js` |
-| `POST /batch` | тесты | покрыт `test/trust.test.js` |
-| MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | живой запуск | |
-| MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | тесты | покрыты `test/mcp.test.js` |
-| SPL Token-22 Transfer Hook (Devnet) | живой запуск | реальная транзакция с откатом `0x1771`/`CounterpartyFlagged` |
-| Демо `examples/copy-bot-firewall.ts` | не подтверждено | `fetchFn` — встроенные заглушки с зашитыми вердиктами, реального обращения к радару по умолчанию нет |
-| Запись аттестаций Light Protocol (ончейн, Devnet) | не подтверждено | `getCompressedAccountsByOwner` недоступен на обычном Devnet RPC (`-32601 Method not found`); подтверждена только офлайн-логика (`test/oracle.test.js`) |
+| CLI `radar selftest` | live run | built-in synthetic fixture, no network required |
+| CLI `radar benchmark` | live run | 24 deterministic cases, no network required |
+| CLI `radar analyze` | live run | local history JSON file, no network required |
+| CLI `radar prices` | live run | public GET to Jupiter Price API |
+| CLI `radar add` / `history` / `report` / `alerts` / `remove` | live run | local SQLite read/write, no network required |
+| CLI `radar digest` | live run | local run without Telegram keys |
+| CLI `radar replay` | tests | not verified with live run without Helius key (6 tests in `test/replay.test.js`) |
+| CLI `radar scan` | code only | CLI wrapper not verified with live run; HTTP `/scan` confirmed separately (below) |
+| CLI `radar trust` | tests | algorithm verified by 34 tests in `test/trust.test.js`; live run confirmed only for HTTP `/trust` |
+| CLI `radar watch` | tests | loop verified by tests in `test/watch.test.js`/`test/defense.test.js` and systemd service on board |
+| `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` | live run | without paid Helius key (offline/public data) |
+| `POST /analyze` | live run | offline, median response time 3.69 ms |
+| `POST /trust` | live run (Helius key, 1-2.5 s) | verified across 5 wallets |
+| `POST /scan` | live run (Helius key, 1-2.5 s) | verified across 5 wallets |
+| `POST /gate-copy` | live run (Helius key, 1-2.5 s) | unauthenticated by default, see "Limitations and known issues" |
+| x402 payment | live run (one test payment of 0.005 USDC) | confirms payment pipeline execution, not external revenue; see "Limitations and known issues" |
+| `POST /simulate` | tests | covered by `test/simulate.test.js` |
+| `POST /batch` | tests | covered by `test/trust.test.js` |
+| MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | live run | |
+| MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | tests | covered by `test/mcp.test.js` |
+| SPL Token-22 Transfer Hook (Devnet) | live run | real transaction with rollback `0x1771`/`CounterpartyFlagged` |
+| Demo `examples/copy-bot-firewall.ts` | unconfirmed | `fetchFn` uses built-in mocks with hardcoded verdicts, no real call to radar by default |
+| Light Protocol attestation recording (on-chain, Devnet) | unconfirmed | `getCompressedAccountsByOwner` unavailable on standard Devnet RPC (`-32601 Method not found`); only offline logic confirmed (`test/oracle.test.js`) |
 
-## Ограничения и известные проблемы
+## Limitations and known issues
 
-Полный список с файл:строка — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). Кратко:
+Full list with file:line — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). In brief:
 
-- Версия в `package.json` (`1.0.0`) не совпадает с версией, которую отдаёт A2A-карточка (`src/http-server.ts:592`, `"0.3.0"`) — несвязанные поля, не синхронизированы.
-- Число правил: `analyzer.ts` реализует 9 правил, которые везде и посчитаны как «9», плюс отдельное `TAINTED_FUNDING`, не входящее в этот счётчик нигде в коде и тестах (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
-- `TAINTED_FUNDING` проверяет только самый первый входящий перевод на кошелёк за всю его историю — более позднее поступление от известного эксплойтера повторно не проверяется (см. описание правила выше).
-- `DORMANT_ACTIVE` может ложно срабатывать у кошелька, который торгует каждый день без реальных перерывов, из-за самой границы 7-дневного окна `trust`-проверки — воспроизведено офлайн на синтетической фикстуре (стадия 9E); требует проверки на живых данных после остановки сбора shadow-collector.
-- `/gate-copy` не входит ни в один из наборов авторизации (`isMutating`/`isHeavy`, `src/http-server.ts:108-131`) и не может быть закрыт `RADAR_API_TOKEN` ни при какой конфигурации; вызывает Helius и без токена вообще все маршруты открыты по умолчанию (`authorizeMutating`, `:115`).
-- Сбой `fetchMintMetadata`/`getTokenLargestAccounts` приводит к тихому пропуску метаданных (`src/mint.ts:496-524`) — `TOXIC_MINT` для этого mint просто не оценивается (fail open), а не считается безопасным или опасным (`src/analyzer.ts:780`).
-- `BLUECHIP_FALLBACK_PRICES` (`src/pricing.ts:115-128`) определён, но нигде не используется; при сбое Jupiter `LARGE_SWAP` работает только для SOL/USDC/USDT по сырым величинам.
-- `TOXIC_MINT` не учитывает расширения Token-2022 (`permanentDelegate`, `pausableConfig`, `transferHook`, `defaultAccountState`) — `MintRiskInfo` содержит только `mintAuthority`, `freezeAuthority`, `top10Pct`, `isPumpFun`.
-- x402: защита от повтора платежа синхронна и не имеет гонки внутри одного процесса, но между процессами возможна повторная доставка результата по одной подписи (`src/x402server.ts:1000-1005`, `:1161-1169`).
-- Сообщение об ошибке проверки платежа может включать `err.message` (`src/x402server.ts:492-493`); попадание URL с API-ключом в это сообщение не проверялось (нужен реальный сетевой сбой).
-- Transfer Hook: один upgrade authority у самой программы и один `config.authority` на mint (без мультисига на уровне протокола); `risk_score` в `write_scan_record` не ограничен явно значением ≤100 (`lib.rs:492`).
-- Качество тестов: мутации `REGIME_DOMINANT_RATIO` и `DEFENSE_THRESHOLDS.blocked` не роняют ни одного теста; 5 тестов сверяют результат с той же константой, что и проверяемый код (список в `docs/KNOWN-ISSUES.md`).
-- `npm audit`: 12 известных уязвимостей в дереве зависимостей (9 moderate, 3 high — `bigint-buffer`, `@solana/buffer-layout-utils`, `@solana/spl-token`), все через `@solana/spl-token@0.4.15`; влияние на проект не оценивалось.
-- Заявление «sub-second» было верно только для офлайн `/analyze` (медиана 3.69 мс); живая проверка `/trust` измерена в 1.0-2.4 с на 5 кошельках — формулировка ниже исправлена.
-- Демо `examples/copy-bot-firewall.ts` использует встроенные заглушки ответов и не обращается к реальному серверу, даже если он запущен.
-- Оракул Light Protocol: логика подтверждена тестами; реальная запись в сеть Light Protocol не проверялась в рамках этого аудита. `DEFAULT_ORACLE_PROGRAM_ID` (`src/oracle/ledger.ts:77`) — системная программа Light Protocol, не контракт этого проекта.
+- Version in `package.json` (`1.0.0`) does not match the version returned by the A2A card (`src/http-server.ts:592`, `"0.3.0"`) — unrelated fields, not synchronized.
+- Rule count: `analyzer.ts` implements 9 rules, counted everywhere as "9", plus a separate `TAINTED_FUNDING` not included in this count anywhere in code or tests (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
+- `TAINTED_FUNDING` checks only the very first inbound transfer to the wallet in its entire history — subsequent transfers from a known exploiter are not re-checked (see rule description above).
+- `DORMANT_ACTIVE` may false-positive on a wallet that trades daily without real gaps, due to the boundary of the 7-day `trust` check window — reproduced offline on a synthetic fixture (stage 9E); requires live data validation after shadow collector stops.
+- `/gate-copy` is not part of either authorization set (`isMutating`/`isHeavy`, `src/http-server.ts:108-131`) and cannot be gated by `RADAR_API_TOKEN` under any configuration; calls Helius and without a token all routes are open by default (`authorizeMutating`, `:115`).
+- `fetchMintMetadata`/`getTokenLargestAccounts` failure leads to silently skipping metadata (`src/mint.ts:496-524`) — `TOXIC_MINT` for that mint is simply not evaluated (fail open), rather than judged safe or dangerous (`src/analyzer.ts:780`).
+- `BLUECHIP_FALLBACK_PRICES` (`src/pricing.ts:115-128`) is defined but never used; on Jupiter failure `LARGE_SWAP` only works for SOL/USDC/USDT by raw quantities.
+- `TOXIC_MINT` does not take into account Token-2022 extensions (`permanentDelegate`, `pausableConfig`, `transferHook`, `defaultAccountState`) — `MintRiskInfo` contains only `mintAuthority`, `freezeAuthority`, `top10Pct`, `isPumpFun`.
+- x402: payment replay protection is synchronous and non-racy within a single process, but across processes duplicate delivery for a single signature is possible (`src/x402server.ts:1000-1005`, `:1161-1169`).
+- Payment verification error message may include `err.message` (`src/x402server.ts:492-493`); inclusion of URL with API key in this message was not tested (requires a real network failure).
+- Transfer Hook: single upgrade authority for the program itself and single `config.authority` per mint (no multisig at protocol level); `risk_score` in `write_scan_record` is not explicitly bounded to <= 100 (`lib.rs:492`).
+- Test quality: mutating `REGIME_DOMINANT_RATIO` and `DEFENSE_THRESHOLDS.blocked` breaks zero tests; 5 tests verify results against the exact constant read by tested code (list in `docs/KNOWN-ISSUES.md`).
+- `npm audit`: 12 known vulnerabilities in dependency tree (9 moderate, 3 high — `bigint-buffer`, `@solana/buffer-layout-utils`, `@solana/spl-token`), all via `@solana/spl-token@0.4.15`; impact on project was not assessed.
+- The "sub-second" claim held only for offline `/analyze` (median 3.69 ms); live check `/trust` measured at 1.0-2.4 s across 5 wallets — wording below is corrected.
+- Demo `examples/copy-bot-firewall.ts` uses built-in mock responses and does not query a real server even if running.
+- Light Protocol oracle: logic confirmed in tests; real write to Light Protocol network was not verified during this audit. `DEFAULT_ORACLE_PROGRAM_ID` (`src/oracle/ledger.ts:77`) is Light Protocol's system program, not a contract of this project.
 
-## Как проверить
+## How to verify
 
-Пять воспроизводимых команд (каждая проверена в рамках этапов 9B–9E):
+Five reproducible commands (each verified in stages 9B–9E):
 
-1. **Полный набор тестов**: `npm test` → 666/666, 29 suites.
-2. **Детерминированный бенчмарк**: `npm run radar -- benchmark` → 24/24 на версионированном синтетическом наборе фикстур (это регрессионный тест на самих правилах, не независимый замер точности на реальных данных — см. «Статус независимой оценки»).
-3. **Офлайн self-test**: `npm run radar -- selftest` → без сети и API-ключей, прогоняет полный конвейер детекции на синтетическом кошельке.
-4. **Детерминированный replay**: `node dist/src/cli.js replay <wallet> --since <unix-ts> --until <unix-ts>` → повторно прогоняет детектор по историческому окну реального кошелька; одинаковые входные данные всегда дают одинаковый вердикт.
-5. **Живой девнет-хук** (публичный RPC, только чтение):
+1. **Full test suite**: `npm test` → 666/666, 29 suites.
+2. **Deterministic benchmark**: `npm run radar -- benchmark` → 24/24 on a versioned synthetic fixture set (this is a regression test on the rules themselves, not an independent empirical accuracy benchmark on real data — see "Status of independent evaluation").
+3. **Offline self-test**: `npm run radar -- selftest` → no network or API keys, runs the full detection pipeline on a synthetic wallet.
+4. **Deterministic replay**: `node dist/src/cli.js replay <wallet> --since <unix-ts> --until <unix-ts>` → replays the detector over a historical window of a real wallet; identical input data always yields an identical verdict.
+5. **Live devnet hook** (public RPC, read-only):
    ```bash
    curl -s https://api.devnet.solana.com -X POST -H "Content-Type: application/json" \
      -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",{"encoding":"base64"}]}'
    ```
-   → подтверждает `executable: true`, владелец — upgradeable BPF loader.
-
+   → confirms `executable: true`, owner is upgradeable BPF loader.
 ## Support
 
 - **Report issues** via [GitHub Issues](https://github.com/daniilmilintieiev-ux/wallet-radar/issues) (non-security) or privately via [SECURITY.md](SECURITY.md) (security).
