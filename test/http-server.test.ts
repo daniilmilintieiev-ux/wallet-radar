@@ -1373,5 +1373,26 @@ test("A1: /gate-copy isHeavy auth, RADAR_PROTECT_READS, and RADAR_LIVE_RATE_LIMI
   }
 });
 
+test("A4: A2A card and getVersion resolve version dynamically from package.json", async () => {
+  const r = await startTestServer();
+  try {
+    const pkgPath = path.resolve(process.cwd(), "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    const expectedVersion = pkg.version;
+
+    const resA2A = await fetch(`${r.base}/.well-known/agent.json`);
+    assert.equal(resA2A.status, 200);
+    const card = (await resA2A.json()) as any;
+    assert.equal(card.version, expectedVersion, `A2A card version (${card.version}) must match package.json version (${expectedVersion}) and not be hardcoded 0.3.0`);
+    assert.notEqual(card.version, "0.3.0");
+
+    const mcpVersion = getVersion();
+    assert.equal(mcpVersion, expectedVersion, `MCP getVersion() (${mcpVersion}) must match package.json version (${expectedVersion})`);
+  } finally {
+    await r.close();
+  }
+});
+
+
 
 

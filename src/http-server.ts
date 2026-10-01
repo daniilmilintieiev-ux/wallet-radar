@@ -594,7 +594,7 @@ function a2aCard(): Record<string, unknown> {
     description:
       "Pre-flight trust gate for Solana wallets. Given a wallet address it screens the wallet via Wallet Radar (behavioral risk, payment capacity, top-holder concentration, mint toxicity, data freshness) and returns a deterministic safe/hold/unknown verdict with the reasons — so a paying agent can gate a transaction before it commits.",
     url: `${A2A_PUBLIC_URL}/a2a`,
-    version: "0.3.0",
+    version: getVersion(),
     preferredTransport: "JSONRPC",
     capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
     defaultInputModes: ["text"],

@@ -18,6 +18,7 @@ import { Baseline, EnhancedTx } from "./types.js";
 import { Store } from "./store.js";
 import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
+import { getVersion } from "./version.js";
 import { applyDefense, applyDefenseToTrust } from "./http-server.js";
 
 function json(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -52,7 +53,7 @@ export interface McpServerOptions {
 }
 
 export function buildServer(options: McpServerOptions = {}): McpServer {
-  const server = new McpServer({ name: "wallet-radar", version: "1.0.0" });
+  const server = new McpServer({ name: "wallet-radar", version: getVersion() });
 
   server.registerTool(
     "radar_scan",
