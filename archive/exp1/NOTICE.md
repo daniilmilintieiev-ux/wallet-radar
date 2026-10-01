@@ -42,7 +42,7 @@ a benchmark, or an input to any new experiment. Any accuracy, precision, or
 recall figures previously derived from this dataset (including published
 claims of "100% accuracy," "zero false-positive," or similar) have been
 **retracted** and are not supported by this data. See the root
-[README.md](../../README.md) ("Статус независимой оценки") and
+[README.md](../../README.md) ("Status of independent evaluation") and
 [docs/PREREGISTRATION.md](../../docs/PREREGISTRATION.md) for the current,
 honest status of independent evaluation and the preregistered protocol for
 the live run that superseded this experiment.
