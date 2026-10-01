@@ -1,5 +1,5 @@
 import { SOL_MINT, USDC_MINT, USDT_MINT } from "./types.js";
-import { Anomaly, EnhancedTx, Freshness } from "./types.js";
+import { Anomaly, EnhancedTx, Freshness, loadConfig } from "./types.js";
 import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
 import { maxOf } from "./stats.js";
@@ -341,7 +341,14 @@ export async function runTrustCheck(
     const baseline = updateBaseline(wallet, null, baselineTxs, generatedAt, prices);
     txCount = evalTxs.length;
     medianSwapAmountUsd = baseline.medianSwapAmountUsd ?? null;
-    anomalies = detectAnomalies(wallet, evalTxs, baseline, undefined, prices);
+    // B5: the trust path's windowed split (selectScoring) pins
+    // baseline.lastSeenAt to the end of the PRIOR window, which sits
+    // windowDays in the past relative to "now" by construction -- judging
+    // DORMANT_ACTIVE by evalTxs's newest tx (which can be from today) makes a
+    // continuously-active wallet look freshly "reactivated" on every call.
+    // "first" measures the gap to evalTxs's earliest tx instead, which does
+    // not have this structural false-positive.
+    anomalies = detectAnomalies(wallet, evalTxs, baseline, { ...loadConfig(), dormantMeasure: "first" }, prices);
     riskScore = computeRiskScore(anomalies);
   } catch (err) {
     console.error(`history fetch failed, risk unknown: ${err instanceof Error ? err.message : String(err)}`);

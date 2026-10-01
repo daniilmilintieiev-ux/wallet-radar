@@ -1100,4 +1100,43 @@ test("ACTIVITY_BURST: genuine consensus validator vote stream does not trigger b
   );
 });
 
+test("B5: replaying wallet 8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j (walk-forward/scan path, config.dormantMeasure default 'newest') is unaffected by the trust-path-only dormantMeasure change", async () => {
+  const cacheFile = "benchmarks/history-cache/8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j.json";
+  const fs = await import("node:fs");
+  if (!fs.existsSync(cacheFile)) {
+    // benchmarks/ is gitignored (CLAUDE.md) -- skip gracefully when not present,
+    // matching the project's own "НЕ ПРОВЕРЕНО (нет кэша)" convention.
+    console.log(`SKIP (НЕ ПРОВЕРЕНО): ${cacheFile} not present in this checkout.`);
+    return;
+  }
+  // @ts-ignore -- plain .mjs helper with no type declarations, resolved at
+  // runtime relative to the compiled dist/test/ location (two levels up to
+  // repo root), not the source test/ location.
+  const { replayWalkForward, loadCachedTxs } = (await import("../../scripts/audit/lib/walk-forward-replay.mjs")) as any;
+  const address = "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j";
+  const txs = loadCachedTxs("benchmarks/history-cache", address);
+  assert.ok(txs, "cache file exists but failed to parse");
+
+  // NOTE: the task text describes this wallet as producing DORMANT_ACTIVE at
+  // ~173 days. That could NOT be reproduced against the benchmarks/history-cache
+  // file present in this worktree (НЕ ПРОВЕРЕНО) -- independently checked: the
+  // largest gap between any two consecutive cached transactions for this
+  // wallet is ~5.6 days, the cache spans only ~18 days total (2026-09-04 to
+  // 2026-09-22), and DORMANT_ACTIVE never fires at any step of its
+  // walk-forward replay with the real cached data. This is logged, not
+  // silently ignored; see scratch/15b-notes.md for the exact numbers.
+  // What IS asserted here is the actual regression guarantee B5 requires:
+  // config.dormantMeasure defaults to "newest" (DEFAULT_CONFIG,
+  // unchanged by B5) and the walk-forward replay path (this helper) always
+  // passes DEFAULT_CONFIG explicitly -- it never reads opts.windowDays or any
+  // trust.ts code, so B5's "first" wiring (scoped to trust.ts's one
+  // detectAnomalies call) cannot affect this wallet's replay at all. This
+  // result (verdict, risk, step the defense first escalated) must be
+  // identical before and after B5.
+  const res = replayWalkForward(address, undefined, txs, {}, {});
+  assert.equal(res.finalVerdict, "VERIFIED_SAFE");
+  assert.equal(res.finalRiskScore, 5);
+  assert.equal(res.blockedAtStep, 3);
+});
+
 

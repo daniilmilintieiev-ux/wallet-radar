@@ -526,19 +526,21 @@ export function detectAnomalies(
   }
 
   // DORMANT_ACTIVE: activity after N days of silence.
-  // Judge the gap by the NEWEST tx only: the batch may legitimately contain
-  // an already-seen tx (pagination overlap), which must not suppress the alert.
+  // Judge the gap by the NEWEST tx by default (config.dormantMeasure ==
+  // "newest"): the batch may legitimately contain an already-seen tx
+  // (pagination overlap), which must not suppress the alert. The trust path
+  // (selectScoring) uses "first" instead (B5) -- see RadarConfig.dormantMeasure.
   // DAO treasuries / protocol vaults naturally have long dormancy between proposals.
   if (baseline?.lastSeenAt && txs.length > 0) {
-    const newest = maxOf(txs.map(ts));
-    const daysSince = (newest - baseline.lastSeenAt) / 86_400;
+    const measureTs = config.dormantMeasure === "first" ? minOf(txs.map(ts)) : maxOf(txs.map(ts));
+    const daysSince = (measureTs - baseline.lastSeenAt) / 86_400;
     const effectiveDormantDays = archetype === "protocol_vault" ? 90 : config.dormantDays;
     if (daysSince >= effectiveDormantDays) {
       anomalies.push({
         type: "DORMANT_ACTIVE",
         wallet,
         severity: daysSince >= 60 && archetype !== "protocol_vault" ? "high" : "medium",
-        timestamp: newest,
+        timestamp: measureTs,
         evidence: { daysSilent: Number(daysSince.toFixed(1)) },
         text: `Wallet reactivated after ~${Math.floor(daysSince)} days of inactivity.`,
       });

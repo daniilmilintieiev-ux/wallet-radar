@@ -236,6 +236,20 @@ export interface RadarConfig {
   concentrationCount: number;
   quietPolls: number;
   maxPollMs: number;
+  /**
+   * B5: which transaction's timestamp DORMANT_ACTIVE measures the gap from,
+   * against baseline.lastSeenAt.
+   * - "newest" (default): the batch's most recent tx. Preserves existing
+   *   replay/scan behavior exactly -- do not change this default.
+   * - "first": the batch's EARLIEST tx. Used by the trust path (selectScoring)
+   *   specifically, where "newest" structurally understates the gap for a
+   *   continuously-active wallet: selectScoring's windowed split pins
+   *   baseline.lastSeenAt to the end of the prior window, which sits
+   *   windowDays in the past relative to "now" by construction, so judging
+   *   the gap by the batch's own latest tx (which can be from today) makes
+   *   an active wallet look freshly "reactivated" every single call.
+   */
+  dormantMeasure?: "newest" | "first";
 }
 
 export const DEFAULT_CONFIG: RadarConfig = {
@@ -248,6 +262,7 @@ export const DEFAULT_CONFIG: RadarConfig = {
   concentrationCount: 2,
   quietPolls: 3,
   maxPollMs: 3_600_000,
+  dormantMeasure: "newest",
 };
 
 /**

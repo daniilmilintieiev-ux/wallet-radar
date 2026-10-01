@@ -551,6 +551,69 @@ test("B3: runTrustCheck with opts.noPrices does NOT report degraded (deliberate 
   }
 });
 
+test("B5: trust path does NOT fire DORMANT_ACTIVE for a wallet trading every single day for 20 days", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const DAY = 86_400;
+  // 20 consecutive daily transactions, days -20 .. -1 relative to now.
+  // windowStart = now - 7d splits this into baselineTxs (days -20..-8, 13 txs,
+  // baseline.lastSeenAt = day -8) and evalTxs (days -7..-1, 7 txs).
+  const dailyTxs: EnhancedTx[] = Array.from({ length: 20 }, (_, i) => ({
+    signature: `daily_${i}`,
+    timestamp: nowSec - (20 - i) * DAY,
+    source: "JUPITER",
+  }));
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(JSON.stringify(dailyTxs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, { noPrices: true });
+    const dormant = res.anomalies.find((a) => a.type === "DORMANT_ACTIVE");
+    assert.equal(dormant, undefined, `a continuously active wallet must not fire DORMANT_ACTIVE on the trust path, got: ${JSON.stringify(dormant)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("B5: trust path DOES fire DORMANT_ACTIVE for a wallet silent for 30 days before reactivating", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const DAY = 86_400;
+  // Baseline activity ends 30 days ago; the wallet resumes in the last 2 days.
+  const txs: EnhancedTx[] = [
+    { signature: "old_1", timestamp: nowSec - 35 * DAY, source: "JUPITER" },
+    { signature: "old_2", timestamp: nowSec - 33 * DAY, source: "JUPITER" },
+    { signature: "old_3", timestamp: nowSec - 30 * DAY, source: "JUPITER" }, // baseline.lastSeenAt
+    { signature: "resumed_1", timestamp: nowSec - 2 * DAY, source: "JUPITER" },
+    { signature: "resumed_2", timestamp: nowSec - 1 * DAY, source: "JUPITER" },
+  ];
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(JSON.stringify(txs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, { noPrices: true });
+    const dormant = res.anomalies.find((a) => a.type === "DORMANT_ACTIVE");
+    assert.ok(dormant, "a wallet silent for 30 days before reactivating must fire DORMANT_ACTIVE on the trust path");
+    assert.ok((dormant!.evidence.daysSilent as number) >= 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("runTrustCheck: error handling when history or balances fail", async () => {
   const originalFetch = globalThis.fetch;
   const targetWallet = "WappetTest111111111111111111111111111111111";
