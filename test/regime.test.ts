@@ -175,6 +175,36 @@ describe("REGIME_SHIFT (8th deterministic anomaly rule)", () => {
     assert.ok(evidence.reasons.some((r) => r.includes("venue")));
   });
 
+  test("A9(a): REGIME_DOMINANT_RATIO boundary (0.69 silent on venue, 0.70 fires on venue)", () => {
+    const baseline = makeBaseline({
+      txCount: 15,
+      medianSwapAmount: 1.0,
+      knownVenues: ["JUPITER"],
+      knownPrograms: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+    });
+
+    // 100 txs with identical amounts and normal cadence so only venue could shift:
+    // 69 RAYDIUM + 31 JUPITER -> ratio = 69/100 = 0.69 -> below 0.70 -> silent
+    const txs69: EnhancedTx[] = [
+      ...Array.from({ length: 69 }, (_, i) => makeTx(`r${i}`, BASE_TS + (i + 1) * 3600, 1.0, "RAYDIUM")),
+      ...Array.from({ length: 31 }, (_, i) => makeTx(`j${i}`, BASE_TS + (70 + i) * 3600, 1.0, "JUPITER")),
+    ];
+    const anomalies69 = detectAnomalies(WALLET, txs69, baseline);
+    const regime69 = anomalies69.find((a) => a.type === "REGIME_SHIFT");
+    assert.equal(regime69, undefined, "ratio 0.69 must not trigger REGIME_SHIFT on venue");
+
+    // 70 RAYDIUM + 30 JUPITER -> ratio = 70/100 = 0.70 -> at 0.70 -> fires
+    const txs70: EnhancedTx[] = [
+      ...Array.from({ length: 70 }, (_, i) => makeTx(`r${i}`, BASE_TS + (i + 1) * 3600, 1.0, "RAYDIUM")),
+      ...Array.from({ length: 30 }, (_, i) => makeTx(`j${i}`, BASE_TS + (71 + i) * 3600, 1.0, "JUPITER")),
+    ];
+    const anomalies70 = detectAnomalies(WALLET, txs70, baseline);
+    const regime70 = anomalies70.find((a) => a.type === "REGIME_SHIFT");
+    assert.ok(regime70, "ratio 0.70 must trigger REGIME_SHIFT on venue");
+    const ev70 = regime70.evidence as { dimensions?: string[] } | undefined;
+    assert.ok(ev70?.dimensions?.includes("venue"));
+  });
+
   test("Distinct from ACTIVITY_BURST: a single huge tx alone does NOT fire REGIME_SHIFT", () => {
     const baseline = makeBaseline({ txCount: 20, medianSwapAmount: 1.0 });
 

@@ -464,7 +464,7 @@ test("ACTIVITY_BURST: boundary conditions and severity scaling (medium at thresh
 
 test("ACTIVITY_BURST: window boundary (inclusive at windowSec, exclusive at windowSec + 1)", () => {
   const base = 1_700_000_000;
-  const windowSec = DEFAULT_CONFIG.burstWindowMin * 60; // 600s
+  const windowSec = 600; // 600s literal (DEFAULT_CONFIG.burstWindowMin = 10)
 
   // 5 txs: 4 at base + 600, 1 at base (diff = 600s <= windowSec) -> fires
   const txsInclusive: EnhancedTx[] = [
@@ -535,7 +535,7 @@ test("CONCENTRATION: fires at exact threshold, respects count and independent to
 
 test("CONCENTRATION: window boundary (span == windowSec fires, span > windowSec silent)", () => {
   const base = 1_700_000_000;
-  const windowSec = DEFAULT_CONFIG.concentrationWindowMin * 60; // 1800s (30 min)
+  const windowSec = 1800; // 1800s (30 min) literal (DEFAULT_CONFIG.concentrationWindowMin = 30)
   const TOKEN_A = "TokenA11111111111111111111111111111111111";
 
   // Span is exactly 1800s (30 min) -> fires
@@ -684,7 +684,7 @@ test("updateBaseline: non-swap transactions preserve existing medians untouched"
 
 test("DORMANT_ACTIVE: boundary conditions (exact dormantDays fires, just below stays silent)", () => {
   const base = 1_700_000_000;
-  const dormantSec = DEFAULT_CONFIG.dormantDays * 86_400; // 7 days = 604,800s
+  const dormantSec = 604_800; // 7 days = 604,800s literal (DEFAULT_CONFIG.dormantDays = 7)
   const baseline: Baseline = {
     walletAddress: WALLET,
     updatedAt: base,
