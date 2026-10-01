@@ -3,10 +3,10 @@
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
 [![Tests](https://img.shields.io/badge/tests-666%20passing%20%7C%2029%20suites-3fb950.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/test)
-[![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20revisions%20verified-blue.svg)](file:///SECURITY.md)
+[![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20internal%20revisions-blue.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
-[![ZK Compression](https://img.shields.io/badge/light%20protocol-~400x%20less%20locked--up%20rent-ffb000.svg)](file:///src/oracle)
-[![License](https://img.shields.io/badge/license-MIT-informational.svg)](file:///LICENSE)
+[![ZK Compression](https://img.shields.io/badge/light%20protocol-~400x%20less%20locked--up%20rent-ffb000.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/src/oracle)
+[![License](https://img.shields.io/badge/license-MIT-informational.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/LICENSE)
 
 ---
 
