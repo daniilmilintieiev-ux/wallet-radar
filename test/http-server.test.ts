@@ -1393,6 +1393,79 @@ test("A4: A2A card and getVersion resolve version dynamically from package.json"
   }
 });
 
+test("A5: error messages and method hints for /watch, /unwatch, /poll, /defense/:wallet/clear", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  try {
+    // 1. GET /unwatch -> 405 Method Not Allowed with allowed methods and hint
+    const resGetUnwatch = await fetch(`${r.base}/unwatch`);
+    assert.equal(resGetUnwatch.status, 405);
+    const bodyGetUnwatch = (await resGetUnwatch.json()) as any;
+    const textGetUnwatch = JSON.stringify(bodyGetUnwatch);
+    assert.ok(textGetUnwatch.includes("POST"), "Allowed methods must include POST");
+    assert.ok(textGetUnwatch.includes("use POST /unwatch to remove a wallet"), "Must include hint 'use POST /unwatch to remove a wallet'");
+
+    // 2. DELETE /unwatch -> 405 Method Not Allowed with hint
+    const resDelUnwatch = await fetch(`${r.base}/unwatch`, { method: "DELETE" });
+    assert.equal(resDelUnwatch.status, 405);
+    const bodyDelUnwatch = (await resDelUnwatch.json()) as any;
+    assert.ok(JSON.stringify(bodyDelUnwatch).includes("use POST /unwatch to remove a wallet"));
+
+    // 3. GET /poll -> 405 Method Not Allowed with hint
+    const resGetPoll = await fetch(`${r.base}/poll`);
+    assert.equal(resGetPoll.status, 405);
+    const bodyGetPoll = (await resGetPoll.json()) as any;
+    assert.ok(JSON.stringify(bodyGetPoll).includes("POST"));
+
+    // 4. GET /defense/:wallet/clear -> 405 Method Not Allowed with hint
+    const resGetClear = await fetch(`${r.base}/defense/11111111111111111111111111111111/clear`);
+    assert.equal(resGetClear.status, 405);
+    const bodyGetClear = (await resGetClear.json()) as any;
+    assert.ok(JSON.stringify(bodyGetClear).includes("POST"));
+
+    // 5. DELETE /watch -> 405 Method Not Allowed with hint
+    const resDelWatch = await fetch(`${r.base}/watch`, { method: "DELETE" });
+    assert.equal(resDelWatch.status, 405);
+    const bodyDelWatch = (await resDelWatch.json()) as any;
+    const textDelWatch = JSON.stringify(bodyDelWatch);
+    assert.ok(textDelWatch.includes("GET") && textDelWatch.includes("POST"), "Allowed methods must include GET, POST");
+    assert.ok(textDelWatch.includes("use POST /unwatch to remove a wallet"), "Must include hint 'use POST /unwatch to remove a wallet'");
+
+    // 6. Malformed body on POST /watch -> 400 with expected shape
+    const resBadWatch = await fetch(`${r.base}/watch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wrong: 123 }),
+    });
+    assert.equal(resBadWatch.status, 400);
+    const bodyBadWatch = (await resBadWatch.json()) as any;
+    const textBadWatch = JSON.stringify(bodyBadWatch);
+    assert.ok(
+      textBadWatch.includes('{"wallet":"<base58>","name":"optional"}') ||
+      (bodyBadWatch.expected && bodyBadWatch.expected.wallet === "<base58>"),
+      `Expected shape {"wallet":"<base58>","name":"optional"} in 400 response: ${textBadWatch}`
+    );
+
+    // 7. 404 on /defense/:wallet/clear -> clearly state not escalated
+    const res404Clear = await fetch(`${r.base}/defense/11111111111111111111111111111111/clear`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(res404Clear.status, 404);
+    const body404Clear = (await res404Clear.json()) as any;
+    assert.ok(
+      body404Clear.error.includes("not been escalated") || body404Clear.error.includes("не эскалировано"),
+      `404 response must mention not escalated: ${JSON.stringify(body404Clear)}`
+    );
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+
 
 
 

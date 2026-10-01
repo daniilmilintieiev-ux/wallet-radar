@@ -71,9 +71,13 @@ const ENDPOINTS: EndpointInfo[] = [
 
 class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  extra?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  constructor(status: number, message: string, extra?: Record<string, unknown>, headers?: Record<string, string>) {
     super(message);
     this.status = status;
+    this.extra = extra;
+    this.headers = headers;
   }
 }
 
@@ -910,6 +914,41 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (handled) return;
     }
 
+    // Method constraints for watch/defense/poll routes
+    if (p === "/unwatch" && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for /unwatch. Allowed methods: POST. Hint: use POST /unwatch to remove a wallet.`,
+        { allowed: ["POST"], hint: "use POST /unwatch to remove a wallet" },
+        { "Allow": "POST" }
+      );
+    }
+    if (p === "/poll" && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for /poll. Allowed methods: POST. Hint: use POST /poll to check watchlist for new activity.`,
+        { allowed: ["POST"], hint: "use POST /poll to check watchlist for new activity" },
+        { "Allow": "POST" }
+      );
+    }
+    const defenseClearMatchAny = p.match(/^\/defense\/([^/]+)\/clear$/);
+    if (defenseClearMatchAny && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for ${p}. Allowed methods: POST. Hint: use POST /defense/:wallet/clear to reset defense state to armed.`,
+        { allowed: ["POST"], hint: "use POST /defense/:wallet/clear to reset defense state to armed" },
+        { "Allow": "POST" }
+      );
+    }
+    if (p === "/watch" && method !== "GET" && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for /watch. Allowed methods: GET, POST. Hint: use POST /unwatch to remove a wallet.`,
+        { allowed: ["GET", "POST"], hint: "use POST /unwatch to remove a wallet" },
+        { "Allow": "GET, POST" }
+      );
+    }
+
     if (method === "GET") {
       if (p === "/health") {
         sendJson(res, 200, healthPayload(), origin);
@@ -1014,7 +1053,13 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (p === "/watch") {
         const store = requireStore(ctx);
         const wallet = body.wallet;
-        if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+        if (!isBase58Address(wallet)) {
+          throw new HttpError(
+            400,
+            'Invalid body for POST /watch: expected {"wallet":"<base58>","name":"optional"}',
+            { expected: { wallet: "<base58>", name: "optional" } }
+          );
+        }
         store.addWallet(wallet);
         sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() }, origin);
         return;
@@ -1101,7 +1146,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     throw new HttpError(405, `method ${method} not allowed for ${p}`);
   } catch (err) {
     if (err instanceof HttpError) {
-      sendJson(res, err.status, { error: err.message }, origin);
+      if (err.headers) {
+        for (const [k, v] of Object.entries(err.headers)) {
+          res.setHeader(k, v);
+        }
+      }
+      sendJson(res, err.status, { error: err.message, ...(err.extra ?? {}) }, origin);
     } else {
       if (process.env.RADAR_DEBUG === "1") {
         console.error("[http-server] unhandled error:", err);
