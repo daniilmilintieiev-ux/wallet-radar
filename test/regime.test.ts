@@ -345,8 +345,8 @@ describe("REGIME_SHIFT (8th deterministic anomaly rule)", () => {
     // Check README (current-state sections say 9 rules; the pre-hackathon
     // history section intentionally still lists the original 8).
     assert.ok(
-      readme.includes("9 rules over the recent window"),
-      "README must reference 9 rules in trust description",
+      readme.includes("9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals over the recent window"),
+      "README must reference 9 behavioral rules plus a funding-source check in trust description",
     );
     assert.ok(
       readme.includes("the 8 behavioral rules"),
@@ -361,34 +361,30 @@ describe("REGIME_SHIFT (8th deterministic anomaly rule)", () => {
       "No stale '7 rules' in README trust section",
     );
 
+    const targetPhrase = "9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals";
+
     // Check docs/index.html
     assert.ok(
-      indexHtml.includes("nine deterministic rules"),
-      "index.html must reference nine deterministic rules",
-    );
-    assert.ok(
-      indexHtml.includes("<b>9 deterministic rules</b>"),
-      "index.html pipeline step must state 9 deterministic rules",
+      indexHtml.includes(targetPhrase),
+      `index.html pipeline step must state '${targetPhrase}'`,
     );
 
     // Check http-server.ts
     assert.ok(
-      httpServer.includes("9 deterministic anomaly rules"),
-      "http-server /scan description must reference 9 deterministic anomaly rules",
+      httpServer.includes(targetPhrase),
+      `http-server /scan description must reference '${targetPhrase}'`,
     );
 
     // Check mcp.ts
     assert.ok(
-      mcp.includes("runs 9 deterministic anomaly rules"),
-      "mcp radar_scan must state 9 deterministic anomaly rules",
+      mcp.includes(targetPhrase),
+      `mcp must state '${targetPhrase}'`,
     );
+
+    // Check README
     assert.ok(
-      mcp.includes("Runs the 9 deterministic anomaly rules"),
-      "mcp radar_analyze must state 9 deterministic anomaly rules",
-    );
-    assert.ok(
-      mcp.includes("9 deterministic rules over the recent window"),
-      "mcp radar_trust must state 9 deterministic rules",
+      readme.includes(targetPhrase),
+      `README must reference '${targetPhrase}'`,
     );
   });
 });

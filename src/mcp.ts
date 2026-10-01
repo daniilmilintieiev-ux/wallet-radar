@@ -59,7 +59,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_scan",
     {
       description:
-        "One-shot continuous-monitoring scan of a Solana wallet: fetches recent transactions from Helius (env HELIUS_API_KEY required), fetches USD prices from the Jupiter Price API (keyless; falls back to major-only sizing if the feed is down), updates the behavioral baseline, runs 9 deterministic anomaly rules (LARGE_SWAP is compared in USD when prices are available). Returns riskScore (0-100), anomalies with structured evidence, per-rule reasons, a one-line summary, a human/LLM-readable digest, and data freshness.",
+        "One-shot continuous-monitoring scan of a Solana wallet: fetches recent transactions from Helius (env HELIUS_API_KEY required), fetches USD prices from the Jupiter Price API (keyless; falls back to major-only sizing if the feed is down), updates the behavioral baseline, runs 9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals (LARGE_SWAP is compared in USD when prices are available). Returns riskScore (0-100), anomalies with structured evidence, per-rule reasons, a one-line summary, a human/LLM-readable digest, and data freshness.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
       },
@@ -157,7 +157,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_analyze",
     {
       description:
-        "Runs the 9 deterministic anomaly rules over a JSON array of enhanced transactions without any network calls. Use when the agent already has the transaction data (e.g. from a Helius call). Returns riskScore (0-100), anomalies with evidence, per-rule reasons, a one-line summary, and a digest.",
+        "Runs 9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals over a JSON array of enhanced transactions without any network calls. Use when the agent already has the transaction data (e.g. from a Helius call). Returns riskScore (0-100), anomalies with evidence, per-rule reasons, a one-line summary, and a digest.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
         txs: z
@@ -196,7 +196,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     "radar_trust",
     {
       description:
-        "Pre-flight trust check for agent payments (x402 / agent-to-agent): combines Wallet Radar's behavioral risk score (9 deterministic rules over the recent window) with the wallet's payment capacity (SOL + USDC/USDT liquidity in USD) into one verdict — safe, hold, or unknown. Deterministic, no LLM in the verdict path; every verdict comes with machine-readable verdict reasons, a per-rule anomaly breakdown, a one-line summary, and data freshness. Does not check the token mint; use radar_gate_copy for token checks. Use before paying or trusting an unverified counterparty wallet.",
+        "Pre-flight trust check for agent payments (x402 / agent-to-agent): combines Wallet Radar's behavioral risk score (9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals over the recent window) with the wallet's payment capacity (SOL + USDC/USDT liquidity in USD) into one verdict — safe, hold, or unknown. Deterministic, no LLM in the verdict path; every verdict comes with machine-readable verdict reasons, a per-rule anomaly breakdown, a one-line summary, and data freshness. Does not check the token mint; use radar_gate_copy for token checks. Use before paying or trusting an unverified counterparty wallet.",
       inputSchema: {
         wallet: z.string().describe("Solana wallet address (base58)"),
         maxRisk: z
