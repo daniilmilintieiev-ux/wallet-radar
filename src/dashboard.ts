@@ -6,12 +6,9 @@ import { escapeHtml, computeVerdict } from "./htmlreport.js";
 import { Store } from "./store.js";
 import { corsHeaders } from "./config.js";
 import { enforcementFor, DEFENSE_THRESHOLDS, DefenseState, DefenseEnforcement } from "./defense.js";
+import { FONT_FACES_CSS, DISPLAY_FONT_STACK, MONO_FONT_STACK } from "./dashboard-fonts.js";
+import { renderRadar, RadarAnomaly } from "./dashboard-radar.js";
 
-/**
- * Defense context surfaced to the dashboard for a single wallet: the persisted
- * stance, its implied enforcement, and the recent auditable transition trail.
- * Optional — when absent the dashboard derives a "stance" from the latest scan.
- */
 export interface DashboardDefense {
   state: DefenseState;
   riskAt: number;
@@ -34,6 +31,8 @@ export interface DashboardRenderOptions {
   serviceStatus?: string;
   version?: string;
   tokenCheck?: string;
+  baseVerdict?: string;
+  liquidityUsd?: number | null;
 }
 
 export interface DashboardHttpOptions {
@@ -59,18 +58,9 @@ function fmtStamp(timestampSec?: number | null): string {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
 }
 
-function riskToState(score: number): DefenseState {
-  if (score >= DEFENSE_THRESHOLDS.blocked) return "blocked";
-  if (score >= DEFENSE_THRESHOLDS.gated) return "gated";
-  if (score >= DEFENSE_THRESHOLDS.alerting) return "alerting";
-  return "armed";
-}
-
-const STATE_ORDER: readonly DefenseState[] = ["armed", "alerting", "gated", "blocked"];
-
 function shortAddr(w: string): string {
   if (!w) return "—";
-  return w.length > 10 ? `${w.slice(0, 4)}…${w.slice(-4)}` : w;
+  return w.length > 12 ? `${w.slice(0, 6)}…${w.slice(-6)}` : w;
 }
 
 function getPackageVersion(): string {
@@ -84,38 +74,43 @@ function getPackageVersion(): string {
   return "v1.0.0";
 }
 
-interface DevnetProof {
-  program: string;
+interface DevnetLogSample {
   signature: string;
-  logPhrase: string;
-  errorCode: string;
   explorerUrl: string;
-  disclaimer: string;
+  logMessages: string[];
 }
 
-function loadDevnetProof(): DevnetProof {
-  const fallback: DevnetProof = {
-    program: "wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",
+function loadDevnetLogSample(): DevnetLogSample {
+  const fallback: DevnetLogSample = {
     signature: "3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj",
-    logPhrase: "destination flagged with HIGH RISK",
-    errorCode: "6001",
     explorerUrl: "https://explorer.solana.com/tx/3TYaAkc3QRRqGC4ppMJ3pei9HfkznQwvtGuDmedwp54SY9x2CAeu3usvfLUW1n6YR9qxVxdEKtXjU3QJw96mt5aj?cluster=devnet",
-    disclaimer: "enforces a verdict written by the operator; this is not a detection claim",
+    logMessages: [
+      "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [1]",
+      "Program log: Instruction: TransferChecked",
+      "Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV invoke [2]",
+      "Program log: Instruction: Execute",
+      "Program log: RadarHook: evaluating destination 3JnUsJKmpgjDNpWJxaNkAfkD6EuEByEgBMguQVMe4pni (score: 70, verdict: 3, timestamp: 1790246360)",
+      "Program log: RadarHook: REJECTED - destination flagged with HIGH RISK verdict",
+      "Program log: AnchorError occurred. Error Code: CounterpartyFlagged. Error Number: 6001. Error Message: Destination wallet is flagged with HIGH RISK verdict on-chain.",
+      "Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV consumed 35249 of 176441 compute units",
+      "Program wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV failed: custom program error: 0x1771",
+      "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 58808 of 200000 compute units",
+      "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb failed: custom program error: 0x1771",
+    ],
   };
+
   try {
-    const p = path.resolve(process.cwd(), "assets/devnet-log-sample.json");
-    if (fs.existsSync(p)) {
-      const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    const filePath = path.resolve(process.cwd(), "assets/devnet-log-sample.json");
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
       return {
-        program: fallback.program,
         signature: data.signature || fallback.signature,
-        logPhrase: fallback.logPhrase,
-        errorCode: fallback.errorCode,
         explorerUrl: data.explorerUrl || fallback.explorerUrl,
-        disclaimer: fallback.disclaimer,
+        logMessages: Array.isArray(data.logMessages) ? data.logMessages : fallback.logMessages,
       };
     }
   } catch {}
+
   return fallback;
 }
 
@@ -125,7 +120,7 @@ interface TestStatus {
   collectionStopUtc: string;
   finalComputationUtc: string;
   protocolUrl: string;
-  result: string | null;
+  result: any;
 }
 
 function loadTestStatus(): TestStatus {
@@ -137,28 +132,44 @@ function loadTestStatus(): TestStatus {
     protocolUrl: "https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/docs/PREREGISTRATION.md",
     result: null,
   };
+
   try {
-    const p = path.resolve(process.cwd(), "docs/dashboard/test-status.json");
-    if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, "utf8"));
+    const filePath = path.resolve(process.cwd(), "docs/dashboard/test-status.json");
+    if (fs.existsSync(filePath)) {
+      return { ...fallback, ...JSON.parse(fs.readFileSync(filePath, "utf8")) };
     }
   } catch {}
+
   return fallback;
 }
 
 function loadReplayData(): any {
   try {
-    const p = path.resolve(process.cwd(), "docs/dashboard/replay-8XeK5m.json");
-    if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, "utf8"));
+    const filePath = path.resolve(process.cwd(), "docs/dashboard/replay-8XeK5m.json");
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, "utf8"));
     }
   } catch {}
   return null;
 }
 
+function formatDescriptionWithCopy(desc: string): string {
+  const escaped = escapeHtml(desc);
+  // Match Solana base58 address tokens (32-44 chars)
+  return escaped.replace(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/g, (_match, addr) => {
+    const label = `${addr.slice(0, 6)}…${addr.slice(-6)}`;
+    return `<button type="button" class="copy-btn mono" data-copy="${addr}" title="${addr}">${label}</button>`;
+  });
+}
+
 const DASHBOARD_CSS = `
+${FONT_FACES_CSS}
+
 :root {
+  --display: ${DISPLAY_FONT_STACK};
+  --mono: ${MONO_FONT_STACK};
   --bg: #0a0a0b;
+  --bg-zone: #131316;
   --panel: #101013;
   --ink: #f1f1ee;
   --ink2: #9c9c97;
@@ -167,111 +178,134 @@ const DASHBOARD_CSS = `
   --hair: #1f1f23;
   --ok: #3fb950;
   --bad: #f85149;
-  --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "JetBrains Mono", "Consolas", monospace;
 }
+
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
   border-radius: 0;
 }
-html, body {
+
+body {
   background: var(--bg);
   color: var(--ink);
-  color-scheme: dark;
-  font-family: var(--mono);
-  font-feature-settings: "tnum" 1;
+  font-family: var(--display);
+  font-size: 15px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
-a {
-  color: inherit;
-  text-decoration: none;
+
+.mono {
+  font-family: var(--mono) !important;
 }
-a:hover {
-  text-decoration: underline;
-}
-a.acc, .acc {
-  color: var(--accent);
-}
-a.dim, .dim {
-  color: var(--ink3);
-}
-:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
-}
-.wrap {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0 20px 48px;
-  overflow-x: hidden;
-}
-header {
-  min-height: 56px;
+
+/* 1. Top bar (56px) */
+.top-bar {
+  height: 56px;
+  border-bottom: 1px solid var(--hair);
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--hair);
-  margin-bottom: 24px;
-  padding: 12px 0;
-  flex-wrap: wrap;
-  gap: 12px;
+  padding: 0 32px;
 }
-.brand {
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: .08em;
-}
-.header-chips {
+.top-bar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 16px;
 }
-.chip {
-  display: inline-block;
-  font-size: 12px;
-  letter-spacing: .12em;
-  padding: 6px 12px;
+.top-bar-title {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.top-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pill {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 8px;
   border: 1px solid var(--hair);
   color: var(--ink2);
-  text-transform: uppercase;
   background: transparent;
 }
-.chip.active, .chip.acc, .chip.on {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(255, 176, 0, .07);
+.pill-static {
+  color: var(--ink3);
+  border-color: var(--hair);
 }
-.chip.ok {
+.pill-ok {
   color: var(--ok);
+  border-color: rgba(63, 185, 80, .4);
 }
+.pill-bad {
+  color: var(--bad);
+  border-color: rgba(248, 81, 73, .4);
+}
+
+/* Page container */
+.container {
+  max-width: 1360px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 32px 24px 64px 24px;
+  flex: 1;
+}
+
+/* Replay banner */
+.replay-banner {
+  border: 1px solid var(--accent);
+  background: rgba(255, 176, 0, .06);
+  padding: 12px 16px;
+  margin-bottom: 24px;
+}
+.replay-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.replay-note {
+  font-size: 13px;
+  color: var(--ink2);
+  margin-top: 2px;
+}
+
+/* Search bar & watchlist */
 .search-bar {
   display: flex;
   gap: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   align-items: center;
   flex-wrap: wrap;
 }
 .search-input {
   flex: 1;
-  min-width: 240px;
+  min-width: 280px;
   background: var(--panel);
   border: 1px solid var(--hair);
   color: var(--ink);
-  font-family: var(--mono);
   font-size: 13px;
   padding: 8px 12px;
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .search-btn {
   background: var(--panel);
   border: 1px solid var(--hair);
   color: var(--ink);
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 700;
   padding: 8px 16px;
   cursor: pointer;
 }
@@ -283,682 +317,873 @@ header {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
-.sec-title {
-  font-size: 12px;
-  letter-spacing: .14em;
-  color: var(--ink3);
-  text-transform: uppercase;
-  margin-bottom: 12px;
+.chip {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: 1px solid var(--hair);
+  color: var(--ink2);
+  text-decoration: none;
 }
-.hero-block {
-  margin-bottom: 32px;
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--ink);
 }
-.replay-banner {
-  border: 1px solid var(--accent);
-  background: rgba(255, 176, 0, .06);
-  padding: 12px 16px;
-  margin-bottom: 20px;
-}
-.replay-title {
-  font-size: 12px;
-  letter-spacing: .14em;
-  text-transform: uppercase;
+.chip.active {
+  border-color: var(--accent);
   color: var(--accent);
-  font-weight: 700;
+  background: rgba(255, 176, 0, .07);
 }
-.replay-note {
-  font-size: 13px;
-  color: var(--ink2);
-  margin-top: 4px;
+
+/* 2. Hero (2 columns 7/5) */
+.hero-grid {
+  display: grid;
+  grid-template-columns: 7fr 5fr;
+  gap: 40px;
+  align-items: center;
+  margin-bottom: 48px;
 }
-.hero-row {
-  display: flex;
-  gap: 32px;
-  align-items: baseline;
-  flex-wrap: wrap;
-}
-.hero-score {
-  font-size: 120px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -.02em;
-  color: var(--ink);
-}
-@media (max-width: 700px) {
-  .hero-score {
-    font-size: 72px;
-  }
-}
-.hero-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.hero-verdict {
-  font-size: 26px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  color: var(--ink);
-}
-.hero-sub {
-  font-size: 13px;
-  letter-spacing: .04em;
-  color: var(--ink3);
-}
-.hero-wallet {
-  font-size: 13px;
-  letter-spacing: .04em;
-  color: var(--ink2);
-  margin-top: 4px;
-  word-break: break-all;
-}
-.scale-container {
-  margin-top: 24px;
-  position: relative;
-}
-.scale-track {
-  height: 3px;
-  width: 100%;
-  background: var(--hair);
-  position: relative;
-}
-.scale-fill {
-  height: 3px;
-  background: var(--accent);
-  width: 0%;
-  animation: barGrow 700ms ease-out forwards;
-}
-@keyframes barGrow {
-  from { width: 0%; }
-  to { width: var(--fill-width, 0%); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .scale-fill {
-    animation: none;
-    width: var(--fill-width, 0%);
-  }
-}
-.scale-marks {
-  position: relative;
-  width: 100%;
-  height: 32px;
-  margin-top: 8px;
-}
-.scale-tick {
-  position: absolute;
-  transform: translateX(-50%);
+
+/* Radar */
+.radar-column {
   display: flex;
   flex-direction: column;
   align-items: center;
 }
-.tick-line {
-  width: 1px;
-  height: 6px;
-  background: var(--hair);
-  margin-bottom: 4px;
+.radar-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 1 / 1;
 }
-.tick-lbl {
-  font-size: 12px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--ink3);
+.radar-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
-.empty-hero {
-  border: 1px solid var(--hair);
-  background: var(--panel);
-  padding: 32px 28px;
-  margin-bottom: 32px;
+.radar-sweep {
+  position: absolute;
+  top: calc(50% - 46.875%);
+  left: calc(50% - 46.875%);
+  width: 93.75%;
+  height: 93.75%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: conic-gradient(from 0deg at 50% 50%, rgba(255, 176, 0, .35) 0deg, rgba(255, 176, 0, 0) 60deg, transparent 60deg);
+  animation: radar-sweep-turn 2.4s linear 1 forwards;
 }
-.empty-line1 {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--ink);
-  margin-bottom: 8px;
+@keyframes radar-sweep-turn {
+  0% { transform: rotate(0deg); opacity: 1; }
+  99% { transform: rotate(360deg); opacity: 1; }
+  100% { transform: rotate(360deg); opacity: 0; }
 }
-.empty-line2 {
-  font-size: 14px;
-  color: var(--ink2);
-  margin-bottom: 16px;
+
+.radar-dot {
+  opacity: 0;
+  cursor: pointer;
+  animation: dot-reveal 0.15s ease-out forwards;
 }
-.empty-line3 {
-  font-size: 13px;
+@keyframes dot-reveal {
+  to { opacity: 1; }
 }
-.empty-sub {
-  margin-top: 14px;
-  font-size: 12px;
-  color: var(--ink3);
-  letter-spacing: .04em;
+.radar-dot.anomaly-active circle {
+  stroke: var(--accent) !important;
+  stroke-width: 2px !important;
 }
-.metrics-strip {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  border: 1px solid var(--hair);
-  background: var(--panel);
-  margin-bottom: 32px;
-}
-@media (max-width: 700px) {
-  .metrics-strip {
-    grid-template-columns: 1fr 1fr;
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-sweep {
+    display: none !important;
+  }
+  .radar-dot {
+    opacity: 1 !important;
+    animation: none !important;
   }
 }
-.metric-cell {
-  padding: 18px 20px;
+
+.radar-caption {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--ink3);
+  text-align: center;
+  max-width: 520px;
+}
+
+/* Hero Right: Risk Number & Scale */
+.hero-risk-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.hero-risk-header {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.risk-value {
+  font-size: 200px;
+  font-weight: 800;
+  line-height: .85;
+  color: var(--accent);
+  text-shadow: 0 0 24px rgba(255, 176, 0, .25);
+  font-variant-numeric: tabular-nums;
+}
+.risk-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.risk-verdict {
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: .02em;
+}
+.risk-sub {
+  font-size: 15px;
+  color: var(--ink2);
+}
+
+/* Scale */
+.risk-scale-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.risk-scale-bar {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30fr 20fr 25fr 25fr;
+  height: 28px;
+  border: 1px solid var(--hair);
+  background: var(--bg);
+}
+.scale-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink3);
   border-right: 1px solid var(--hair);
 }
-.metric-cell:last-child {
+.scale-segment:last-child {
   border-right: none;
 }
-@media (max-width: 700px) {
-  .metric-cell:nth-child(2) {
-    border-right: none;
-  }
-  .metric-cell:nth-child(1), .metric-cell:nth-child(2) {
-    border-bottom: 1px solid var(--hair);
-  }
+.scale-segment.active {
+  background: rgba(255, 176, 0, .06);
+  color: var(--accent);
 }
-.metric-label {
-  font-size: 12px;
-  letter-spacing: .12em;
-  text-transform: uppercase;
+.risk-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--accent);
+}
+.scale-thresholds {
+  position: relative;
+  height: 16px;
+  font-size: 11px;
   color: var(--ink3);
-  margin-bottom: 8px;
 }
-.metric-value {
-  font-size: 32px;
-  font-weight: 700;
-  color: var(--ink);
-  line-height: 1;
+.scale-thresholds span {
+  position: absolute;
+  transform: translateX(-50%);
 }
-.two-cols {
-  display: grid;
-  grid-template-columns: 1.35fr 1fr;
-  gap: 24px;
-  margin-bottom: 32px;
+
+.metric-strip {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  flex-wrap: wrap;
 }
-@media (max-width: 760px) {
-  .two-cols {
-    grid-template-columns: 1fr;
-  }
-}
-.panel {
+.metric-box {
   border: 1px solid var(--hair);
   background: var(--panel);
-  padding: 22px 24px;
+  padding: 10px 14px;
+  min-width: 140px;
 }
-.tbl-anomalies {
-  width: 100%;
-  border-collapse: collapse;
-}
-.tbl-anomalies th {
-  text-align: left;
+.metric-box-lbl {
   font-size: 12px;
-  letter-spacing: .14em;
-  text-transform: uppercase;
   color: var(--ink3);
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--hair);
 }
-.tbl-anomalies td {
-  padding: 10px 0;
-  border-bottom: 1px solid var(--hair);
-  font-size: 14px;
-  vertical-align: top;
+.metric-box-val {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 2px;
 }
-.tbl-anomalies tr:last-child td {
-  border-bottom: none;
-}
-.sev-high {
-  color: var(--bad);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 12px;
-  letter-spacing: .1em;
-}
-.sev-medium {
-  color: var(--accent);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 12px;
-  letter-spacing: .1em;
-}
-.sev-low {
-  color: var(--ink2);
-  text-transform: uppercase;
-  font-size: 12px;
-  letter-spacing: .1em;
-}
-.ladder-list {
+
+/* Empty Hero */
+.empty-hero-box {
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.ladder-step {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 9px 12px;
-  border: 1px solid var(--hair);
-  font-size: 13px;
-  color: var(--ink3);
-  text-transform: uppercase;
-  letter-spacing: .12em;
-}
-.ladder-step.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(255, 176, 0, .06);
-}
-.now-badge {
-  font-size: 10px;
-  letter-spacing: .14em;
-  color: var(--accent);
+.empty-line1 {
+  font-size: 24px;
   font-weight: 700;
+  color: var(--ink);
 }
-.three-layers {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  border: 1px solid var(--hair);
+.empty-line2 {
+  font-size: 15px;
+  color: var(--ink2);
+}
+.empty-line3 {
+  font-size: 15px;
+  margin-top: 4px;
+}
+.empty-line3 a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* 3. Decision in Three Layers */
+.section-block {
+  margin-bottom: 44px;
+}
+.section-header {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink2);
+  margin-bottom: 12px;
+}
+.layers-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.layer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   background: var(--panel);
-  margin-bottom: 8px;
+  border: 1px solid var(--hair);
+  padding: 10px 18px;
+  position: relative;
 }
-@media (max-width: 700px) {
-  .three-layers {
-    grid-template-columns: 1fr;
-  }
+.layer-row.has-status {
+  border-left-width: 4px;
 }
-.layer-cell {
-  padding: 16px 18px;
-  border-right: 1px solid var(--hair);
+.layer-row.status-ok {
+  border-left-color: var(--ok);
 }
-.layer-cell:last-child {
-  border-right: none;
+.layer-row.status-bad {
+  border-left-color: var(--bad);
 }
-@media (max-width: 700px) {
-  .layer-cell {
-    border-right: none;
-    border-bottom: 1px solid var(--hair);
-  }
-  .layer-cell:last-child {
-    border-bottom: none;
-  }
+.layer-row.status-accent {
+  border-left-color: var(--accent);
 }
-.layer-lbl {
-  font-size: 12px;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--ink3);
-  margin-bottom: 6px;
+.layer-name {
+  font-size: 15px;
+  color: var(--ink2);
 }
 .layer-val {
-  font-size: 17px;
+  font-size: 28px;
   font-weight: 700;
-  text-transform: uppercase;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.layer-val.na {
+  color: var(--ink3);
+  font-size: 16px;
+  font-weight: 600;
 }
 .layers-note {
-  font-size: 12px;
-  letter-spacing: .04em;
+  margin-top: 10px;
+  font-size: 14px;
   color: var(--ink3);
-  margin-bottom: 28px;
 }
-.token-strip {
-  border: 1px solid var(--hair);
-  background: var(--panel);
-  padding: 14px 20px;
-  font-size: 13px;
-  letter-spacing: .06em;
+.token-check-line {
+  margin-top: 6px;
+  font-size: 14px;
   color: var(--ink2);
-  margin-bottom: 32px;
 }
-.block-section {
-  border: 1px solid var(--hair);
-  background: var(--panel);
-  padding: 22px 24px;
-  margin-bottom: 32px;
-}
-.block-header {
-  font-size: 12px;
-  letter-spacing: .16em;
-  text-transform: uppercase;
-  color: var(--ink3);
-  margin-bottom: 14px;
-}
-.block-kv {
+
+/* 4. Anomaly list (stripes, not table) */
+.anomaly-stack {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--hair);
-  font-size: 14px;
+  flex-direction: column;
+  gap: 6px;
 }
-.block-kv:last-child {
-  border-bottom: none;
+.anomaly-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  padding: 12px 16px;
+  cursor: pointer;
+  outline: none;
 }
-.block-k {
-  color: var(--ink3);
-  font-size: 12px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+.anomaly-row:hover,
+.anomaly-row:focus,
+.anomaly-row.anomaly-active {
+  background: rgba(255, 176, 0, .06);
+  border-color: var(--accent);
 }
-.block-v {
+.anomaly-time {
+  font-size: 13px;
+  color: var(--ink2);
+  min-width: 145px;
+  flex-shrink: 0;
+}
+.anomaly-type {
+  font-size: 16px;
+  font-weight: 600;
   color: var(--ink);
+  min-width: 170px;
+  flex-shrink: 0;
+}
+.anomaly-sev {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 90px;
+  flex-shrink: 0;
+}
+.sev-meter {
+  display: flex;
+  gap: 3px;
+}
+.sev-bar {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--hair);
+  background: transparent;
+}
+.sev-bar.filled {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.badge-bad {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  padding: 1px 4px;
+}
+.anomaly-desc {
   font-size: 14px;
-  text-align: right;
+  color: var(--ink2);
+  flex: 1;
+  word-break: break-word;
+}
+.copy-btn {
+  background: transparent;
+  border: 1px solid var(--hair);
+  color: var(--ink2);
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.copy-btn:hover,
+.copy-btn:focus {
+  border-color: var(--accent);
+  color: var(--ink);
+  outline: none;
+}
+
+/* Ledger table for on-chain records */
+.ledger-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+}
+.ledger-tbl th,
+.ledger-tbl td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hair);
+  text-align: left;
+  font-size: 13px;
+}
+.ledger-tbl th {
+  color: var(--ink3);
+  font-weight: 600;
+}
+
+/* 5. Transponder Log (devnet) */
+.log-box {
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  padding: 16px;
+  overflow-x: auto;
+}
+.log-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.log-line {
+  font-size: 13px;
+  color: var(--ink2);
+  white-space: pre-wrap;
   word-break: break-all;
 }
-.block-sub {
-  font-size: 13px;
-  color: var(--ink3);
-  margin-top: 14px;
-  letter-spacing: .04em;
+.log-line-bad {
+  color: var(--bad);
+  border-left: 2px solid var(--bad);
+  padding-left: 8px;
 }
-footer {
-  border-top: 1px solid var(--hair);
-  padding-top: 18px;
-  font-size: 12px;
-  letter-spacing: .04em;
-  color: var(--ink3);
+.log-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
+  margin-top: 14px;
+}
+.log-caption {
+  font-size: 13px;
+  color: var(--ink3);
+}
+.tx-link {
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* 6. Independent Test */
+.test-panel {
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.timeline-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.timeline-bar {
+  position: relative;
+  display: flex;
+  height: 24px;
+  border: 1px solid var(--hair);
+  background: var(--bg);
+}
+.timeline-seg-collect {
+  width: 63.7%;
+  background: rgba(255, 176, 0, .5);
+}
+.timeline-seg-mature {
+  width: 36.3%;
+  background: repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(99, 99, 95, .25) 5px, rgba(99, 99, 95, .25) 10px);
+}
+.timeline-now-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--ink);
+}
+.timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--ink3);
+}
+.test-result-box {
+  border: 1px dashed var(--hair);
+  padding: 16px;
+  font-size: 14px;
+  color: var(--ink2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.test-result-box a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* 7. Footer */
+footer {
+  border-top: 1px solid var(--hair);
+  background: var(--bg);
+  padding: 24px 32px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.footer-note {
+  font-size: 14px;
+  color: var(--ink2);
+}
+footer a {
+  color: var(--ink2);
+  text-decoration: underline;
+  font-size: 14px;
+}
+footer a:hover {
+  color: var(--ink);
+}
+
+/* Responsiveness down to 390px */
+@media (max-width: 900px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  .risk-value {
+    font-size: 140px;
+  }
+}
+@media (max-width: 600px) {
+  .top-bar {
+    padding: 0 16px;
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .top-bar-title {
+    font-size: 22px;
+  }
+  .container {
+    padding: 20px 16px 48px 16px;
+  }
+  .risk-value {
+    font-size: 120px;
+  }
+  .radar-wrapper {
+    max-width: 340px;
+  }
+  .anomaly-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .anomaly-time {
+    min-width: unset;
+  }
+  .anomaly-type {
+    min-width: unset;
+  }
+  .anomaly-desc {
+    width: 100%;
+  }
+  .layer-val {
+    font-size: 22px;
+  }
+  footer {
+    padding: 16px;
+  }
 }
 `;
 
-/**
- * Redesigned renderDashboardHtml: matches the weekly report aesthetic of w2_update.html.
- */
 export function renderDashboardHtml(opts: DashboardRenderOptions): string {
+  const wallet = opts.wallet || "";
+  const records = opts.records || [];
+  const latestRecord = records.length > 0 ? records[0] : null;
+  const watchlist = opts.watchlist || [];
+  const replayData = opts.replayData || (opts.demo === "replay" ? loadReplayData() : null);
   const version = opts.version || getPackageVersion();
-  const serviceStatus = opts.serviceStatus || "ok";
-  const devnetProof = loadDevnetProof();
-  const testStatus = loadTestStatus();
-
-  let wallet = opts.wallet || "";
-  const isReplayMode = opts.demo === "replay" || opts.wallet === "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j";
-  let replayData = opts.replayData || (opts.demo === "replay" ? loadReplayData() : null);
 
   let hasData = false;
   let riskScore = 0;
-  let verdictText = "n/a";
-  let txCountDisplay = "n/a";
-  let anomaliesCountDisplay = "n/a";
-  let liquidityDisplay = "n/a";
-  let freshnessDisplay = "n/a";
-  let anomaliesList: Array<{ type: string; severity: string; text: string }> = [];
-  let baseVerdict = "n/a";
-  let agentVerdict = "n/a";
-  let defenseState: DefenseState = "armed";
+  let verdict = "SAFE";
+  let anomalies: RadarAnomaly[] = [];
+  let windowInfo: { sinceSec?: number; untilSec?: number } | undefined;
+  let medianSwapUsd: number | null = null;
+  let liquidityUsd: number | null = opts.liquidityUsd ?? null;
   let recordedAtUtc = "";
   let isHistoricReplay = false;
-  let defenseAuditTrail: Array<{ ts: number; fromState: string; toState: string; action: string; risk: number; reason: string }> = [];
-  let defenseActionsCount = 0;
 
+  // 1. Data ingestion (from replay or live record)
   if (opts.demo === "replay" && replayData) {
     hasData = true;
     isHistoricReplay = true;
-    wallet = replayData.wallet || "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j";
-    riskScore = replayData.riskScore ?? 100;
-    verdictText = riskScore >= 75 ? "BLOCKED" : riskScore >= 50 ? "GATED" : riskScore >= 30 ? "ALERTING" : "ARMED";
-    txCountDisplay = Number(replayData.historyTxCount || 1307).toLocaleString("en-US");
-    anomaliesCountDisplay = String(replayData.anomalies?.length || 8);
-    liquidityDisplay = replayData.baseline?.medianSwapAmountUsd != null
-      ? `$${replayData.baseline.medianSwapAmountUsd.toFixed(2)}`
-      : "n/a";
-    freshnessDisplay = replayData.window?.untilSec ? fmtStamp(replayData.window.untilSec) : "2026-08-31 08:00 UTC";
-    anomaliesList = (replayData.anomalies || []).map((a: any) => ({
-      type: a.type || "ANOMALY",
-      severity: a.severity || "high",
-      text: a.text || (a.evidence ? JSON.stringify(a.evidence) : "Detected anomaly"),
-    }));
-    baseVerdict = "hold";
-    agentVerdict = "block";
-    defenseState = "blocked";
+    riskScore = replayData.riskScore ?? 0;
+    verdict = computeVerdict(riskScore);
     recordedAtUtc = replayData.recordedAtUtc || "2026-10-01T20:29:39Z";
-  } else if (opts.records && opts.records.length > 0) {
-    hasData = true;
-    const latest = opts.records[0];
-    wallet = wallet || latest.wallet;
-    riskScore = latest.riskScore ?? 0;
-    verdictText = latest.verdict || computeVerdict(riskScore);
-    txCountDisplay = latest.txSignatures && latest.txSignatures.length > 0
-      ? String(latest.txSignatures.length)
-      : String(opts.records.length);
-    anomaliesCountDisplay = String(latest.topRules?.length || 0);
-    liquidityDisplay = "n/a";
-    freshnessDisplay = fmtStamp(latest.timestamp);
-    anomaliesList = (latest.topRules || []).map((r: string) => ({
-      type: r,
-      severity: r === "DORMANT_ACTIVE" || r === "LARGE_SWAP" ? "high" : "medium",
-      text: `Rule ${r} triggered on-chain`,
-    }));
-    baseVerdict = riskScore >= 30 ? "hold" : "safe";
-    if (opts.defense) {
-      defenseState = opts.defense.state;
-      agentVerdict = opts.defense.enforcement?.verdict || "n/a";
-      defenseAuditTrail = opts.defense.trail || [];
-      defenseActionsCount = opts.defense.actions || 0;
-    } else {
-      defenseState = riskToState(riskScore);
-      agentVerdict = defenseState === "blocked" ? "block" : defenseState === "gated" ? "throttle" : "allow";
+    windowInfo = replayData.window;
+    medianSwapUsd = replayData.baseline?.medianSwapAmountUsd ?? null;
+
+    if (Array.isArray(replayData.anomalies)) {
+      anomalies = replayData.anomalies.map((a: any, idx: number) => ({
+        id: `anomaly-${idx}`,
+        type: a.type || "ANOMALY",
+        severity: a.severity || "medium",
+        score: a.evidence?.score,
+        timestamp: a.timestamp,
+        description: a.description || `${a.type} detected in window`,
+      }));
     }
-    if (wallet === "8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j") {
-      isHistoricReplay = true;
-      recordedAtUtc = "2026-10-01T20:29:39Z";
+  } else if (latestRecord) {
+    hasData = true;
+    riskScore = latestRecord.riskScore ?? 0;
+    verdict = latestRecord.verdict || computeVerdict(riskScore);
+
+    const rules = latestRecord.topRules || [];
+    anomalies = rules.map((r, idx) => ({
+      id: `anomaly-${idx}`,
+      type: r,
+      severity: r.includes("LARGE") || r.includes("DORMANT") ? "high" : "medium",
+      timestamp: latestRecord.timestamp,
+      description: `${r} detected at slot ${latestRecord.slot}`,
+    }));
+  }
+
+  // 2. Radar rendering
+  const radarResult = renderRadar({
+    anomalies,
+    window: windowInfo,
+    hasData,
+  });
+
+  // 3. Service status pill
+  let servicePill = `<span class="pill pill-static">service: n/a (static)</span>`;
+  if (opts.demo !== "replay" && opts.serviceStatus) {
+    if (opts.serviceStatus === "ok") {
+      servicePill = `<span class="pill pill-ok">service: ok</span>`;
+    } else {
+      servicePill = `<span class="pill pill-bad">service: unreachable</span>`;
     }
   }
 
-  const tokenCheckValue = opts.tokenCheck
+  // 4. Three Decision Layers (base / agent / defense)
+  // Data honesty rule: NEVER derive values from risk score!
+  let baseVerdictVal = "n/a (not in replay data)";
+  let baseVerdictClass = "na";
+  let baseVerdictRowClass = "";
+  if (opts.baseVerdict) {
+    baseVerdictVal = opts.baseVerdict;
+    baseVerdictClass = "";
+    baseVerdictRowClass = "has-status " + (opts.baseVerdict === "safe" ? "status-ok" : opts.baseVerdict === "hold" ? "status-bad" : "status-accent");
+  }
+
+  let agentVerdictVal = "n/a (not in replay data)";
+  let agentVerdictClass = "na";
+  let agentVerdictRowClass = "";
+  if (opts.defense?.enforcement?.verdict) {
+    agentVerdictVal = opts.defense.enforcement.verdict;
+    agentVerdictClass = "";
+    agentVerdictRowClass = "has-status " + (opts.defense.enforcement.verdict === "allow" ? "status-ok" : opts.defense.enforcement.verdict === "block" ? "status-bad" : "status-accent");
+  }
+
+  let defenseStateVal = "n/a (not in replay data)";
+  let defenseStateClass = "na";
+  let defenseStateRowClass = "";
+  if (opts.defense?.state) {
+    defenseStateVal = opts.defense.state;
+    defenseStateClass = "";
+    defenseStateRowClass = "has-status " + (opts.defense.state === "armed" ? "status-ok" : opts.defense.state === "blocked" ? "status-bad" : "status-accent");
+  }
+
+  const tokenCheckLine = opts.tokenCheck
     ? `token check: ${escapeHtml(opts.tokenCheck)}`
-    : "token check: not reported by this data source";
+    : `token check: not reported by this data source`;
 
-  const safeFillWidth = Math.max(0, Math.min(100, riskScore));
+  // 5. Devnet Log Sample
+  const devnetLog = loadDevnetLogSample();
+  const testStatus = loadTestStatus();
 
-  const watchlistHtml = (opts.watchlist || [])
-    .map((w) => {
-      const active = w === wallet ? " on active" : "";
-      return `<a href="/dashboard?wallet=${escapeHtml(w)}" class="chip${active}">${escapeHtml(shortAddr(w))}</a>`;
-    })
-    .join("\n      ");
-
-  return `<!doctype html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Wallet Radar — Scan Ledger Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wallet Radar</title>
   <style>
 ${DASHBOARD_CSS}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <!-- 1. Header -->
-    <header>
-      <div class="brand">WALLET RADAR</div>
-      <div class="header-chips">
-        <span class="chip">${escapeHtml(version)}</span>
-        <span class="chip">hook: devnet</span>
-        <span class="chip ${serviceStatus === "ok" ? "ok" : ""}">${escapeHtml(`service: ${serviceStatus}`)}</span>
-      </div>
-    </header>
+  <!-- 1. Top bar (56px) -->
+  <header class="top-bar">
+    <div class="top-bar-left">
+      <a href="/dashboard" class="top-bar-title" data-app="WALLET RADAR">Wallet Radar</a>
+    </div>
+    <div class="top-bar-right">
+      <span class="pill mono">${escapeHtml(version)}</span>
+      <span class="pill">hook: devnet</span>
+      ${servicePill}
+    </div>
+  </header>
 
-    <!-- Target Wallet Search & Watchlist -->
-    <form action="/dashboard" method="GET" class="search-bar">
-      <input id="wallet-input" type="text" name="wallet" value="${escapeHtml(wallet)}" placeholder="Solana base58 address..." class="search-input" />
-      <button type="submit" class="search-btn">Inspect</button>
-    </form>
-    ${opts.watchlist && opts.watchlist.length > 0 ? `<div class="watchlist-nav">${watchlistHtml}</div>` : ""}
-
-    <!-- 2. Hero Block -->
+  <main class="container">
     ${
-      !hasData
-        ? `<!-- Empty State -->
-    <div class="empty-hero">
-      <div class="empty-line1">No wallet selected.</div>
-      <div class="empty-line2">Open /dashboard?wallet=<address> to read its scan history.</div>
-      <div class="empty-line3">
-        <a href="/dashboard?demo=replay" class="acc">View recorded replay (8XeK5m...)</a>
-      </div>
-      <div class="empty-sub">
-        Inspect target wallet ledger | ZK scan ledger (~400x cost vs uncompressed on-chain accounts)
-        ${wallet ? `| No On-Chain Scan Attestations Found for <code>${escapeHtml(wallet)}</code>. Run <code>radar scan ${escapeHtml(wallet)}</code> to record a scan.` : ""}
-      </div>
+      isHistoricReplay
+        ? `<!-- Replay notice banner -->
+    <div class="replay-banner" data-badge="RECORDED REPLAY">
+      <div class="replay-title">Recorded replay, historical window, recorded ${escapeHtml(recordedAtUtc)}</div>
+      <div class="replay-note">historical replay, not a confirmed incident</div>
     </div>`
-        : `<!-- Populated Hero -->
-    <div class="hero-block">
-      ${
-        isHistoricReplay
-          ? `<div class="replay-banner">
-        <div class="replay-title">RECORDED REPLAY, historical window, recorded ${escapeHtml(recordedAtUtc || "2026-10-01T20:29:39Z")}</div>
-        <div class="replay-note">historical replay, not a confirmed incident</div>
-      </div>`
-          : ""
-      }
-      <div class="hero-row">
-        <div class="hero-score">${riskScore}</div>
-        <div class="hero-meta">
-          <div class="hero-verdict">${escapeHtml(verdictText)}</div>
-          <div class="hero-sub">behavioral risk, 0-100</div>
-          <div class="hero-wallet">${escapeHtml(wallet)}</div>
+        : ""
+    }
+
+    <!-- Search bar -->
+    <form class="search-bar" action="/dashboard" method="GET">
+      <input
+        type="text"
+        name="wallet"
+        class="search-input mono wallet-input"
+        placeholder="Enter Solana wallet address (e.g. 8XeK5m...)"
+        value="${escapeHtml(wallet)}"
+        spellcheck="false"
+      />
+      <button type="submit" class="search-btn">Inspect</button>
+      <a href="/dashboard?demo=replay" class="chip ${opts.demo === "replay" ? "active" : ""}">Demo Replay</a>
+    </form>
+
+    ${
+      watchlist.length > 0
+        ? `<div class="watchlist-nav">
+      ${watchlist
+        .map((w) => {
+          const isActive = w === wallet;
+          return `<a href="/dashboard?wallet=${escapeHtml(w)}" class="chip mono ${isActive ? "active on" : ""}" title="${escapeHtml(w)}">${escapeHtml(shortAddr(w))}</a>`;
+        })
+        .join("\n      ")}
+    </div>`
+        : ""
+    }
+
+    <!-- 2. Hero (two columns 7/5) -->
+    <section class="hero-grid">
+      <!-- Left: Radar -->
+      <div class="radar-column">
+        <div class="radar-wrapper">
+          ${radarResult.sweepHtml}
+          ${radarResult.svg}
         </div>
+        <div class="radar-caption">${escapeHtml(radarResult.caption)}</div>
       </div>
 
-      <!-- Horizontal Scale 0-100 -->
-      <div class="scale-container" style="--fill-width: ${safeFillWidth}%;">
-        <div class="scale-track">
-          <div class="scale-fill"></div>
-        </div>
-        <div class="scale-marks">
-          <div class="scale-tick" style="left: 30%;">
-            <div class="tick-line"></div>
-            <div class="tick-lbl">alerting</div>
-          </div>
-          <div class="scale-tick" style="left: 50%;">
-            <div class="tick-line"></div>
-            <div class="tick-lbl">gated</div>
-          </div>
-          <div class="scale-tick" style="left: 75%;">
-            <div class="tick-line"></div>
-            <div class="tick-lbl">blocked</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 3. Metrics Strip -->
-    <div class="metrics-strip">
-      <div class="metric-cell">
-        <div class="metric-label">Transactions Analysed</div>
-        <div class="metric-value">${escapeHtml(txCountDisplay)}</div>
-      </div>
-      <div class="metric-cell">
-        <div class="metric-label">Anomalies</div>
-        <div class="metric-value">${escapeHtml(anomaliesCountDisplay)}</div>
-      </div>
-      <div class="metric-cell">
-        <div class="metric-label">Liquidity</div>
-        <div class="metric-value">${escapeHtml(liquidityDisplay)}</div>
-      </div>
-      <div class="metric-cell">
-        <div class="metric-label">Data Freshness</div>
-        <div class="metric-value" style="font-size: 16px; margin-top: 8px;">${escapeHtml(freshnessDisplay)}</div>
-      </div>
-    </div>
-
-    <!-- 4. Two Columns: Anomalies Table & Defense Ladder -->
-    <div class="two-cols">
-      <div class="panel">
-        <div class="sec-title">Anomalies (${anomaliesList.length})</div>
+      <!-- Right: Risk & Scale -->
+      <div>
         ${
-          anomaliesList.length === 0
-            ? `<div style="color: var(--ink3); font-size: 14px;">No anomalies detected.</div>`
-            : `<table class="tbl-anomalies">
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Severity</th>
-              <th>Evidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${anomaliesList
-              .map(
-                (a) => `<tr>
-              <td style="font-weight: 600;">${escapeHtml(a.type)}</td>
-              <td><span class="sev-${escapeHtml(a.severity)}">${escapeHtml(a.severity)}</span></td>
-              <td style="color: var(--ink2);">${escapeHtml(a.text)}</td>
-            </tr>`,
-              )
-              .join("\n            ")}
-          </tbody>
-        </table>`
-        }
-      </div>
+          hasData
+            ? `<div class="hero-risk-panel">
+          <div class="hero-risk-header">
+            <div class="risk-value">${riskScore}</div>
+            <div class="risk-meta">
+              <div class="risk-verdict">${escapeHtml(verdict)}</div>
+              <div class="risk-sub">behavioral risk, 0 to 100</div>
+            </div>
+          </div>
 
-      <div class="panel">
-        <div class="sec-title">Defense Ladder</div>
-        <div class="ladder-list">
-          ${STATE_ORDER.map((st) => {
-            const isActive = st === defenseState;
-            const threshold = st === "blocked" ? ">= 75" : st === "gated" ? ">= 50" : st === "alerting" ? ">= 30" : "< 30";
-            return `<div class="ladder-step ${isActive ? "active" : ""}">
-            <span>${escapeHtml(st)} <span style="color: var(--ink3); font-size: 11px;">(${threshold})</span></span>
-            ${isActive ? `<span class="now-badge">NOW</span>` : ""}
-          </div>`;
-          }).join("\n          ")}
-        </div>
-        ${
-          opts.defense
-            ? `<div style="margin-top: 16px; font-size: 12px; color: var(--ink3);">
-          <div>Active defense state: <b>${escapeHtml(defenseState)}</b></div>
-          <div>Enforcement: <b>${escapeHtml((agentVerdict || "").toUpperCase())}</b></div>
-          <div>${defenseActionsCount} defense actions recorded</div>
-          ${
-            defenseAuditTrail.length > 0
-              ? `<div style="margin-top: 8px;"><b>Defense audit trail</b>: ${defenseAuditTrail.map((t) => `${escapeHtml(t.fromState)}->${escapeHtml(t.toState)} (${escapeHtml(t.action)})`).join(", ")}</div>`
-              : ""
-          }
+          <div class="risk-scale-container">
+            <div class="risk-scale-bar">
+              <div class="scale-segment segment-armed ${riskScore < 30 ? "active" : ""}"><span class="zone-tag">armed / ARMED</span> (0-29)</div>
+              <div class="scale-segment segment-alerting ${riskScore >= 30 && riskScore < 50 ? "active" : ""}">alerting (30-49)</div>
+              <div class="scale-segment segment-gated ${riskScore >= 50 && riskScore < 75 ? "active" : ""}">gated (50-74)</div>
+              <div class="scale-segment segment-blocked ${riskScore >= 75 ? "active" : ""}">blocked (75-100)</div>
+              <div class="risk-marker" style="left: ${Math.max(0, Math.min(100, riskScore))}%;"></div>
+            </div>
+            <div class="scale-thresholds">
+              <span style="left: 30%;">30</span>
+              <span style="left: 50%;">50</span>
+              <span style="left: 75%;">75</span>
+            </div>
+          </div>
+
+          <div class="metric-strip">
+            ${
+              medianSwapUsd != null
+                ? `<div class="metric-box">
+              <div class="metric-box-lbl">Median swap</div>
+              <div class="metric-box-val mono">$${medianSwapUsd.toFixed(2)}</div>
+            </div>`
+                : ""
+            }
+            ${
+              liquidityUsd != null
+                ? `<div class="metric-box">
+              <div class="metric-box-lbl">Liquidity</div>
+              <div class="metric-box-val mono">$${liquidityUsd.toFixed(2)}</div>
+            </div>`
+                : ""
+            }
+          </div>
         </div>`
-            : ""
+            : `<!-- Empty State -->
+        <div class="empty-hero-box">
+          <div class="empty-line1">No wallet selected.</div>
+          <div class="empty-line2">Open /dashboard?wallet=<address> to read its scan history.</div>
+          <div class="empty-line3">
+            <a href="/dashboard?demo=replay" class="acc">View recorded replay (8XeK5m...)</a>
+          </div>
+        </div>`
         }
       </div>
-    </div>
+    </section>
 
-    <!-- 5. Three Layers of One Response -->
-    <div class="sec-title">Three Decision Layers</div>
-    <div class="three-layers">
-      <div class="layer-cell">
-        <div class="layer-lbl">Base Verdict</div>
-        <div class="layer-val">${escapeHtml(baseVerdict)}</div>
+    <!-- 3. Decision in Three Layers -->
+    <section class="section-block">
+      <div class="section-header">Decision in three layers</div>
+      <div class="layers-stack">
+        <div class="layer-row ${baseVerdictRowClass}">
+          <div class="layer-name">Base verdict</div>
+          <div class="layer-val ${baseVerdictClass}">${escapeHtml(baseVerdictVal)}</div>
+        </div>
+        <div class="layer-row ${agentVerdictRowClass}">
+          <div class="layer-name">Agent verdict</div>
+          <div class="layer-val ${agentVerdictClass}">${escapeHtml(agentVerdictVal)}</div>
+        </div>
+        <div class="layer-row ${defenseStateRowClass}">
+          <div class="layer-name">Defense state</div>
+          <div class="layer-val ${defenseStateClass}">${escapeHtml(defenseStateVal)}</div>
+        </div>
       </div>
-      <div class="layer-cell">
-        <div class="layer-lbl">Agent Verdict</div>
-        <div class="layer-val">${escapeHtml((agentVerdict || "n/a").toUpperCase())}</div>
-      </div>
-      <div class="layer-cell">
-        <div class="layer-lbl">Defense State</div>
-        <div class="layer-val">&gt;${escapeHtml(defenseState.toUpperCase())}&lt;</div>
-      </div>
-    </div>
-    <div class="layers-note">Three separate systems; they can disagree.</div>
+      <div class="layers-note">Three separate systems; they can disagree.</div>
+      <div class="token-check-line">${tokenCheckLine}</div>
+    </section>
 
-    <!-- 6. Token Check Strip -->
-    <div class="token-strip">
-      ${escapeHtml(tokenCheckValue)}
-    </div>`
+    ${
+      anomalies.length > 0
+        ? `<!-- 4. Anomaly list (stripes, not table) -->
+    <section class="section-block">
+      <div class="section-header">Anomalies (${anomalies.length})</div>
+      <div class="anomaly-stack">
+        ${anomalies
+          .map((a) => {
+            const sev = (a.severity || "medium").toLowerCase();
+            const sevBars = sev === "high" ? 3 : sev === "medium" ? 2 : 1;
+            return `<div class="anomaly-row" data-anomaly-id="${escapeHtml(a.id)}" tabindex="0">
+          <div class="anomaly-time mono">${escapeHtml(fmtStamp(a.timestamp))}</div>
+          <div class="anomaly-type">${escapeHtml(a.type)}</div>
+          <div class="anomaly-sev">
+            <div class="sev-meter" title="Severity: ${escapeHtml(sev)}">
+              <span class="sev-bar ${sevBars >= 1 ? "filled" : ""}"></span>
+              <span class="sev-bar ${sevBars >= 2 ? "filled" : ""}"></span>
+              <span class="sev-bar ${sevBars >= 3 ? "filled" : ""}"></span>
+            </div>
+            ${sev === "high" ? `<span class="badge-bad">high</span>` : ""}
+          </div>
+          <div class="anomaly-desc">${formatDescriptionWithCopy(a.description || a.type)}</div>
+        </div>`;
+          })
+          .join("\n        ")}
+      </div>
+    </section>`
+        : ""
     }
 
     ${
-      opts.records && opts.records.length > 0
+      records.length > 0
         ? `<!-- Scan Ledger Table for On-Chain Records -->
-    <div class="block-section">
-      <div class="block-header">Scan ledger (${opts.records.length} recorded)</div>
-      <table class="tbl-anomalies">
+    <section class="section-block">
+      <div class="section-header">Scan ledger (${records.length} recorded)</div>
+      <table class="ledger-tbl">
         <thead>
           <tr>
             <th>Time (UTC)</th>
@@ -970,133 +1195,153 @@ ${DASHBOARD_CSS}
           </tr>
         </thead>
         <tbody>
-          ${opts.records
+          ${records
             .map(
               (r) => `<tr>
-            <td style="color: var(--ink2);">${escapeHtml(formatIso(r.timestamp).slice(0, 19))}</td>
-            <td>${escapeHtml(String(r.slot ?? "—"))}</td>
-            <td style="font-weight: 700;">${r.riskScore}</td>
+            <td class="mono" style="color: var(--ink2);">${escapeHtml(formatIso(r.timestamp).slice(0, 19))}</td>
+            <td class="mono">${escapeHtml(String(r.slot ?? "—"))}</td>
+            <td class="mono" style="font-weight: 700; color: var(--accent);">${r.riskScore}</td>
             <td>${escapeHtml(r.verdict || computeVerdict(r.riskScore))}</td>
-            <td style="color: var(--ink3); font-size: 12px;"><code>${escapeHtml(r.compressedAddress ? r.compressedAddress.slice(0, 12) + "..." : "—")}</code></td>
-            <td style="color: var(--ink3); font-size: 12px;"><code>${escapeHtml(r.onchainSignature ? r.onchainSignature.slice(0, 16) + "..." : "—")}</code></td>
+            <td class="mono" style="color: var(--ink3); font-size: 12px;"><code class="mono">${escapeHtml(r.compressedAddress ? r.compressedAddress.slice(0, 12) + "..." : "—")}</code></td>
+            <td class="mono" style="color: var(--ink3); font-size: 12px;"><code class="mono">${escapeHtml(r.onchainSignature ? r.onchainSignature.slice(0, 16) + "..." : "—")}</code></td>
           </tr>`,
             )
             .join("\n          ")}
         </tbody>
       </table>
-    </div>`
+    </section>`
         : ""
     }
 
-    <!-- 7. On-chain proof (devnet) -->
-    <div class="block-section">
-      <div class="block-header">On-Chain Proof (devnet)</div>
-      <div class="block-kv">
-        <span class="block-k">Program</span>
-        <span class="block-v"><code>${escapeHtml(devnetProof.program)}</code></span>
+    <!-- 5. Transponder log (devnet) -->
+    <section class="section-block">
+      <div class="section-header">Transponder log (devnet)</div>
+      <div class="log-box">
+        <div class="log-stack">
+          ${devnetLog.logMessages
+            .map((msg) => {
+              const isBad = msg.includes("REJECTED") || msg.includes("CounterpartyFlagged") || msg.includes("failed");
+              return `<div class="log-line mono ${isBad ? "log-line-bad" : ""}">${escapeHtml(msg)}</div>`;
+            })
+            .join("\n          ")}
+        </div>
+        <div class="log-footer">
+          <div class="log-caption">The hook enforces a verdict written by the operator; this is not a detection claim.</div>
+          <a href="${escapeHtml(devnetLog.explorerUrl)}" target="_blank" rel="noopener" class="tx-link mono">${escapeHtml(shortAddr(devnetLog.signature))}</a>
+        </div>
       </div>
-      <div class="block-kv">
-        <span class="block-k">Tx Signature (Error 6001)</span>
-        <span class="block-v"><code>${escapeHtml(devnetProof.signature)}</code></span>
-      </div>
-      <div class="block-kv">
-        <span class="block-k">Log Phrase</span>
-        <span class="block-v" style="color: var(--bad);">${escapeHtml(devnetProof.logPhrase)}</span>
-      </div>
-      <div class="block-kv">
-        <span class="block-k">Solana Explorer</span>
-        <span class="block-v">
-          <a href="${escapeHtml(devnetProof.explorerUrl)}" target="_blank" rel="noopener" class="acc">View on Solana Explorer (devnet)</a>
-        </span>
-      </div>
-      <div class="block-sub">${escapeHtml(devnetProof.disclaimer)}</div>
-    </div>
+    </section>
 
-    <!-- 8. Independent Test -->
-    <div class="block-section">
-      <div class="block-header">Independent Test</div>
-      <div class="block-kv">
-        <span class="block-k">Status</span>
-        <span class="block-v">${escapeHtml(testStatus.status)}</span>
-      </div>
-      <div class="block-kv">
-        <span class="block-k">Collection Window</span>
-        <span class="block-v">${escapeHtml(testStatus.collectionStartUtc)} .. ${escapeHtml(testStatus.collectionStopUtc)}</span>
-      </div>
-      <div class="block-kv">
-        <span class="block-k">Final Computation</span>
-        <span class="block-v">${escapeHtml(testStatus.finalComputationUtc)}</span>
-      </div>
-      <div class="block-kv">
-        <span class="block-k">Preregistration Protocol</span>
-        <span class="block-v">
-          <a href="${escapeHtml(testStatus.protocolUrl)}" target="_blank" rel="noopener" class="acc">docs/PREREGISTRATION.md on GitHub</a>
-        </span>
-      </div>
-      <div class="block-kv">
-        <span class="block-k">Test Result</span>
-        <span class="block-v" style="color: var(--ink2);">
-          ${testStatus.result === null ? "Result will be published as computed, including 'insufficient data'." : escapeHtml(String(testStatus.result))}
-        </span>
-      </div>
-    </div>
+    <!-- 6. Independent Test -->
+    <section class="section-block">
+      <div class="section-header">Independent test</div>
+      <div class="test-panel">
+        <div class="timeline-wrap">
+          <div class="timeline-bar">
+            <div class="timeline-seg-collect" title="Collection (to 2026-10-06 18:00 UTC)"></div>
+            <div class="timeline-seg-mature" title="Maturation (to 2026-10-10 UTC)"></div>
+            <div class="timeline-now-marker" style="left: 15%;" title="Now: 2026-10-01"></div>
+          </div>
+          <div class="timeline-labels">
+            <span>Start: 2026-09-30 09:11 UTC</span>
+            <span>Stop collection: 2026-10-06 18:00 UTC</span>
+            <span>Final: 2026-10-10 09:00 UTC</span>
+          </div>
+        </div>
 
-    <!-- 9. Footer -->
-    <footer>
-      <span>Behavioral signals, not accuracy claims. <a href="https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/docs/KNOWN-ISSUES.md" class="dim">Known limitations</a></span>
-      <span class="dim">Generated ${new Date().toISOString().slice(0, 10)}</span>
-    </footer>
-  </div>
+        <div class="test-result-box">
+          <div>Result is published as computed, including 'insufficient data'.</div>
+          <a href="${escapeHtml(testStatus.protocolUrl)}" target="_blank" rel="noopener">PREREGISTRATION.md</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 7. Footer -->
+  <footer>
+    <div class="footer-note">Behavioral signals, not accuracy claims.</div>
+    <a href="https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/docs/KNOWN-ISSUES.md" target="_blank" rel="noopener">docs/KNOWN-ISSUES.md</a>
+  </footer>
+
+  <script>
+    // Synchronize hover / focus / tap between radar dots and anomaly list
+    document.querySelectorAll('[data-anomaly-id]').forEach(function(el) {
+      var id = el.getAttribute('data-anomaly-id');
+      if (!id) return;
+      function activate() {
+        document.querySelectorAll('[data-anomaly-id="' + id + '"]').forEach(function(n) {
+          n.classList.add('anomaly-active');
+        });
+      }
+      function deactivate() {
+        document.querySelectorAll('[data-anomaly-id="' + id + '"]').forEach(function(n) {
+          n.classList.remove('anomaly-active');
+        });
+      }
+      el.addEventListener('mouseenter', activate);
+      el.addEventListener('mouseleave', deactivate);
+      el.addEventListener('focus', activate);
+      el.addEventListener('blur', deactivate);
+      el.addEventListener('touchstart', function() {
+        document.querySelectorAll('.anomaly-active').forEach(function(n) {
+          n.classList.remove('anomaly-active');
+        });
+        activate();
+      }, { passive: true });
+    });
+
+    // Copy button helper for addresses
+    document.querySelectorAll('.copy-btn').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var text = btn.getAttribute('data-copy') || '';
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text).catch(function() {});
+        }
+        var orig = btn.innerText;
+        btn.innerText = 'copied';
+        setTimeout(function() { btn.innerText = orig; }, 1500);
+      });
+    });
+  </script>
 </body>
 </html>`;
 }
 
 /**
- * Fetches scan records from the on-chain ledger and renders the HTML dashboard.
+ * Fetches scan ledger records from the ZK oracle and returns rendered HTML.
  */
 export async function fetchAndRenderDashboard(
   wallet: string,
-  opts: {
-    rpcUrl?: string;
-    client?: ZKOracleClient;
-    limit?: number;
-    watchlist?: string[];
-    defense?: DashboardDefense | null;
-  } = {},
+  options: { rpcUrl?: string; client?: ZKOracleClient } = {},
 ): Promise<string> {
-  const records = wallet
-    ? await readScanLedger(wallet, {
-        client: opts.client,
-        rpcUrl: opts.rpcUrl,
-        limit: opts.limit ?? 20,
-      })
-    : [];
+  const records = await readScanLedger(wallet, {
+    client: options.client,
+    rpcUrl: options.rpcUrl,
+    limit: 50,
+  });
 
   return renderDashboardHtml({
     wallet,
     records,
-    watchlist: opts.watchlist,
-    rpcUrl: opts.rpcUrl,
-    defense: opts.defense ?? null,
+    rpcUrl: options.rpcUrl,
   });
 }
 
 /**
- * Formats scan ledger records into a clean monospace terminal table.
+ * Formats scan ledger records into a plain text CLI table.
  */
 export function formatLedgerTerminalTable(records: ScanLedgerRecord[]): string {
-  if (records.length === 0) {
+  if (!records || records.length === 0) {
     return "No on-chain scan ledger records found.";
   }
 
   const lines: string[] = [];
+  lines.push("TIMESTAMP (UTC)      SLOT      SCORE  VERDICT     TOP RULES            SIGNATURE");
   lines.push("--------------------------------------------------------------------------------------------------");
-  lines.push("TIMESTAMP (UTC)      SLOT       SCORE  VERDICT     RULES FIRED          TX SIGNATURE");
-  lines.push("--------------------------------------------------------------------------------------------------");
-
   for (const r of records) {
     const time = formatIso(r.timestamp).slice(0, 19);
-    const slot = String(r.slot ?? "—").padEnd(10);
+    const slot = String(r.slot ?? "—").padStart(9);
     const score = String(r.riskScore).padStart(3);
     const verdict = (r.verdict || computeVerdict(r.riskScore)).padEnd(11);
     const rules = (r.topRules && r.topRules.length > 0 ? r.topRules.join(",") : "—").slice(0, 19).padEnd(20);
@@ -1108,9 +1353,6 @@ export function formatLedgerTerminalTable(records: ScanLedgerRecord[]): string {
   return lines.join("\n");
 }
 
-/**
- * Builds a DashboardDefense from the Store for a wallet (null when no stance).
- */
 function readDefense(store: Store | undefined, wallet: string): DashboardDefense | null {
   if (!store || !wallet) return null;
   try {
@@ -1233,12 +1475,16 @@ export async function handleDashboardHttpRequest(
       limit,
     });
 
-    const payload = JSON.stringify({
-      wallet,
-      latest: records.length > 0 ? records[0] : null,
-      history: records,
-      count: records.length,
-    }, null, 2);
+    const payload = JSON.stringify(
+      {
+        wallet,
+        latest: records.length > 0 ? records[0] : null,
+        history: records,
+        count: records.length,
+      },
+      null,
+      2,
+    );
 
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
