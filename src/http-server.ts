@@ -1302,11 +1302,10 @@ export interface ServerOptions {
 export function createServer(options: ServerOptions = {}): http.Server {
   const limit = options.rateLimitPerMin ?? Number(process.env.RADAR_RATE_LIMIT_PER_MIN ?? 120);
   const rateLimiter = limit > 0 ? createRateLimiter(limit) : null;
-  const defaultLiveLimit = Number(process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN ?? 30);
-  const liveLimit = options.liveRateLimitPerMin ??
-    (options.rateLimitPerMin !== undefined
-      ? (options.rateLimitPerMin === 0 ? 0 : Math.max(defaultLiveLimit, options.rateLimitPerMin))
-      : defaultLiveLimit);
+  // Independent of `rateLimitPerMin`/`limit` above: the live-Helius-route
+  // limit is sourced only from liveRateLimitPerMin, else
+  // RADAR_LIVE_RATE_LIMIT_PER_MIN, else the 30 default (B0b).
+  const liveLimit = options.liveRateLimitPerMin ?? Number(process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN ?? 30);
   const liveRateLimiter = liveLimit > 0 ? createRateLimiter(liveLimit) : null;
 
   const ctx: RequestContext = {

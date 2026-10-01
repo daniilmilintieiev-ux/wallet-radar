@@ -1318,6 +1318,34 @@ test("A1: /gate-copy isHeavy auth, RADAR_PROTECT_READS, and RADAR_LIVE_RATE_LIMI
         assert.notEqual(resReadAuth.status, 401, `GET ${p} with auth must not be 401`);
       }
 
+      // 3.5 (B0b): liveRateLimitPerMin must default to 30 regardless of
+      // rateLimitPerMin, i.e. the two must be independent. This server was
+      // started with rateLimitPerMin: 100 and NO liveRateLimitPerMin / env
+      // var -- under the old coupled logic, the live limit silently became
+      // max(30, 100) = 100 instead of the documented default of 30. The rate
+      // limiter runs before auth, so both step 1 (unauthorized) and step 2
+      // already counted 2 /gate-copy calls against the live-limited budget;
+      // 28 more must still succeed (bringing the total to exactly 30), and
+      // the 29th new call (31st overall) must 429.
+      let got429B0b = false;
+      for (let i = 1; i <= 29; i++) {
+        const res = await fetch(`${r.base}/gate-copy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer secret-token-123",
+          },
+          body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+        });
+        if (i <= 28) {
+          assert.notEqual(res.status, 429, `/gate-copy call ${i + 2} overall (default liveLimit=30) should not be 429`);
+        } else {
+          assert.equal(res.status, 429, `/gate-copy call ${i + 2} overall must hit the default liveLimit=30, independent of rateLimitPerMin=100`);
+          got429B0b = true;
+        }
+      }
+      assert.equal(got429B0b, true, "31st overall /gate-copy call should trigger 429 under the default liveLimit, not rateLimitPerMin=100");
+
     } finally {
       await r.close();
     }
