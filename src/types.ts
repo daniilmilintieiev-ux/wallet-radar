@@ -167,7 +167,8 @@ export type AnomalyType =
   | "OFF_HOURS"
   | "REGIME_SHIFT"
   | "WARMING"
-  | "TAINTED_FUNDING";
+  | "TAINTED_FUNDING"
+  | "TOKEN_CHECK_UNAVAILABLE";
 
 export interface MintRiskInfo {
   mint: string;

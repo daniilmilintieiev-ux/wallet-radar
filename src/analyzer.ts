@@ -1101,8 +1101,13 @@ const SEVERITY_POINTS: Record<string, number> = {
 /**
  * Aggregate anomaly list into a single 0-100 risk score for humans and agents.
  * Deterministic: high=30, medium=15, low=5 points per anomaly, capped at 100.
+ * TOKEN_CHECK_UNAVAILABLE (B2) is informational -- "we could not check", not
+ * a risk signal -- and always contributes 0 regardless of its `low` severity.
  */
 export function computeRiskScore(anomalies: Anomaly[]): number {
-  const total = anomalies.reduce((sum, a) => sum + (SEVERITY_POINTS[a.severity] ?? 0), 0);
+  const total = anomalies.reduce(
+    (sum, a) => sum + (a.type === "TOKEN_CHECK_UNAVAILABLE" ? 0 : SEVERITY_POINTS[a.severity] ?? 0),
+    0,
+  );
   return Math.min(100, total);
 }

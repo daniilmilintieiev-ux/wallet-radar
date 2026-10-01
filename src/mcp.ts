@@ -14,7 +14,7 @@ import { isValidSolanaAddress } from "./config.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment } from "./simulate.js";
-import { Baseline, EnhancedTx } from "./types.js";
+import { Baseline, EnhancedTx, Anomaly } from "./types.js";
 import { Store } from "./store.js";
 import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
@@ -420,11 +420,12 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
 
         const hasMint = Boolean(mint && isValidSolanaAddress(mint));
         const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
-        const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
+        let tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" | "unavailable" = !hasMint
           ? "skipped_no_mint"
           : !hasAmount
           ? "skipped_no_amount"
           : "applied";
+        let tokenCheckAnomaly: Anomaly | null = null;
 
         let simRes: any;
         if (hasAmount) {
@@ -433,7 +434,20 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             try {
               const fetchMintMetadataFn = options.fetchMintMetadata ?? fetchMintMetadata;
               mintRisk = await fetchMintMetadataFn(mint!, { apiKey, store: options.store });
-            } catch {}
+              if (mintRisk === null) {
+                throw new Error("mint metadata unavailable (DAS and RPC fallback both failed, or no RPC endpoint configured)");
+              }
+            } catch (err) {
+              tokenCheck = "unavailable";
+              tokenCheckAnomaly = {
+                type: "TOKEN_CHECK_UNAVAILABLE",
+                wallet: targetWallet,
+                severity: "low",
+                timestamp: Math.floor(Date.now() / 1000),
+                evidence: { mint, error: err instanceof Error ? err.message : String(err) },
+                text: `Token mint check for ${mint} was unavailable: ${err instanceof Error ? err.message : String(err)}.`,
+              };
+            }
           }
           simRes = simulatePayment({
             wallet: targetWallet,
@@ -453,6 +467,9 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           const simAction = (simRes.decision as any)?.action ?? (simRes.decision as any)?.verdict;
           const isBlocked = simAction === "block" || simRes.executionTier === "blocked" || (simRes.wouldTrigger && simRes.wouldTrigger.includes("TOXIC_MINT"));
           const isThrottled = !isBlocked && (simAction === "throttle" || simRes.executionTier === "guarded");
+          // B2: never more permissive than manual_review when the mint could
+          // not be checked at all for a real USD amount.
+          const detailsWithAnomaly = () => ({ trust: trustResult, simulation: simRes, ...(tokenCheckAnomaly ? { tokenCheckAnomaly } : {}) });
 
           if (isBlocked) {
             return json({
@@ -465,7 +482,22 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: "blocked",
               slippageToleranceBps: 0,
               cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.recommendedDelaySec ?? 300),
-              details: { trust: trustResult, simulation: simRes },
+              details: detailsWithAnomaly(),
+            });
+          }
+
+          if (tokenCheck === "unavailable") {
+            return json({
+              allow: false,
+              reason: `MANUAL_REVIEW: token mint check unavailable (mint metadata fetch failed) -- cannot verify ${mint} is safe for a $${copyAmountUsd} payment.`,
+              action: "manual_review",
+              tokenCheck,
+              riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+              maxSafeAmountUsd: 0,
+              executionTier: simRes.executionTier ?? "standard",
+              slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+              cooldownSec: simRes.suggestedCooldownSec ?? 60,
+              details: detailsWithAnomaly(),
             });
           }
 
