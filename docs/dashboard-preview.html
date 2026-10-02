@@ -250,6 +250,16 @@ body {
   100% { transform: rotate(360deg); opacity: 0; }
 }
 
+:focus-visible {
+  outline: 1px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+.radar-dot:focus-visible,
+.anomaly-row:focus-visible {
+  outline: 1px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+
 .radar-dot {
   opacity: 0;
   cursor: pointer;
@@ -260,7 +270,10 @@ body {
 }
 .radar-dot.anomaly-active circle {
   stroke: var(--accent) !important;
-  stroke-width: 2px !important;
+  stroke-width: 2.5px !important;
+}
+.radar-dot.anomaly-active {
+  filter: drop-shadow(0 0 6px var(--accent));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -311,6 +324,12 @@ body {
   font-weight: 700;
   color: var(--ink);
   letter-spacing: .02em;
+}
+.verdict-sub {
+  font-size: 12px;
+  color: var(--ink3);
+  margin-top: 2px;
+  margin-bottom: 2px;
 }
 .risk-sub {
   font-size: 15px;
@@ -787,7 +806,7 @@ footer a:hover {
         name="wallet"
         class="search-input mono wallet-input"
         placeholder="Enter Solana wallet address (e.g. 8XeK5m...)"
-        value="8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j"
+        value=""
         spellcheck="false"
       />
       <button type="submit" class="search-btn">Inspect</button>
@@ -805,43 +824,46 @@ footer a:hover {
           <svg class="radar-svg" viewBox="0 0 640 640" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
   <g class="radar-bg">
     <!-- Crosshairs -->
-    <line x1="320" y1="20" x2="320" y2="620" stroke="var(--hair)" stroke-width="1" />
-    <line x1="20" y1="320" x2="620" y2="320" stroke="var(--hair)" stroke-width="1" />
+    <line x1="320" y1="20" x2="320" y2="620" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="20" y1="320" x2="620" y2="320" stroke="var(--ink3)" stroke-width="1" />
     <!-- Concentric rings -->
-    <circle cx="320" cy="320" r="85" fill="none" stroke="var(--hair)" stroke-width="1" />
-    <circle cx="320" cy="320" r="175" fill="none" stroke="var(--hair)" stroke-width="1" />
-    <circle cx="320" cy="320" r="265" fill="none" stroke="var(--hair)" stroke-width="1" />
-    <circle cx="320" cy="320" r="300" fill="none" stroke="var(--hair)" stroke-width="1" />
+    <circle cx="320" cy="320" r="85" fill="none" stroke="var(--ink3)" stroke-width="1" />
+    <circle cx="320" cy="320" r="175" fill="none" stroke="var(--ink3)" stroke-width="1" />
+    <circle cx="320" cy="320" r="265" fill="none" stroke="var(--ink3)" stroke-width="1" />
+    <circle cx="320" cy="320" r="300" fill="none" stroke="var(--ink3)" stroke-width="1" />
     <!-- 12 edge ticks -->
-    <line x1="320.0" y1="28.0" x2="320.0" y2="20.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="466.0" y1="67.1" x2="470.0" y2="60.2" stroke="var(--hair)" stroke-width="1" />
-    <line x1="572.9" y1="174.0" x2="579.8" y2="170.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="612.0" y1="320.0" x2="620.0" y2="320.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="572.9" y1="466.0" x2="579.8" y2="470.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="466.0" y1="572.9" x2="470.0" y2="579.8" stroke="var(--hair)" stroke-width="1" />
-    <line x1="320.0" y1="612.0" x2="320.0" y2="620.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="174.0" y1="572.9" x2="170.0" y2="579.8" stroke="var(--hair)" stroke-width="1" />
-    <line x1="67.1" y1="466.0" x2="60.2" y2="470.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="28.0" y1="320.0" x2="20.0" y2="320.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="67.1" y1="174.0" x2="60.2" y2="170.0" stroke="var(--hair)" stroke-width="1" />
-    <line x1="174.0" y1="67.1" x2="170.0" y2="60.2" stroke="var(--hair)" stroke-width="1" />
+    <line x1="320.0" y1="28.0" x2="320.0" y2="20.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="466.0" y1="67.1" x2="470.0" y2="60.2" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="572.9" y1="174.0" x2="579.8" y2="170.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="612.0" y1="320.0" x2="620.0" y2="320.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="572.9" y1="466.0" x2="579.8" y2="470.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="466.0" y1="572.9" x2="470.0" y2="579.8" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="320.0" y1="612.0" x2="320.0" y2="620.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="174.0" y1="572.9" x2="170.0" y2="579.8" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="67.1" y1="466.0" x2="60.2" y2="470.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="28.0" y1="320.0" x2="20.0" y2="320.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="67.1" y1="174.0" x2="60.2" y2="170.0" stroke="var(--ink3)" stroke-width="1" />
+    <line x1="174.0" y1="67.1" x2="170.0" y2="60.2" stroke="var(--ink3)" stroke-width="1" />
     <!-- Ring labels -->
-    <text x="325" y="247.0" fill="var(--ink3)" font-size="11" font-family="var(--display)">5</text>
-    <text x="325" y="157.0" fill="var(--ink3)" font-size="11" font-family="var(--display)">15</text>
-    <text x="325" y="67.0" fill="var(--ink3)" font-size="11" font-family="var(--display)">30</text>
-    <text x="320" y="44" text-anchor="middle" fill="var(--ink3)" font-size="11" font-family="var(--display)">score per anomaly</text>
+    <text x="325" y="247.0" fill="var(--ink2)" font-size="12" font-family="var(--display)">5</text>
+    <text x="325" y="157.0" fill="var(--ink2)" font-size="12" font-family="var(--display)">15</text>
+    <text x="325" y="67.0" fill="var(--ink2)" font-size="12" font-family="var(--display)">30</text>
+    <text x="320" y="44" text-anchor="middle" fill="var(--ink2)" font-size="12" font-family="var(--display)">score per anomaly</text>
     <!-- Center wallet dot -->
     <circle cx="320" cy="320" r="3" fill="var(--ink)" />
   </g>
   <g class="radar-group">
-    <g class="radar-dot radar-dot-high" data-anomaly-id="anomaly-0" style="animation-delay: 2.140s;"><circle cx="153.2" cy="114.1" r="5" fill="var(--accent)" /><circle cx="153.2" cy="114.1" r="8" fill="none" stroke="var(--accent)" stroke-width="1" /></g>
-    <circle cx="217.1" cy="178.4" r="3.5" fill="var(--accent)" class="radar-dot radar-dot-med" data-anomaly-id="anomaly-1" style="animation-delay: 2.160s;" />
-    <g class="radar-dot radar-dot-high" data-anomaly-id="anomaly-2" style="animation-delay: 2.192s;"><circle cx="182.9" cy="93.2" r="5" fill="var(--accent)" /><circle cx="182.9" cy="93.2" r="8" fill="none" stroke="var(--accent)" stroke-width="1" /></g>
-    <circle cx="273.7" cy="248.7" r="2.5" fill="none" stroke="var(--ink2)" stroke-width="1" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-3" style="animation-delay: 2.180s;" />
-    <circle cx="277.5" cy="246.4" r="2.5" fill="none" stroke="var(--ink2)" stroke-width="1" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-4" style="animation-delay: 2.200s;" />
-    <circle cx="281.4" cy="244.3" r="2.5" fill="none" stroke="var(--ink2)" stroke-width="1" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-5" style="animation-delay: 2.220s;" />
-    <circle cx="285.4" cy="242.4" r="2.5" fill="none" stroke="var(--ink2)" stroke-width="1" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-6" style="animation-delay: 2.240s;" />
-    <g class="radar-dot radar-dot-high" data-anomaly-id="anomaly-7" style="animation-delay: 2.260s;"><circle cx="225.0" cy="72.6" r="5" fill="var(--accent)" /><circle cx="225.0" cy="72.6" r="8" fill="none" stroke="var(--accent)" stroke-width="1" /></g>
+    <g class="radar-dot radar-dot-high" data-anomaly-id="anomaly-0" tabindex="0" style="animation-delay: 2.140s;"><circle cx="153.2" cy="114.1" r="9" fill="var(--accent)" /><circle cx="153.2" cy="114.1" r="13" fill="none" stroke="var(--accent)" stroke-width="1" /></g>
+    <circle cx="217.1" cy="178.4" r="6" fill="var(--accent)" class="radar-dot radar-dot-med" data-anomaly-id="anomaly-1" tabindex="0" style="animation-delay: 2.160s;" />
+    <g class="radar-dot radar-dot-high" data-anomaly-id="anomaly-2" tabindex="0" style="animation-delay: 2.192s;"><circle cx="182.9" cy="93.2" r="9" fill="var(--accent)" /><circle cx="182.9" cy="93.2" r="13" fill="none" stroke="var(--accent)" stroke-width="1" /></g>
+    <circle cx="273.7" cy="248.7" r="4" fill="var(--ink2)" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-3" tabindex="0" style="animation-delay: 2.180s;" />
+    <circle cx="277.5" cy="246.4" r="4" fill="var(--ink2)" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-4" tabindex="0" style="animation-delay: 2.200s;" />
+    <circle cx="281.4" cy="244.3" r="4" fill="var(--ink2)" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-5" tabindex="0" style="animation-delay: 2.220s;" />
+    <circle cx="285.4" cy="242.4" r="4" fill="var(--ink2)" class="radar-dot radar-dot-low" data-anomaly-id="anomaly-6" tabindex="0" style="animation-delay: 2.240s;" />
+    <g class="radar-dot radar-dot-high" data-anomaly-id="anomaly-7" tabindex="0" style="animation-delay: 2.260s;"><circle cx="225.0" cy="72.6" r="9" fill="var(--accent)" /><circle cx="225.0" cy="72.6" r="13" fill="none" stroke="var(--accent)" stroke-width="1" /></g>
+  </g>
+  <g class="radar-clusters">
+    <text x="228.8" y="58.6" text-anchor="end" class="radar-cluster-label" fill="var(--ink2)" font-size="12" font-family="var(--display)">7 signals, 2026-08-31 07:57 UTC</text>
   </g>
 </svg>
         </div>
@@ -855,16 +877,17 @@ footer a:hover {
             <div class="risk-value">100</div>
             <div class="risk-meta">
               <div class="risk-verdict">HIGH RISK</div>
+              <div class="verdict-sub">scan verdict (recorded replay)</div>
               <div class="risk-sub">behavioral risk, 0 to 100</div>
             </div>
           </div>
 
           <div class="risk-scale-container">
             <div class="risk-scale-bar">
-              <div class="scale-segment segment-armed "><span class="zone-tag">armed / ARMED</span> (0-29)</div>
-              <div class="scale-segment segment-alerting ">alerting (30-49)</div>
-              <div class="scale-segment segment-gated ">gated (50-74)</div>
-              <div class="scale-segment segment-blocked active">blocked (75-100)</div>
+              <div class="scale-segment segment-armed " data-zone="ARMED">armed 0-29</div>
+              <div class="scale-segment segment-alerting " data-zone="ALERTING">alerting 30-49</div>
+              <div class="scale-segment segment-gated " data-zone="GATED">gated 50-74</div>
+              <div class="scale-segment segment-blocked active" data-zone="BLOCKED">blocked 75-100</div>
               <div class="risk-marker" style="left: 100%;"></div>
             </div>
             <div class="scale-thresholds">
@@ -910,9 +933,9 @@ footer a:hover {
     <section class="section-block">
       <div class="section-header">Anomalies (8)</div>
       <div class="anomaly-stack">
-        <div class="anomaly-row" data-anomaly-id="anomaly-0" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-0" data-anomaly-text="Wallet reactivated after ~173 days of inactivity." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">DORMANT_ACTIVE</div>
+          <div class="anomaly-type" title="DORMANT_ACTIVE">DORMANT ACTIVE</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: high">
               <span class="sev-bar filled"></span>
@@ -921,11 +944,11 @@ footer a:hover {
             </div>
             <span class="badge-bad">high</span>
           </div>
-          <div class="anomaly-desc">DORMANT_ACTIVE detected in window</div>
+          <div class="anomaly-desc">Wallet reactivated after ~173 days of inactivity.</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-1" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-1" data-anomaly-text="First swap on OKX_DEX_ROUTER." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">NEW_VENUE</div>
+          <div class="anomaly-type" title="NEW_VENUE">NEW VENUE</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: medium">
               <span class="sev-bar filled"></span>
@@ -934,11 +957,11 @@ footer a:hover {
             </div>
             
           </div>
-          <div class="anomaly-desc">NEW_VENUE detected in window</div>
+          <div class="anomaly-desc">First swap on OKX_DEX_ROUTER.</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-2" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-2" data-anomaly-text="Swap of ~$4,000 is 4.5x the wallet's median (~$844.10)." tabindex="0">
           <div class="anomaly-time mono">2026-08-30 17:29 UTC</div>
-          <div class="anomaly-type">LARGE_SWAP</div>
+          <div class="anomaly-type" title="LARGE_SWAP">LARGE SWAP</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: high">
               <span class="sev-bar filled"></span>
@@ -947,11 +970,11 @@ footer a:hover {
             </div>
             <span class="badge-bad">high</span>
           </div>
-          <div class="anomaly-desc">LARGE_SWAP detected in window</div>
+          <div class="anomaly-desc">Swap of ~$4,000 is 4.5x the wallet's median (~$844.10).</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-3" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-3" data-anomaly-text="First interaction with program proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">NEW_PROTOCOL</div>
+          <div class="anomaly-type" title="NEW_PROTOCOL">NEW PROTOCOL</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: low">
               <span class="sev-bar filled"></span>
@@ -960,11 +983,11 @@ footer a:hover {
             </div>
             
           </div>
-          <div class="anomaly-desc">NEW_PROTOCOL detected in window</div>
+          <div class="anomaly-desc">First interaction with program proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u.</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-4" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-4" data-anomaly-text="New counterparty 6qoHtd3NpwjVB76Z5bLfbXc2FYuuuytmThhH6ouZQHUJ (10 interactions) against 64 established relationships." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">NEW_COUNTERPARTY</div>
+          <div class="anomaly-type" title="NEW_COUNTERPARTY">NEW COUNTERPARTY</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: low">
               <span class="sev-bar filled"></span>
@@ -973,11 +996,11 @@ footer a:hover {
             </div>
             
           </div>
-          <div class="anomaly-desc">NEW_COUNTERPARTY detected in window</div>
+          <div class="anomaly-desc">New counterparty 6qoHtd3NpwjVB76Z5bLfbXc2FYuuuytmThhH6ouZQHUJ (10 interactions) against 64 established relationships.</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-5" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-5" data-anomaly-text="New counterparty FkaLnX17cXZGyeu3kZGdHCNdFMJJzBrPPYVvd18B3MZp (6 interactions) against 64 established relationships." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">NEW_COUNTERPARTY</div>
+          <div class="anomaly-type" title="NEW_COUNTERPARTY">NEW COUNTERPARTY</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: low">
               <span class="sev-bar filled"></span>
@@ -986,11 +1009,11 @@ footer a:hover {
             </div>
             
           </div>
-          <div class="anomaly-desc">NEW_COUNTERPARTY detected in window</div>
+          <div class="anomaly-desc">New counterparty FkaLnX17cXZGyeu3kZGdHCNdFMJJzBrPPYVvd18B3MZp (6 interactions) against 64 established relationships.</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-6" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-6" data-anomaly-text="New counterparty CreQJ2t94QK5dsxUZGXfPJ8Nx7wA9LHr5chxjSMkbNft (6 interactions) against 64 established relationships." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">NEW_COUNTERPARTY</div>
+          <div class="anomaly-type" title="NEW_COUNTERPARTY">NEW COUNTERPARTY</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: low">
               <span class="sev-bar filled"></span>
@@ -999,11 +1022,11 @@ footer a:hover {
             </div>
             
           </div>
-          <div class="anomaly-desc">NEW_COUNTERPARTY detected in window</div>
+          <div class="anomaly-desc">New counterparty CreQJ2t94QK5dsxUZGXfPJ8Nx7wA9LHr5chxjSMkbNft (6 interactions) against 64 established relationships.</div>
         </div>
-        <div class="anomaly-row" data-anomaly-id="anomaly-7" tabindex="0">
+        <div class="anomaly-row" data-anomaly-id="anomaly-7" data-anomaly-text="Regime shift: cadence (inter-activity interval decelerated to 3046s vs baseline 19s, 160.3x slower)." tabindex="0">
           <div class="anomaly-time mono">2026-08-31 07:57 UTC</div>
-          <div class="anomaly-type">REGIME_SHIFT</div>
+          <div class="anomaly-type" title="REGIME_SHIFT">REGIME SHIFT</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: high">
               <span class="sev-bar filled"></span>
@@ -1012,7 +1035,7 @@ footer a:hover {
             </div>
             <span class="badge-bad">high</span>
           </div>
-          <div class="anomaly-desc">REGIME_SHIFT detected in window</div>
+          <div class="anomaly-desc">Regime shift: cadence (inter-activity interval decelerated to 3046s vs baseline 19s, 160.3x slower).</div>
         </div>
       </div>
     </section>
@@ -1076,29 +1099,41 @@ footer a:hover {
 
   <script>
     // Synchronize hover / focus / tap between radar dots and anomaly list
+    function clearActive() {
+      document.querySelectorAll('.anomaly-active').forEach(function(n) {
+        n.classList.remove('anomaly-active');
+      });
+    }
+
     document.querySelectorAll('[data-anomaly-id]').forEach(function(el) {
       var id = el.getAttribute('data-anomaly-id');
       if (!id) return;
       function activate() {
+        clearActive();
         document.querySelectorAll('[data-anomaly-id="' + id + '"]').forEach(function(n) {
           n.classList.add('anomaly-active');
         });
       }
       function deactivate() {
-        document.querySelectorAll('[data-anomaly-id="' + id + '"]').forEach(function(n) {
-          n.classList.remove('anomaly-active');
-        });
+        clearActive();
       }
       el.addEventListener('mouseenter', activate);
       el.addEventListener('mouseleave', deactivate);
       el.addEventListener('focus', activate);
       el.addEventListener('blur', deactivate);
       el.addEventListener('touchstart', function() {
-        document.querySelectorAll('.anomaly-active').forEach(function(n) {
-          n.classList.remove('anomaly-active');
-        });
         activate();
       }, { passive: true });
+    });
+
+    // Escape key clears highlights
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' || e.key === 'Esc') {
+        clearActive();
+        if (document.activeElement && typeof document.activeElement.blur === 'function') {
+          document.activeElement.blur();
+        }
+      }
     });
 
     // Copy button helper for addresses

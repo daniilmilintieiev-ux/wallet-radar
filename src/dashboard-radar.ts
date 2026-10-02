@@ -6,6 +6,7 @@
  * - 12 tick marks along the outer rim
  * - Points mapped by timestamp (angle 0..330 deg) and weight (radius)
  * - Offsets of ±3 degrees for anomalies sharing the exact same timestamp
+ * - Cluster labels for groups with identical timestamps: "N signals, <UTC time>"
  */
 
 export interface RadarAnomaly {
@@ -30,6 +31,13 @@ export interface RadarRenderResult {
   anomalyAngles: Map<string, number>;
 }
 
+function formatClusterUtc(timestampSec?: number): string {
+  if (!timestampSec) return "";
+  const d = new Date(timestampSec * 1000);
+  const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+}
+
 export function renderRadar(opts: RenderRadarOptions): RadarRenderResult {
   const cx = 320;
   const cy = 320;
@@ -48,30 +56,31 @@ export function renderRadar(opts: RenderRadarOptions): RadarRenderResult {
     const y1 = cy - 292 * Math.cos(rad);
     const x2 = cx + rOuter * Math.sin(rad);
     const y2 = cy - rOuter * Math.cos(rad);
-    ticks.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--hair)" stroke-width="1" />`);
+    ticks.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--ink3)" stroke-width="1" />`);
   }
 
   const bgElements = [
     `<!-- Crosshairs -->`,
-    `<line x1="320" y1="20" x2="320" y2="620" stroke="var(--hair)" stroke-width="1" />`,
-    `<line x1="20" y1="320" x2="620" y2="320" stroke="var(--hair)" stroke-width="1" />`,
+    `<line x1="320" y1="20" x2="320" y2="620" stroke="var(--ink3)" stroke-width="1" />`,
+    `<line x1="20" y1="320" x2="620" y2="320" stroke="var(--ink3)" stroke-width="1" />`,
     `<!-- Concentric rings -->`,
-    `<circle cx="${cx}" cy="${cy}" r="${r5}" fill="none" stroke="var(--hair)" stroke-width="1" />`,
-    `<circle cx="${cx}" cy="${cy}" r="${r15}" fill="none" stroke="var(--hair)" stroke-width="1" />`,
-    `<circle cx="${cx}" cy="${cy}" r="${r30}" fill="none" stroke="var(--hair)" stroke-width="1" />`,
-    `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="var(--hair)" stroke-width="1" />`,
+    `<circle cx="${cx}" cy="${cy}" r="${r5}" fill="none" stroke="var(--ink3)" stroke-width="1" />`,
+    `<circle cx="${cx}" cy="${cy}" r="${r15}" fill="none" stroke="var(--ink3)" stroke-width="1" />`,
+    `<circle cx="${cx}" cy="${cy}" r="${r30}" fill="none" stroke="var(--ink3)" stroke-width="1" />`,
+    `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="var(--ink3)" stroke-width="1" />`,
     `<!-- 12 edge ticks -->`,
     ...ticks,
     `<!-- Ring labels -->`,
-    `<text x="325" y="${(cy - r5 + 12).toFixed(1)}" fill="var(--ink3)" font-size="11" font-family="var(--display)">5</text>`,
-    `<text x="325" y="${(cy - r15 + 12).toFixed(1)}" fill="var(--ink3)" font-size="11" font-family="var(--display)">15</text>`,
-    `<text x="325" y="${(cy - r30 + 12).toFixed(1)}" fill="var(--ink3)" font-size="11" font-family="var(--display)">30</text>`,
-    `<text x="320" y="44" text-anchor="middle" fill="var(--ink3)" font-size="11" font-family="var(--display)">score per anomaly</text>`,
+    `<text x="325" y="${(cy - r5 + 12).toFixed(1)}" fill="var(--ink2)" font-size="12" font-family="var(--display)">5</text>`,
+    `<text x="325" y="${(cy - r15 + 12).toFixed(1)}" fill="var(--ink2)" font-size="12" font-family="var(--display)">15</text>`,
+    `<text x="325" y="${(cy - r30 + 12).toFixed(1)}" fill="var(--ink2)" font-size="12" font-family="var(--display)">30</text>`,
+    `<text x="320" y="44" text-anchor="middle" fill="var(--ink2)" font-size="12" font-family="var(--display)">score per anomaly</text>`,
     `<!-- Center wallet dot -->`,
     `<circle cx="${cx}" cy="${cy}" r="3" fill="var(--ink)" />`,
   ];
 
   const dotElements: string[] = [];
+  const clusterLabelElements: string[] = [];
   const anomalies = opts.anomalies || [];
   const hasData = Boolean(opts.hasData && anomalies.length > 0);
 
@@ -100,6 +109,8 @@ export function renderRadar(opts: RenderRadarOptions): RadarRenderResult {
     });
 
     const computedAngles = new Array<number>(anomalies.length);
+    const computedCoords = new Array<{ x: number; y: number }>(anomalies.length);
+
     for (const [, indices] of tsGroups) {
       const k = indices.length;
       indices.forEach((idx, pos) => {
@@ -132,26 +143,52 @@ export function renderRadar(opts: RenderRadarOptions): RadarRenderResult {
       const rad = (angle * Math.PI) / 180;
       const x = cx + r * Math.sin(rad);
       const y = cy - r * Math.cos(rad);
+      computedCoords[idx] = { x, y };
+
       const delay = (angle / 360) * 2.4;
       const sev = (a.severity || "medium").toLowerCase();
 
+      // Weight dot geometries per 16D:
+      // low: solid fill --ink2, radius 4px
+      // medium: solid fill --accent, radius 6px
+      // high: solid fill --accent, radius 9px with outer ring radius 13px
       if (sev === "low") {
         dotElements.push(
-          `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="none" stroke="var(--ink2)" stroke-width="1" class="radar-dot radar-dot-low" data-anomaly-id="${a.id}" style="animation-delay: ${delay.toFixed(3)}s;" />`
+          `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="var(--ink2)" class="radar-dot radar-dot-low" data-anomaly-id="${a.id}" tabindex="0" style="animation-delay: ${delay.toFixed(3)}s;" />`
         );
       } else if (sev === "high") {
         dotElements.push(
-          `<g class="radar-dot radar-dot-high" data-anomaly-id="${a.id}" style="animation-delay: ${delay.toFixed(3)}s;">` +
-            `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="var(--accent)" />` +
-            `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="none" stroke="var(--accent)" stroke-width="1" />` +
+          `<g class="radar-dot radar-dot-high" data-anomaly-id="${a.id}" tabindex="0" style="animation-delay: ${delay.toFixed(3)}s;">` +
+            `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9" fill="var(--accent)" />` +
+            `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="none" stroke="var(--accent)" stroke-width="1" />` +
           `</g>`
         );
       } else {
         dotElements.push(
-          `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="var(--accent)" class="radar-dot radar-dot-med" data-anomaly-id="${a.id}" style="animation-delay: ${delay.toFixed(3)}s;" />`
+          `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="var(--accent)" class="radar-dot radar-dot-med" data-anomaly-id="${a.id}" tabindex="0" style="animation-delay: ${delay.toFixed(3)}s;" />`
         );
       }
     });
+
+    // Cluster labels for timestamps with multiple anomalies
+    for (const [timestamp, indices] of tsGroups) {
+      if (indices.length > 1) {
+        const count = indices.length;
+        const utcTime = formatClusterUtc(timestamp);
+        const xs = indices.map((i) => computedCoords[i].x);
+        const ys = indices.map((i) => computedCoords[i].y);
+        const avgX = xs.reduce((sum, v) => sum + v, 0) / count;
+        const minY = Math.min(...ys);
+
+        const labelX = avgX <= cx ? avgX - 16 : avgX + 16;
+        const labelY = Math.max(25, minY - 14);
+        const anchor = avgX <= cx ? "end" : "start";
+
+        clusterLabelElements.push(
+          `<text x="${labelX.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="${anchor}" class="radar-cluster-label" fill="var(--ink2)" font-size="12" font-family="var(--display)">${count} signals, ${utcTime}</text>`
+        );
+      }
+    }
   }
 
   const svg = [
@@ -161,6 +198,9 @@ export function renderRadar(opts: RenderRadarOptions): RadarRenderResult {
     `  </g>`,
     hasData && dotElements.length > 0
       ? `  <g class="radar-group">\n    ${dotElements.join("\n    ")}\n  </g>`
+      : ``,
+    clusterLabelElements.length > 0
+      ? `  <g class="radar-clusters">\n    ${clusterLabelElements.join("\n    ")}\n  </g>`
       : ``,
     `</svg>`,
   ].filter(Boolean).join("\n");

@@ -642,4 +642,93 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     assert.notEqual(delays[0], delays[1], "Delays (and angles) for identical timestamps must differ");
     assert.ok(Math.abs(delays[0] - delays[1]) > 0.005, "Difference between delays must reflect degree offset");
   });
+
+  // (m) 16D: For replay-json in each anomaly row, displayed text equals anomaly.text
+  test("(m) 16D: For replay-json in each anomaly row, displayed text equals anomaly.text", () => {
+    const replayRaw = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "docs/dashboard/replay-8XeK5m.json"), "utf8"));
+    const html = renderDashboardHtml({ demo: "replay" });
+
+    // Extract all anomaly-desc contents from HTML
+    const descMatches = Array.from(html.matchAll(/<div class="anomaly-desc">([\s\S]*?)<\/div>/g)).map((m) => m[1].trim());
+    assert.equal(descMatches.length, replayRaw.anomalies.length, "Expected matching count of anomaly-desc blocks");
+
+    for (let i = 0; i < replayRaw.anomalies.length; i++) {
+      const expectedText = replayRaw.anomalies[i].text;
+      assert.equal(descMatches[i], expectedText, `Row ${i} description must exactly equal anomaly.text`);
+      assert.ok(html.includes(expectedText), `HTML must contain raw anomaly.text for row ${i}`);
+    }
+  });
+
+  // (n) 16D: Anomaly type is displayed with spaces instead of underscores, title has original
+  test("(n) 16D: Anomaly type is displayed with spaces instead of underscores, title has original", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    const typeMatches = Array.from(html.matchAll(/<div class="anomaly-type" title="([^"]+)">([^<]+)<\/div>/g));
+    assert.ok(typeMatches.length > 0);
+
+    for (const match of typeMatches) {
+      const original = match[1];
+      const displayed = match[2];
+      assert.equal(displayed, original.replace(/_/g, " "), "Displayed type must replace underscores with spaces");
+      assert.ok(!displayed.includes("_"), "Displayed type must not contain underscores");
+    }
+  });
+
+  // (o) 16D: Radar rings and crosshairs have stroke var(--ink3), ring labels 12px var(--ink2)
+  test("(o) 16D: Radar rings and crosshairs have stroke var(--ink3), ring labels 12px var(--ink2)", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes('<line x1="320" y1="20" x2="320" y2="620" stroke="var(--ink3)" stroke-width="1" />'));
+    assert.ok(html.includes('<circle cx="320" cy="320" r="85" fill="none" stroke="var(--ink3)" stroke-width="1" />'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">score per anomaly</text>'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">5</text>'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">15</text>'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">30</text>'));
+  });
+
+  // (p) 16D: Radar dot weights: low=4, med=6, high=9 with outer ring 13
+  test("(p) 16D: Radar dot weights: low r=4, med r=6, high r=9 with outer ring r=13", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    // Low: r="4" fill="var(--ink2)"
+    assert.ok(html.includes('r="4" fill="var(--ink2)" class="radar-dot radar-dot-low"'));
+    // Medium: r="6" fill="var(--accent)"
+    assert.ok(html.includes('r="6" fill="var(--accent)" class="radar-dot radar-dot-med"'));
+    // High: r="9" fill="var(--accent)" and r="13" fill="none" stroke="var(--accent)"
+    assert.ok(html.includes('r="9" fill="var(--accent)"'));
+    assert.ok(html.includes('r="13" fill="none" stroke="var(--accent)" stroke-width="1"'));
+  });
+
+  // (q) 16D: Cluster label for identical timestamps
+  test("(q) 16D: Cluster label appears for identical timestamps ('7 signals, 2026-08-31 07:57 UTC')", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes('class="radar-cluster-label"'));
+    assert.ok(html.includes('7 signals, 2026-08-31 07:57 UTC'));
+  });
+
+  // (r) 16D: Risk scale zones only sentence case without duplicate or mixed case
+  test("(r) 16D: Risk scale zones only sentence case without duplicate or mixed case", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes(">armed 0-29</div>"));
+    assert.ok(html.includes(">alerting 30-49</div>"));
+    assert.ok(html.includes(">gated 50-74</div>"));
+    assert.ok(html.includes(">blocked 75-100</div>"));
+
+    // Verify visible text does not have "Armed", "ALERTING", "Alerting", etc.
+    const segmentTextMatches = Array.from(html.matchAll(/<div class="scale-segment[^"]*"[^>]*>([\s\S]*?)<\/div>/g)).map((m) => m[1]);
+    for (const text of segmentTextMatches) {
+      assert.ok(!text.includes("Armed"), `Scale segment must not contain 'Armed': ${text}`);
+      assert.ok(!text.includes("ALERTING"), `Scale segment must not contain 'ALERTING': ${text}`);
+      assert.ok(!text.includes("Alerting"), `Scale segment must not contain 'Alerting': ${text}`);
+      assert.ok(!text.includes("GATED"), `Scale segment must not contain 'GATED': ${text}`);
+      assert.ok(!text.includes("BLOCKED"), `Scale segment must not contain 'BLOCKED': ${text}`);
+      assert.ok(!text.includes("/"), `Scale segment must not duplicate with '/': ${text}`);
+    }
+  });
+
+  // (s) 16D: Subtitle under verdict word: "scan verdict (recorded replay)"
+  test("(s) 16D: Subtitle under verdict word: 'scan verdict (recorded replay)'", () => {
+    const htmlReplay = renderDashboardHtml({ demo: "replay" });
+    assert.ok(htmlReplay.includes('<div class="verdict-sub">scan verdict (recorded replay)</div>'));
+
+    const htmlLive = renderDashboardHtml({ wallet: testWallet, records: mockRecords });
+    assert.ok(htmlLive.includes('<div class="verdict-sub">scan verdict</div>'));
+  });
 });

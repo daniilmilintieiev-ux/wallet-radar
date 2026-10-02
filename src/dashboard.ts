@@ -162,6 +162,27 @@ function formatDescriptionWithCopy(desc: string): string {
   });
 }
 
+function formatEvidenceShort(evidence: any): string {
+  if (!evidence || typeof evidence !== "object") return "";
+  const parts: string[] = [];
+  if (evidence.daysSilent != null) parts.push(`days silent: ${evidence.daysSilent}`);
+  if (evidence.venue) parts.push(`venue: ${evidence.venue}`);
+  if (evidence.usd != null) parts.push(`amount: $${evidence.usd}`);
+  if (evidence.program) parts.push(`program: ${evidence.program}`);
+  if (evidence.counterparty) parts.push(`counterparty: ${evidence.counterparty}`);
+  if (evidence.interactions != null) parts.push(`interactions: ${evidence.interactions}`);
+  if (Array.isArray(evidence.reasons) && evidence.reasons.length > 0) parts.push(evidence.reasons.join(", "));
+  if (parts.length > 0) return parts.join("; ");
+  return Object.entries(evidence)
+    .filter(([k, v]) => v != null && typeof v !== "object" && k !== "sig")
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("; ");
+}
+
+function escapeText(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 const DASHBOARD_CSS = `
 ${FONT_FACES_CSS}
 
@@ -380,6 +401,16 @@ body {
   100% { transform: rotate(360deg); opacity: 0; }
 }
 
+:focus-visible {
+  outline: 1px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+.radar-dot:focus-visible,
+.anomaly-row:focus-visible {
+  outline: 1px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+
 .radar-dot {
   opacity: 0;
   cursor: pointer;
@@ -390,7 +421,10 @@ body {
 }
 .radar-dot.anomaly-active circle {
   stroke: var(--accent) !important;
-  stroke-width: 2px !important;
+  stroke-width: 2.5px !important;
+}
+.radar-dot.anomaly-active {
+  filter: drop-shadow(0 0 6px var(--accent));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -441,6 +475,12 @@ body {
   font-weight: 700;
   color: var(--ink);
   letter-spacing: .02em;
+}
+.verdict-sub {
+  font-size: 12px;
+  color: var(--ink3);
+  margin-top: 2px;
+  margin-bottom: 2px;
 }
 .risk-sub {
   font-size: 15px;
@@ -918,14 +958,17 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
     medianSwapUsd = replayData.baseline?.medianSwapAmountUsd ?? null;
 
     if (Array.isArray(replayData.anomalies)) {
-      anomalies = replayData.anomalies.map((a: any, idx: number) => ({
-        id: `anomaly-${idx}`,
-        type: a.type || "ANOMALY",
-        severity: a.severity || "medium",
-        score: a.evidence?.score,
-        timestamp: a.timestamp,
-        description: a.description || `${a.type} detected in window`,
-      }));
+      anomalies = replayData.anomalies.map((a: any, idx: number) => {
+        const text = a.text || a.description || formatEvidenceShort(a.evidence) || `${a.type} detected in window`;
+        return {
+          id: `anomaly-${idx}`,
+          type: a.type || "ANOMALY",
+          severity: a.severity || "medium",
+          score: a.evidence?.score,
+          timestamp: a.timestamp,
+          description: text,
+        };
+      });
     }
   } else if (latestRecord) {
     hasData = true;
@@ -941,6 +984,10 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
       description: `${r} detected at slot ${latestRecord.slot}`,
     }));
   }
+
+  const verdictSubtitle = isHistoricReplay
+    ? "scan verdict (recorded replay)"
+    : "scan verdict";
 
   // 2. Radar rendering
   const radarResult = renderRadar({
@@ -1077,16 +1124,17 @@ ${DASHBOARD_CSS}
             <div class="risk-value">${riskScore}</div>
             <div class="risk-meta">
               <div class="risk-verdict">${escapeHtml(verdict)}</div>
+              <div class="verdict-sub">${escapeHtml(verdictSubtitle)}</div>
               <div class="risk-sub">behavioral risk, 0 to 100</div>
             </div>
           </div>
 
           <div class="risk-scale-container">
             <div class="risk-scale-bar">
-              <div class="scale-segment segment-armed ${riskScore < 30 ? "active" : ""}"><span class="zone-tag">armed / ARMED</span> (0-29)</div>
-              <div class="scale-segment segment-alerting ${riskScore >= 30 && riskScore < 50 ? "active" : ""}">alerting (30-49)</div>
-              <div class="scale-segment segment-gated ${riskScore >= 50 && riskScore < 75 ? "active" : ""}">gated (50-74)</div>
-              <div class="scale-segment segment-blocked ${riskScore >= 75 ? "active" : ""}">blocked (75-100)</div>
+              <div class="scale-segment segment-armed ${riskScore < 30 ? "active" : ""}" data-zone="ARMED">armed 0-29</div>
+              <div class="scale-segment segment-alerting ${riskScore >= 30 && riskScore < 50 ? "active" : ""}" data-zone="ALERTING">alerting 30-49</div>
+              <div class="scale-segment segment-gated ${riskScore >= 50 && riskScore < 75 ? "active" : ""}" data-zone="GATED">gated 50-74</div>
+              <div class="scale-segment segment-blocked ${riskScore >= 75 ? "active" : ""}" data-zone="BLOCKED">blocked 75-100</div>
               <div class="risk-marker" style="left: ${Math.max(0, Math.min(100, riskScore))}%;"></div>
             </div>
             <div class="scale-thresholds">
@@ -1158,9 +1206,10 @@ ${DASHBOARD_CSS}
           .map((a) => {
             const sev = (a.severity || "medium").toLowerCase();
             const sevBars = sev === "high" ? 3 : sev === "medium" ? 2 : 1;
-            return `<div class="anomaly-row" data-anomaly-id="${escapeHtml(a.id)}" tabindex="0">
+            const displayType = a.type.replace(/_/g, " ");
+            return `<div class="anomaly-row" data-anomaly-id="${escapeHtml(a.id)}" data-anomaly-text="${escapeText(a.description || a.type)}" tabindex="0">
           <div class="anomaly-time mono">${escapeHtml(fmtStamp(a.timestamp))}</div>
-          <div class="anomaly-type">${escapeHtml(a.type)}</div>
+          <div class="anomaly-type" title="${escapeHtml(a.type)}">${escapeHtml(displayType)}</div>
           <div class="anomaly-sev">
             <div class="sev-meter" title="Severity: ${escapeHtml(sev)}">
               <span class="sev-bar ${sevBars >= 1 ? "filled" : ""}"></span>
@@ -1169,7 +1218,7 @@ ${DASHBOARD_CSS}
             </div>
             ${sev === "high" ? `<span class="badge-bad">high</span>` : ""}
           </div>
-          <div class="anomaly-desc">${formatDescriptionWithCopy(a.description || a.type)}</div>
+          <div class="anomaly-desc">${escapeText(a.description || a.type)}</div>
         </div>`;
           })
           .join("\n        ")}
@@ -1265,29 +1314,41 @@ ${DASHBOARD_CSS}
 
   <script>
     // Synchronize hover / focus / tap between radar dots and anomaly list
+    function clearActive() {
+      document.querySelectorAll('.anomaly-active').forEach(function(n) {
+        n.classList.remove('anomaly-active');
+      });
+    }
+
     document.querySelectorAll('[data-anomaly-id]').forEach(function(el) {
       var id = el.getAttribute('data-anomaly-id');
       if (!id) return;
       function activate() {
+        clearActive();
         document.querySelectorAll('[data-anomaly-id="' + id + '"]').forEach(function(n) {
           n.classList.add('anomaly-active');
         });
       }
       function deactivate() {
-        document.querySelectorAll('[data-anomaly-id="' + id + '"]').forEach(function(n) {
-          n.classList.remove('anomaly-active');
-        });
+        clearActive();
       }
       el.addEventListener('mouseenter', activate);
       el.addEventListener('mouseleave', deactivate);
       el.addEventListener('focus', activate);
       el.addEventListener('blur', deactivate);
       el.addEventListener('touchstart', function() {
-        document.querySelectorAll('.anomaly-active').forEach(function(n) {
-          n.classList.remove('anomaly-active');
-        });
         activate();
       }, { passive: true });
+    });
+
+    // Escape key clears highlights
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' || e.key === 'Esc') {
+        clearActive();
+        if (document.activeElement && typeof document.activeElement.blur === 'function') {
+          document.activeElement.blur();
+        }
+      }
     });
 
     // Copy button helper for addresses
