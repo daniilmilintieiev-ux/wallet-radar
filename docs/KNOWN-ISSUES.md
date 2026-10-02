@@ -429,3 +429,35 @@ responses, user input) through those import sites:
   every wallet/mint validation point for `/trust`, `/batch`, `/scan`,
   `/simulate`, `/gate-copy`, `/watch`, `/unwatch`, `/defense`, and the
   matching MCP tools.
+
+## BUG-1: Confirmation mismatch between x402 server and SDK
+
+- Source: Stage 17D reproduction & Stage 15D issue C1.
+- `src/x402server.ts`: `verifySolanaPaymentRpc` queried Solana RPC `getTransaction` without specifying a `commitment` level, defaulting on Solana nodes to `"finalized"`. Meanwhile, `src/sdk/index.ts` confirmed payment transactions at `"confirmed"` commitment and immediately retried the endpoint, causing the server to respond with 402 `"Transaction not found on-chain"`.
+- Resolved in C1:
+  - Server now reads `RADAR_X402_COMMITMENT` ("confirmed" or "finalized", default "confirmed"; invalid values logged with warning and fallback to "confirmed"), and passes `commitment` to `getTransaction`.
+  - When RPC returns `null`, server retries up to 3 times with 1-second pause before returning 402 with hint `"Transaction not found on-chain (retry in a few seconds if you just paid)"`.
+  - SDK polls `getSignatureStatuses` for up to 20 seconds after transaction submission until desired `commitment` is reached, and retries 402 "not found" responses up to 3 times with 2-second delay.
+- **Status:** fixed in branch fixes-c (commit f888112), not deployed. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`, `test/adversarial.test.ts`).
+
+## POST /analyze and 500: Missing input validation prior to payment and internal error leakage
+
+- Source: Stage 17D reproduction & Stage 15D issues C2 & C3.
+- `src/x402server.ts` and `src/sdk/index.ts`: `POST /analyze` expected Helius Enhanced transaction objects with `signature` (string) and `timestamp` (number). When callers provided raw RPC transactions (`blockTime`, `transaction.signatures`), the server either returned 402 without validating body format, or verified payment and crashed inside `defaultAnalyzeHandler` with an unhandled exception, responding with HTTP 500 instead of HTTP 400.
+- Resolved in C2 & C3:
+  - `src/x402server.ts` validates `txs` format before checking payment and before returning 402. Invalid transaction items return HTTP 400 with `"txs[i] must be a Helius Enhanced transaction object with signature (string) and timestamp (number); got raw RPC format?"`.
+  - `src/sdk/index.ts` (`client.analyze`) validates `txs` format prior to payment, throwing descriptive error without sending funds or invoking payment signers.
+  - Handler input errors return HTTP 400; unexpected errors return HTTP 500 `"Internal server error"` without internal details.
+  - If payment is verified but handler fails, response sets `"paymentVerified": true` and hint `"retry with the same signature within <secondsLeft>s"`, keeping the payment unspent (`settled_payments` not marked) so retrying with a corrected body succeeds without re-paying.
+- **Status:** fixed in branch fixes-c (commit b2a85e1, commit 178ee43), not deployed. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`).
+
+## /economics displays operator test payments rather than external protocol revenue
+
+- Source: Stage 11E/17B verification & Stage 15D issue C4.
+- `GET /economics` displays settled payment totals from `settled_payments`. Historical payments on record (e.g. 0.005 USDC) reflect operator test/pipeline confirmation transactions from the operator's own demo wallet (`3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh`), rather than external commercial customer revenue.
+- Resolved in C1/C2:
+  - Payment settlement tracking explicitly links signature to endpoint, payer, recipient, and target wallet.
+  - Strict replay prevention and idempotent retry mechanisms prevent repeated or failed runs from creating phantom revenue entries.
+  - Clarified documentation distinguishing synthetic verification test transactions from production protocol fees.
+- **Status:** fixed in branch fixes-c (commit f888112), not deployed. Verified in test suite (`test/x402.test.ts`, `test/http-server.test.ts`).
+
