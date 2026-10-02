@@ -118,8 +118,9 @@ export function renderRadar(opts: RenderRadarOptions): RadarRenderResult {
         const t = a.timestamp || windowStart!;
         const frac = Math.max(0, Math.min(1, (t - windowStart!) / span));
         const baseAngle = frac * 330;
-        const offset = (pos - (k - 1) / 2) * 3;
-        const finalAngle = Math.max(0, Math.min(359, (baseAngle + offset + 360) % 360));
+        const offset = (pos - (k - 1) / 2) * 6;
+        const clampedOffset = Math.max(-25, Math.min(25, offset));
+        const finalAngle = Math.max(0, Math.min(359, (baseAngle + clampedOffset + 360) % 360));
         computedAngles[idx] = finalAngle;
       });
     }

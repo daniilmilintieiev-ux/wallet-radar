@@ -654,7 +654,8 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
 
     for (let i = 0; i < replayRaw.anomalies.length; i++) {
       const expectedText = replayRaw.anomalies[i].text;
-      assert.equal(descMatches[i], expectedText, `Row ${i} description must exactly equal anomaly.text`);
+      const strippedText = descMatches[i].replace(/<[^>]+>/g, "");
+      assert.equal(strippedText, expectedText, `Row ${i} description must exactly equal anomaly.text`);
       assert.ok(html.includes(expectedText), `HTML must contain raw anomaly.text for row ${i}`);
     }
   });
@@ -730,5 +731,55 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
 
     const htmlLive = renderDashboardHtml({ wallet: testWallet, records: mockRecords });
     assert.ok(htmlLive.includes('<div class="verdict-sub">scan verdict</div>'));
+  });
+
+  // (t) 16E: Radar cluster anomalies separated by >= 6 deg between neighbors, max offset <= 25 deg
+  test("(t) 16E: Radar cluster anomalies separated by >= 6 deg between neighbors, max offset <= 25 deg", () => {
+    const replayRaw = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "docs/dashboard/replay-8XeK5m.json"), "utf8"));
+    const html = renderDashboardHtml({ demo: "replay" });
+
+    // Number of dots equals number of anomalies
+    const dots = html.match(/class="[^"]*\bradar-dot\b/g) || [];
+    assert.equal(dots.length, replayRaw.anomalies.length, "Dot count must equal anomaly count");
+
+    // All low-weight dots have radius 4px
+    const lowDots = html.match(/<circle[^>]*class="[^"]*\bradar-dot-low\b[^"]*"[^>]*>/g) || [];
+    assert.ok(lowDots.length > 0);
+    for (const d of lowDots) {
+      assert.ok(d.includes('r="4"'), `Low weight dot must have radius 4px: ${d}`);
+    }
+
+    // Extract angles for cluster with timestamp 1788163072
+    // Angle in degree = (delay / 2.4) * 360
+    const clusterIndices = replayRaw.anomalies
+      .map((a: any, idx: number) => ({ idx, timestamp: a.timestamp }))
+      .filter((item: any) => item.timestamp === 1788163072)
+      .map((item: any) => item.idx);
+
+    const delays = Array.from(html.matchAll(/class="[^"]*radar-dot[^"]*"[^>]*data-anomaly-id="anomaly-(\d+)"[^>]*style="animation-delay:\s*([0-9.]+)s/g))
+      .map((m) => ({ idx: parseInt(m[1], 10), delay: parseFloat(m[2]) }));
+
+    const clusterDelays = delays.filter((d) => clusterIndices.includes(d.idx)).sort((a, b) => a.delay - b.delay);
+    assert.equal(clusterDelays.length, 7, "Cluster must contain 7 anomalies");
+
+    const angles = clusterDelays.map((d) => (d.delay / 2.4) * 360);
+    const centerAngle = (angles[0] + angles[angles.length - 1]) / 2;
+
+    for (let i = 0; i < angles.length - 1; i++) {
+      const diff = angles[i + 1] - angles[i];
+      assert.ok(diff >= 5.99, `Adjacent angle diff must be >= 6 deg (got ${diff.toFixed(2)})`);
+    }
+
+    for (const angle of angles) {
+      assert.ok(Math.abs(angle - centerAngle) <= 25.01, `Angle offset must be <= 25 deg from center (got ${Math.abs(angle - centerAngle).toFixed(2)})`);
+    }
+  });
+
+  // (u) 16E: Addresses, programs, and identifiers formatted in monospace font
+  test("(u) 16E: Addresses, programs, and identifiers formatted in monospace font", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes('<span class="mono">OKX_DEX_ROUTER</span>'));
+    assert.ok(html.includes('<span class="mono">proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u</span>'));
+    assert.ok(html.includes('<span class="mono">6qoHtd3NpwjVB76Z5bLfbXc2FYuuuytmThhH6ouZQHUJ</span>'));
   });
 });

@@ -183,6 +183,15 @@ function escapeText(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function formatAnomalyText(desc: string): string {
+  let escaped = escapeText(desc);
+  // Wrap Solana base58 addresses (32-44 characters) in mono
+  escaped = escaped.replace(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/g, '<span class="mono">$1</span>');
+  // Wrap identifiers like OKX_DEX_ROUTER (uppercase with underscores) in mono
+  escaped = escaped.replace(/\b([A-Z0-9]+_[A-Z0-9_]+)\b/g, '<span class="mono">$1</span>');
+  return escaped;
+}
+
 const DASHBOARD_CSS = `
 ${FONT_FACES_CSS}
 
@@ -1218,7 +1227,7 @@ ${DASHBOARD_CSS}
             </div>
             ${sev === "high" ? `<span class="badge-bad">high</span>` : ""}
           </div>
-          <div class="anomaly-desc">${escapeText(a.description || a.type)}</div>
+          <div class="anomaly-desc">${formatAnomalyText(a.description || a.type)}</div>
         </div>`;
           })
           .join("\n        ")}
