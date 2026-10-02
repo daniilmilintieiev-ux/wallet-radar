@@ -4,7 +4,7 @@ import path from "node:path";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "./oracle/index.js";
 import { escapeHtml, computeVerdict } from "./htmlreport.js";
 import { Store } from "./store.js";
-import { corsHeaders } from "./config.js";
+import { corsHeaders, isValidBase58 } from "./config.js";
 import { enforcementFor, DEFENSE_THRESHOLDS, DefenseState, DefenseEnforcement } from "./defense.js";
 import { FONT_FACES_CSS, DISPLAY_FONT_STACK, MONO_FONT_STACK } from "./dashboard-fonts.js";
 import { renderRadar, RadarAnomaly } from "./dashboard-radar.js";
@@ -956,6 +956,18 @@ export function renderDashboardHtml(opts: DashboardRenderOptions): string {
   let recordedAtUtc = "";
   let isHistoricReplay = false;
 
+  let emptyLine1 = "No wallet selected.";
+  let emptyLine2 = "Open /dashboard?wallet=<address> to read its scan history.";
+  if (wallet && wallet.trim().length > 0) {
+    if (!isValidBase58(wallet)) {
+      emptyLine1 = "This does not look like a Solana address (32 bytes, base58).";
+      emptyLine2 = "Enter a valid 32-44 character base58 address, or view the demo replay.";
+    } else {
+      emptyLine1 = "No scan records for this wallet.";
+      emptyLine2 = "Run a scan, or open /dashboard?demo=replay to see a recorded example.";
+    }
+  }
+
   // 1. Data ingestion (from replay or live record)
   if (opts.demo === "replay" && replayData) {
     hasData = true;
@@ -1174,8 +1186,8 @@ ${DASHBOARD_CSS}
         </div>`
             : `<!-- Empty State -->
         <div class="empty-hero-box">
-          <div class="empty-line1">No wallet selected.</div>
-          <div class="empty-line2">Open /dashboard?wallet=<address> to read its scan history.</div>
+          <div class="empty-line1">${emptyLine1}</div>
+          <div class="empty-line2">${emptyLine2}</div>
           <div class="empty-line3">
             <a href="/dashboard?demo=replay" class="acc">View recorded replay (8XeK5m...)</a>
           </div>

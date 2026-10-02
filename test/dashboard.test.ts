@@ -91,10 +91,20 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       generatedAt: 1726300500,
     });
 
-    assert.ok(html.includes("No wallet selected."));
+    assert.ok(html.includes("No scan records for this wallet."));
+    assert.ok(html.includes("Run a scan, or open /dashboard?demo=replay to see a recorded example."));
+    assert.ok(!html.includes("No wallet selected."));
     assert.ok(html.includes(testWallet));
-    assert.ok(html.includes("Open /dashboard?wallet=<address> to read its scan history."));
-    assert.ok(html.includes("View recorded replay"));
+  });
+
+  test("renderDashboardHtml: renders invalid address error when wallet format is invalid", () => {
+    const html = renderDashboardHtml({
+      wallet: "invalid-wallet-123",
+      records: [],
+    });
+
+    assert.ok(html.includes("This does not look like a Solana address (32 bytes, base58)."));
+    assert.ok(!html.includes("No wallet selected."));
   });
 
   test("renderDashboardHtml: renders hero verdict and timeline table for populated records", () => {
@@ -781,5 +791,25 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     assert.ok(html.includes('<span class="mono">OKX_DEX_ROUTER</span>'));
     assert.ok(html.includes('<span class="mono">proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u</span>'));
     assert.ok(html.includes('<span class="mono">6qoHtd3NpwjVB76Z5bLfbXc2FYuuuytmThhH6ouZQHUJ</span>'));
+  });
+
+  // (v) 16F: Three wallet empty/invalid states: no wallet, valid wallet without records, invalid address
+  test("(v) 16F: Three wallet empty/invalid states: no wallet, valid wallet without records, invalid address", () => {
+    // 1. No wallet specified
+    const htmlNone = renderDashboardHtml({});
+    assert.ok(htmlNone.includes("No wallet selected."));
+    assert.ok(htmlNone.includes("Open /dashboard?wallet=<address> to read its scan history."));
+    assert.ok(!htmlNone.includes("No scan records for this wallet."));
+
+    // 2. Valid wallet without records
+    const htmlEmpty = renderDashboardHtml({ wallet: "4Nd1mBQtrMJVYVfKf2PJy9NZPdUZKnZiHgZCMZFgu5TD", records: [] });
+    assert.ok(htmlEmpty.includes("No scan records for this wallet."));
+    assert.ok(htmlEmpty.includes("Run a scan, or open /dashboard?demo=replay to see a recorded example."));
+    assert.ok(!htmlEmpty.includes("No wallet selected."));
+
+    // 3. Invalid wallet address
+    const htmlInvalid = renderDashboardHtml({ wallet: "not-a-valid-solana-addr", records: [] });
+    assert.ok(htmlInvalid.includes("This does not look like a Solana address (32 bytes, base58)."));
+    assert.ok(!htmlInvalid.includes("No wallet selected."));
   });
 });
