@@ -909,5 +909,53 @@ describe("Agent SDK v1 (src/sdk)", () => {
     assert.equal(result.verdict, "SAFE");
     assert.equal(attempts, 4, `Expected 4 total fetch calls (1 challenge + 2 retries on 402 not-found + 1 success), got ${attempts}`);
   });
+
+  test("C3: sdk.analyze validates txs format before payment and throws without sending transaction", async () => {
+    let connectionCalled = false;
+    let paymentSignerCalled = false;
+    const stubConnection = {
+      getLatestBlockhash: async () => {
+        connectionCalled = true;
+        return { blockhash: "mock_blockhash", lastValidBlockHeight: 100 };
+      },
+      sendRawTransaction: async () => {
+        connectionCalled = true;
+        return "mock_tx_sig";
+      },
+      confirmTransaction: async () => {
+        connectionCalled = true;
+        return { value: { err: null } };
+      },
+    } as any;
+
+    const client = createRadarClient({
+      rpc: stubConnection,
+      x402Payer: Keypair.generate(),
+      paymentSigner: () => {
+        paymentSignerCalled = true;
+        return { signature: "sig", payer: "payer" };
+      },
+    });
+
+    const rawRpcTxs = [
+      {
+        blockTime: 1700000000,
+        transaction: { signatures: ["raw_sig_1"] },
+      },
+    ];
+
+    await assert.rejects(
+      async () => {
+        await client.analyze(targetWallet, rawRpcTxs);
+      },
+      {
+        message: /txs\[0\] must be a Helius Enhanced transaction object with signature \(string\) and timestamp \(number\); got raw RPC format\?/i,
+      },
+    );
+
+    assert.equal(connectionCalled, false, "Stub connection must not be called when txs format is invalid");
+    assert.equal(paymentSignerCalled, false, "Payment signer must not be called when txs format is invalid");
+  });
 });
+
 

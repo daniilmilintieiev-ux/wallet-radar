@@ -3,7 +3,7 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } f
 import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "../oracle/index.js";
 import { USDC_MINT } from "../types.js";
-import { signPaymentProof } from "../x402server.js";
+import { signPaymentProof, validateAnalyzeTxs } from "../x402server.js";
 import type { TrustProofBundle } from "../trust-proof.js";
 
 export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -642,6 +642,12 @@ export class RadarClient {
   async analyze(wallet: string, txs?: unknown): Promise<RadarClientAnalyzeResult> {
     if (!wallet || typeof wallet !== "string") {
       throw new Error("Target wallet address is required for analyze");
+    }
+
+    // C3: Validate txs format before attempting payment
+    const valRes = validateAnalyzeTxs(txs ?? []);
+    if (!valRes.valid) {
+      throw new Error(valRes.error);
     }
 
     const endpointUrl = `${this.baseUrl}/analyze`;
