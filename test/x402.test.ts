@@ -1893,6 +1893,229 @@ test("C1: server with stub-RPC always returning null responds 402 after 3 retrie
   }
 });
 
+test("C2: /analyze raw RPC format without payment returns 400 without 402", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const server = createX402Server({ store, recipient });
+  const { port, close } = await startServer(server);
+
+  try {
+    const rawRpcTxs = [
+      {
+        blockTime: 1700000000,
+        transaction: { signatures: ["raw_sig_1"] },
+      },
+    ];
+    const res = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallet: "DemoTarget111111111111111111111111111111111",
+        txs: rawRpcTxs,
+      }),
+    });
+
+    assert.equal(res.status, 400, "Raw format without payment must return 400, not 402");
+    const json = (await res.json()) as any;
+    assert.equal(
+      json.error,
+      "txs[0] must be a Helius Enhanced transaction object with signature (string) and timestamp (number); got raw RPC format?",
+    );
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("C2: /analyze raw RPC format with payment returns 400 with settled=0, retry with valid body gives 200 and settled=1", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const payerKp = Keypair.generate();
+  const payer = payerKp.publicKey.toBase58();
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+  const sig = "sig_c2_retry_settle_test";
+
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async (proof, req) => ({
+      valid: true,
+      amount: req.minAmount,
+      payer: proof.payer,
+      recipient: req.recipient,
+    }),
+    analyzeHandler: async (wallet, txs) => ({
+      ok: true,
+      wallet,
+      txCount: Array.isArray(txs) ? txs.length : 0,
+      riskScore: 0,
+    }),
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const rawRpcTxs = [
+      {
+        blockTime: 1700000000,
+        transaction: { signatures: ["raw_sig_1"] },
+      },
+    ];
+
+    // 1. Raw format with payment -> 400 and settled=0
+    const res1 = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({
+        wallet: targetWallet,
+        txs: rawRpcTxs,
+      }),
+    });
+
+    assert.equal(res1.status, 400, "Raw format with payment must return 400");
+    const json1 = (await res1.json()) as any;
+    assert.equal(
+      json1.error,
+      "txs[0] must be a Helius Enhanced transaction object with signature (string) and timestamp (number); got raw RPC format?",
+    );
+    assert.equal(store.hasSettledPayment(sig), false, "Settled must be 0 after raw format error");
+
+    // 2. Retry of same signature with valid body -> 200 and settled=1
+    const validTxs = [
+      {
+        signature: "enhanced_sig_1",
+        timestamp: 1700000000,
+        source: "JUPITER",
+        programs: [],
+      },
+    ];
+
+    const res2 = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({
+        wallet: targetWallet,
+        txs: validTxs,
+      }),
+    });
+
+    assert.equal(res2.status, 200, "Retry with valid body and same signature must return 200");
+    const json2 = (await res2.json()) as any;
+    assert.equal(json2.ok, true);
+    assert.equal(store.hasSettledPayment(sig), true, "Settled must be 1 after successful retry");
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("C2: when payment is verified but handler fails, response has paymentVerified=true and retry hint; unexpected errors give 500 'Internal server error'", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const payer = Keypair.generate().publicKey.toBase58();
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+  const sig = "sig_c2_handler_failure";
+
+  let failMode: "unexpected" | "input" | "none" = "unexpected";
+
+  const server = createX402Server({
+    store,
+    recipient,
+    maxAgeSec: 300,
+    paymentVerifier: async (proof, req) => ({
+      valid: true,
+      amount: req.minAmount,
+      payer: proof.payer,
+      recipient: req.recipient,
+    }),
+    analyzeHandler: async (wallet, txs) => {
+      if (failMode === "unexpected") {
+        throw new Error("database disk connection dropped");
+      }
+      if (failMode === "input") {
+        const err: any = new Error("Invalid transaction window: start exceeds end");
+        err.status = 400;
+        throw err;
+      }
+      return { ok: true, wallet, txCount: 1 };
+    },
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const validTxs = [{ signature: "s1", timestamp: 1700000000 }];
+
+    // 1. Unexpected error in handler -> 500 "Internal server error" without internal details, paymentVerified: true and hint
+    failMode = "unexpected";
+    const res1 = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: targetWallet, txs: validTxs }),
+    });
+
+    assert.equal(res1.status, 500);
+    const json1 = (await res1.json()) as any;
+    assert.equal(json1.error, "Internal server error");
+    assert.equal(json1.paymentVerified, true);
+    assert.match(json1.hint, /^retry with the same signature within \d+s$/);
+    assert.equal(store.hasSettledPayment(sig), false);
+
+    // 2. Input error in handler -> 400, paymentVerified: true and hint
+    failMode = "input";
+    const res2 = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: targetWallet, txs: validTxs }),
+    });
+
+    assert.equal(res2.status, 400);
+    const json2 = (await res2.json()) as any;
+    assert.match(json2.error, /Invalid transaction window/i);
+    assert.equal(json2.paymentVerified, true);
+    assert.match(json2.hint, /^retry with the same signature within \d+s$/);
+    assert.equal(store.hasSettledPayment(sig), false);
+
+    // 3. Retry succeeds -> 200 and settled
+    failMode = "none";
+    const res3 = await fetch(`http://127.0.0.1:${port}/analyze`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: targetWallet, txs: validTxs }),
+    });
+
+    assert.equal(res3.status, 200);
+    const json3 = (await res3.json()) as any;
+    assert.equal(json3.ok, true);
+    assert.equal(store.hasSettledPayment(sig), true);
+  } finally {
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
 
 
 

@@ -125,6 +125,55 @@ export interface PaymentVerificationResult {
   amount?: number;
   payer?: string;
   recipient?: string;
+  blockTime?: number;
+}
+
+export function validateAnalyzeTxs(txs: unknown): { valid: boolean; error?: string } {
+  let list: unknown = txs;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return { valid: false, error: "body.txs must be a JSON array of transaction objects" };
+    }
+  }
+  if (!Array.isArray(list)) {
+    return { valid: false, error: "body.txs must be an array of transactions (or a JSON string encoding one)" };
+  }
+  if (list.length > 1000) {
+    return { valid: false, error: "body.txs: at most 1000 transactions allowed" };
+  }
+  for (let i = 0; i < list.length; i++) {
+    const item: any = list[i];
+    const isEnhanced =
+      item !== null &&
+      typeof item === "object" &&
+      typeof item.signature === "string" &&
+      item.signature.trim().length > 0 &&
+      typeof item.timestamp === "number" &&
+      Number.isFinite(item.timestamp);
+
+    if (!isEnhanced) {
+      const isRawRpc =
+        item !== null &&
+        typeof item === "object" &&
+        ("blockTime" in item || "transaction" in item);
+      const hint = isRawRpc ? "; got raw RPC format?" : "";
+      return {
+        valid: false,
+        error: `txs[${i}] must be a Helius Enhanced transaction object with signature (string) and timestamp (number)${hint}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+export function isInputError(err: any): boolean {
+  if (!err) return false;
+  if (err.status === 400 || err.statusCode === 400) return true;
+  if (err.name === "ValidationError" || err.name === "InputError") return true;
+  const msg = typeof err.message === "string" ? err.message : String(err);
+  return /invalid|malformed|missing|bad input|bad request|txs\[|wallet/i.test(msg);
 }
 
 export type PaymentVerifier = (
@@ -524,6 +573,7 @@ export async function verifySolanaPaymentRpc(
       amount: transferred,
       payer: proof.payer,
       recipient: requirement.recipient,
+      blockTime: tx.blockTime,
     };
   } catch (err) {
     const rawMsg = err instanceof Error ? err.message : String(err);
@@ -777,17 +827,25 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
   const defaultAnalyzeHandler = async (wallet: string, txs: EnhancedTx[] | string) => {
     let parsed: EnhancedTx[];
     if (typeof txs === "string") {
-      parsed = JSON.parse(txs);
+      try {
+        parsed = JSON.parse(txs);
+      } catch {
+        const err: any = new Error("Invalid txs: expected a JSON array of transaction objects");
+        err.status = 400;
+        throw err;
+      }
     } else if (Array.isArray(txs)) {
       parsed = txs;
     } else {
-      throw new Error("Invalid txs: expected a JSON array of transaction objects");
+      const err: any = new Error("Invalid txs: expected a JSON array of transaction objects");
+      err.status = 400;
+      throw err;
     }
-    for (let i = 0; i < parsed.length; i++) {
-      const res = ENHANCED_TX_SCHEMA.safeParse(parsed[i]);
-      if (!res.success) {
-        throw new Error(`Invalid txs[${i}]: expected transaction object with signature (string) and timestamp (number)`);
-      }
+    const valRes = validateAnalyzeTxs(parsed);
+    if (!valRes.valid) {
+      const err: any = new Error(valRes.error);
+      err.status = 400;
+      throw err;
     }
     const storedBaseline = isValidBase58(wallet) ? store.getBaseline(wallet) : null;
     const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
@@ -1032,6 +1090,16 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
         }
         const activeRecipient = recipient ?? "";
 
+        // C2: Format of txs is checked BEFORE payment check and before returning 402
+        if (pathname === "/analyze" && body && body.txs !== undefined) {
+          const valRes = validateAnalyzeTxs(body.txs);
+          if (!valRes.valid) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: valRes.error }));
+            return;
+          }
+        }
+
         // 1. Extract payment proof
         const proof = extractPaymentProof(req, body);
         if (!proof) {
@@ -1079,30 +1147,70 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             return;
           }
 
+          const getSecondsLeft = () => {
+            const maxAge = options.maxAgeSec ?? 300;
+            let age = 0;
+            if (proof.timestamp) {
+              age = Math.floor(Date.now() / 1000) - proof.timestamp;
+            } else if ((verResult as any)?.blockTime) {
+              age = Math.floor(Date.now() / 1000) - (verResult as any).blockTime;
+            }
+            return Math.max(0, maxAge - age);
+          };
+
           // 3.5. Validate endpoint params BEFORE settling, so a validly-paid
           // request that is missing its parameters 400s without marking the
           // signature settled
           if (pathname === "/scan") {
             if (typeof body?.wallet !== "string" || !isValidSolanaAddress(body.wallet)) {
+              const secondsLeft = getSecondsLeft();
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "body.wallet must be a Solana base58 address" }));
+              res.end(
+                JSON.stringify({
+                  error: "body.wallet must be a Solana base58 address",
+                  paymentVerified: true,
+                  hint: `retry with the same signature within ${secondsLeft}s`,
+                }),
+              );
               return;
             }
           } else if (pathname === "/analyze") {
             const wallet = body?.wallet;
             if (!wallet || typeof wallet !== "string" || wallet.length > 64) {
+              const secondsLeft = getSecondsLeft();
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+              res.end(
+                JSON.stringify({
+                  error: "Missing required parameters: wallet and txs",
+                  paymentVerified: true,
+                  hint: `retry with the same signature within ${secondsLeft}s`,
+                }),
+              );
               return;
             }
             if (!body?.txs || (!Array.isArray(body.txs) && typeof body.txs !== "string")) {
+              const secondsLeft = getSecondsLeft();
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+              res.end(
+                JSON.stringify({
+                  error: "Missing required parameters: wallet and txs",
+                  paymentVerified: true,
+                  hint: `retry with the same signature within ${secondsLeft}s`,
+                }),
+              );
               return;
             }
-            if (Array.isArray(body.txs) && body.txs.length > 1000) {
+            const valRes = validateAnalyzeTxs(body.txs);
+            if (!valRes.valid) {
+              const secondsLeft = getSecondsLeft();
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "body.txs: at most 1000 transactions allowed" }));
+              res.end(
+                JSON.stringify({
+                  error: valRes.error,
+                  paymentVerified: true,
+                  hint: `retry with the same signature within ${secondsLeft}s`,
+                }),
+              );
               return;
             }
           }
@@ -1117,7 +1225,24 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           // (e.g. upstream RPC outage -> 500) can be retried with the same
           // on-chain payment instead of burning the user's funds (audit 1.4).
           if (pathname === "/scan") {
-            const rawScanRes = (await scanHandler(body.wallet as string)) as Record<string, any>;
+            let rawScanRes: Record<string, any>;
+            try {
+              rawScanRes = (await scanHandler(body.wallet as string)) as Record<string, any>;
+            } catch (handlerErr: any) {
+              const secondsLeft = getSecondsLeft();
+              const isInput = isInputError(handlerErr);
+              const status = isInput ? 400 : 500;
+              const errorMsg = isInput ? (handlerErr.message || "Bad Request") : "Internal server error";
+              res.writeHead(status, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  error: errorMsg,
+                  paymentVerified: true,
+                  hint: `retry with the same signature within ${secondsLeft}s`,
+                }),
+              );
+              return;
+            }
             recordHeliusCost(store, "/scan");
             const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
 
@@ -1241,7 +1366,24 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           }
 
           if (pathname === "/analyze") {
-            const analyzeRes = await analyzeHandler(body.wallet as string, body.txs as EnhancedTx[] | string);
+            let analyzeRes: unknown;
+            try {
+              analyzeRes = await analyzeHandler(body.wallet as string, body.txs as EnhancedTx[] | string);
+            } catch (handlerErr: any) {
+              const secondsLeft = getSecondsLeft();
+              const isInput = isInputError(handlerErr);
+              const status = isInput ? 400 : 500;
+              const errorMsg = isInput ? (handlerErr.message || "Bad Request") : "Internal server error";
+              res.writeHead(status, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  error: errorMsg,
+                  paymentVerified: true,
+                  hint: `retry with the same signature within ${secondsLeft}s`,
+                }),
+              );
+              return;
+            }
             const settled = store.recordSettledPayment({
               signature: proof.signature,
               payer: proof.payer,
