@@ -189,34 +189,70 @@ export async function verifySolanaPaymentRpc(
   requirement: PaymentRequirement,
   rpcUrl: string = getRpcUrl(),
 ): Promise<PaymentVerificationResult> {
+  const rawCommitment = process.env.RADAR_X402_COMMITMENT?.trim();
+  let commitment: "confirmed" | "finalized" = "confirmed";
+  if (rawCommitment) {
+    if (rawCommitment === "confirmed" || rawCommitment === "finalized") {
+      commitment = rawCommitment;
+    } else {
+      console.warn(`[x402] Invalid RADAR_X402_COMMITMENT "${rawCommitment}", ignoring; falling back to "confirmed"`);
+    }
+  }
+
   try {
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "x402-verify",
-        method: "getTransaction",
-        params: [
-          proof.signature,
-          {
-            encoding: "jsonParsed",
-            maxSupportedTransactionVersion: 0,
-          },
-        ],
-      }),
-      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      return { valid: false, error: `RPC HTTP error ${res.status}: ${res.statusText}` };
+    const fetchTx = async () => {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "x402-verify",
+          method: "getTransaction",
+          params: [
+            proof.signature,
+            {
+              encoding: "jsonParsed",
+              commitment,
+              maxSupportedTransactionVersion: 0,
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        return { ok: false as const, error: `RPC HTTP error ${res.status}: ${res.statusText}`, tx: null };
+      }
+      const json = (await res.json()) as any;
+      if (json.error) {
+        return { ok: false as const, error: `RPC error: ${json.error.message || JSON.stringify(json.error)}`, tx: null };
+      }
+      return { ok: true as const, error: null, tx: json.result };
+    };
+
+    let fetchResult = await fetchTx();
+    if (!fetchResult.ok) {
+      return { valid: false, error: fetchResult.error! };
     }
-    const json = (await res.json()) as any;
-    if (json.error) {
-      return { valid: false, error: `RPC error: ${json.error.message || JSON.stringify(json.error)}` };
-    }
-    const tx = json.result;
+    let tx = fetchResult.tx;
     if (!tx) {
-      return { valid: false, error: "Transaction not found on-chain" };
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        fetchResult = await fetchTx();
+        if (!fetchResult.ok) {
+          return { valid: false, error: fetchResult.error! };
+        }
+        if (fetchResult.tx) {
+          tx = fetchResult.tx;
+          break;
+        }
+      }
+    }
+
+    if (!tx) {
+      return {
+        valid: false,
+        error: "Transaction not found on-chain (retry in a few seconds if you just paid)",
+      };
     }
     if (tx.meta?.err) {
       return { valid: false, error: "Transaction failed on-chain" };

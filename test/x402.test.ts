@@ -1745,5 +1745,154 @@ test("A3: concurrent / duplicate settlement returns 409 Conflict with 'payment s
   }
 });
 
+test("C1: server with stub-RPC that first returns null then transaction succeeds with 200", async () => {
+  const { store, dir } = tmpDb();
+  const recipientKp = Keypair.generate();
+  const recipient = recipientKp.publicKey.toBase58();
+  const payerKp = Keypair.generate();
+  const payer = payerKp.publicKey.toBase58();
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+  const sig = "sig_c1_retry_success";
+  const now = Math.floor(Date.now() / 1000);
+  const proof = signPaymentProof({ targetWallet, timestamp: now }, payerKp);
+
+  let rpcCalls = 0;
+  const mockRpcServer = http.createServer((req, res) => {
+    rpcCalls++;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (rpcCalls === 1) {
+      // First attempt: transaction not found yet
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: "x402-verify", result: null }));
+    } else {
+      // Subsequent attempt: transaction found and confirmed
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: "x402-verify",
+          result: {
+            blockTime: Math.floor(Date.now() / 1000),
+            meta: {
+              err: null,
+              preTokenBalances: [],
+              postTokenBalances: [],
+              innerInstructions: [
+                {
+                  instructions: [
+                    {
+                      parsed: {
+                        type: "transfer",
+                        info: {
+                          destination: recipient,
+                          amount: "5000",
+                          tokenAmount: { decimals: 6 },
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+            transaction: {
+              message: {
+                accountKeys: [
+                  { pubkey: payer, signer: true, writable: true },
+                  { pubkey: recipient, signer: false, writable: true },
+                ],
+                instructions: [],
+              },
+              signatures: [sig],
+            },
+          },
+        }),
+      );
+    }
+  });
+  const { port: rpcPort, close: closeRpc } = await startServer(mockRpcServer);
+
+  const server = createX402Server({
+    store,
+    recipient,
+    rpcUrl: `http://127.0.0.1:${rpcPort}`,
+    scanHandler: async (w) => ({ ok: true, wallet: w, riskScore: 10, verdict: "SAFE" }),
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+        "X-Payment-Proof": proof.proofSignature,
+        "X-Payment-Timestamp": String(now),
+      },
+      body: JSON.stringify({ wallet: targetWallet }),
+    });
+
+    assert.equal(res.status, 200, "Server must succeed with 200 after retrying null RPC response");
+    assert.ok(rpcCalls >= 2, `Expected at least 2 RPC calls, got ${rpcCalls}`);
+    assert.equal(store.hasSettledPayment(sig), true);
+  } finally {
+    await close();
+    await closeRpc();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("C1: server with stub-RPC always returning null responds 402 after 3 retries", async () => {
+  const { store, dir } = tmpDb();
+  const recipientKp = Keypair.generate();
+  const recipient = recipientKp.publicKey.toBase58();
+  const payerKp = Keypair.generate();
+  const payer = payerKp.publicKey.toBase58();
+  const targetWallet = Keypair.generate().publicKey.toBase58();
+  const sig = "sig_c1_always_null";
+  const now = Math.floor(Date.now() / 1000);
+  const proof = signPaymentProof({ targetWallet, timestamp: now }, payerKp);
+
+  let rpcCalls = 0;
+  const mockRpcServer = http.createServer((req, res) => {
+    rpcCalls++;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: "x402-verify", result: null }));
+  });
+  const { port: rpcPort, close: closeRpc } = await startServer(mockRpcServer);
+
+  const server = createX402Server({
+    store,
+    recipient,
+    rpcUrl: `http://127.0.0.1:${rpcPort}`,
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": sig,
+        "X-Payment-Payer": payer,
+        "X-Payment-Proof": proof.proofSignature,
+        "X-Payment-Timestamp": String(now),
+      },
+      body: JSON.stringify({ wallet: targetWallet }),
+    });
+
+    assert.equal(res.status, 402, "Server must return 402 when RPC always returns null");
+    const json = (await res.json()) as any;
+    assert.match(json.message || json.detail || json.error, /Transaction not found on-chain/i);
+    assert.match(json.message || json.detail || "", /retry in a few seconds if you just paid/i);
+    assert.equal(rpcCalls, 4, `Expected 4 RPC calls (1 initial + 3 retries), got ${rpcCalls}`);
+  } finally {
+    await close();
+    await closeRpc();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
 
 
