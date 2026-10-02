@@ -812,4 +812,35 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     assert.ok(htmlInvalid.includes("This does not look like a Solana address (32 bytes, base58)."));
     assert.ok(!htmlInvalid.includes("No wallet selected."));
   });
+
+  test("isValidSolanaAddress: 3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh shows invalid address state, 3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh shows 'No scan records'", () => {
+    // 31-byte typo address (43 chars, passes regex isValidBase58 but fails isValidSolanaAddress)
+    const typo = "3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh";
+    const htmlTypo = renderDashboardHtml({ wallet: typo, records: [] });
+    assert.ok(
+      htmlTypo.includes("This does not look like a Solana address (32 bytes, base58)."),
+      "Typo address must show invalid address message",
+    );
+    assert.ok(
+      !htmlTypo.includes("No scan records for this wallet."),
+      "Typo address must not show 'No scan records'",
+    );
+
+    // Real 32-byte address (44 chars, passes isValidSolanaAddress)
+    const real = "3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh";
+    const htmlReal = renderDashboardHtml({ wallet: real, records: [] });
+    assert.ok(
+      htmlReal.includes("No scan records for this wallet."),
+      "Real address must show 'No scan records for this wallet.'",
+    );
+    assert.ok(
+      htmlReal.includes("Run a scan, or open /dashboard?demo=replay to see a recorded example."),
+      "Real address must include guidance message",
+    );
+    assert.ok(
+      !htmlReal.includes("This does not look like a Solana address (32 bytes, base58)."),
+      "Real address must not show invalid address message",
+    );
+  });
 });
+
