@@ -172,8 +172,7 @@ export function isInputError(err: any): boolean {
   if (!err) return false;
   if (err.status === 400 || err.statusCode === 400) return true;
   if (err.name === "ValidationError" || err.name === "InputError") return true;
-  const msg = typeof err.message === "string" ? err.message : String(err);
-  return /invalid|malformed|missing|bad input|bad request|txs\[|wallet/i.test(msg);
+  return false;
 }
 
 export type PaymentVerifier = (
@@ -284,6 +283,13 @@ export async function verifySolanaPaymentRpc(
     }
     let tx = fetchResult.tx;
     if (!tx) {
+      const isBase58Sig = /^[1-9A-HJ-NP-Za-km-z]{86,90}$/.test(proof.signature?.trim() || "");
+      if (!isBase58Sig) {
+        return {
+          valid: false,
+          error: "Transaction not found on-chain",
+        };
+      }
       for (let attempt = 1; attempt <= 3; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         fetchResult = await fetchTx();
@@ -295,13 +301,12 @@ export async function verifySolanaPaymentRpc(
           break;
         }
       }
-    }
-
-    if (!tx) {
-      return {
-        valid: false,
-        error: "Transaction not found on-chain (retry in a few seconds if you just paid)",
-      };
+      if (!tx) {
+        return {
+          valid: false,
+          error: "Transaction not found on-chain (retry in a few seconds if you just paid)",
+        };
+      }
     }
     if (tx.meta?.err) {
       return { valid: false, error: "Transaction failed on-chain" };
@@ -666,9 +671,41 @@ export function sanitizeVerificationError(raw?: string): string {
   if (!raw) return "";
   let s = String(raw);
   s = s.replace(/https?:\/\/[^\s"')]+/gi, "[REDACTED_URL]");
+  s = s.replace(/https?/gi, "[REDACTED]");
   s = s.replace(/api[_-]?key=[^\s&"']+/gi, "[REDACTED_KEY]");
   s = s.replace(/api[_-]?key/gi, "[REDACTED]");
   return s;
+}
+
+export function sanitizePaymentVerifiedText(text: string): string {
+  if (!text) return "";
+  let s = String(text);
+  s = s.replace(/https?:\/\/[^\s"')]+/gi, "[REDACTED]");
+  s = s.replace(/https?/gi, "[REDACTED]");
+  s = s.replace(/api[_-]?key=[^\s&"']+/gi, "[REDACTED]");
+  s = s.replace(/api[_-]?key/gi, "[REDACTED]");
+  return s;
+}
+
+export function sendPaymentVerifiedResponse(
+  res: http.ServerResponse,
+  statusCode: number,
+  errorMsg: string,
+  secondsLeft: number,
+): void {
+  const sanitizedError = sanitizePaymentVerifiedText(errorMsg);
+  const rawHint = `retry with the same signature within ${secondsLeft}s`;
+  const sanitizedHint = sanitizePaymentVerifiedText(rawHint);
+  let jsonStr = JSON.stringify({
+    error: sanitizedError,
+    paymentVerified: true,
+    hint: sanitizedHint,
+  });
+  if (/api[_-]?key/i.test(jsonStr) || /https?/i.test(jsonStr)) {
+    jsonStr = jsonStr.replace(/https?/gi, "[REDACTED]").replace(/api[_-]?key/gi, "[REDACTED]");
+  }
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(jsonStr);
 }
 
 export function send402(
@@ -1164,13 +1201,11 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           if (pathname === "/scan") {
             if (typeof body?.wallet !== "string" || !isValidSolanaAddress(body.wallet)) {
               const secondsLeft = getSecondsLeft();
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  error: "body.wallet must be a Solana base58 address",
-                  paymentVerified: true,
-                  hint: `retry with the same signature within ${secondsLeft}s`,
-                }),
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                "body.wallet must be a Solana base58 address",
+                secondsLeft,
               );
               return;
             }
@@ -1178,38 +1213,32 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             const wallet = body?.wallet;
             if (!wallet || typeof wallet !== "string" || wallet.length > 64) {
               const secondsLeft = getSecondsLeft();
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  error: "Missing required parameters: wallet and txs",
-                  paymentVerified: true,
-                  hint: `retry with the same signature within ${secondsLeft}s`,
-                }),
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                "Missing required parameters: wallet and txs",
+                secondsLeft,
               );
               return;
             }
             if (!body?.txs || (!Array.isArray(body.txs) && typeof body.txs !== "string")) {
               const secondsLeft = getSecondsLeft();
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  error: "Missing required parameters: wallet and txs",
-                  paymentVerified: true,
-                  hint: `retry with the same signature within ${secondsLeft}s`,
-                }),
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                "Missing required parameters: wallet and txs",
+                secondsLeft,
               );
               return;
             }
             const valRes = validateAnalyzeTxs(body.txs);
             if (!valRes.valid) {
               const secondsLeft = getSecondsLeft();
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  error: valRes.error,
-                  paymentVerified: true,
-                  hint: `retry with the same signature within ${secondsLeft}s`,
-                }),
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                valRes.error || "Invalid txs format",
+                secondsLeft,
               );
               return;
             }
@@ -1232,15 +1261,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               const secondsLeft = getSecondsLeft();
               const isInput = isInputError(handlerErr);
               const status = isInput ? 400 : 500;
-              const errorMsg = isInput ? (handlerErr.message || "Bad Request") : "Internal server error";
-              res.writeHead(status, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  error: errorMsg,
-                  paymentVerified: true,
-                  hint: `retry with the same signature within ${secondsLeft}s`,
-                }),
-              );
+              const errorMsg = isInput ? (handlerErr?.message || "Bad Request") : "Internal server error";
+              sendPaymentVerifiedResponse(res, status, errorMsg, secondsLeft);
               return;
             }
             recordHeliusCost(store, "/scan");
@@ -1373,15 +1395,8 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               const secondsLeft = getSecondsLeft();
               const isInput = isInputError(handlerErr);
               const status = isInput ? 400 : 500;
-              const errorMsg = isInput ? (handlerErr.message || "Bad Request") : "Internal server error";
-              res.writeHead(status, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({
-                  error: errorMsg,
-                  paymentVerified: true,
-                  hint: `retry with the same signature within ${secondsLeft}s`,
-                }),
-              );
+              const errorMsg = isInput ? (handlerErr?.message || "Bad Request") : "Internal server error";
+              sendPaymentVerifiedResponse(res, status, errorMsg, secondsLeft);
               return;
             }
             const settled = store.recordSettledPayment({

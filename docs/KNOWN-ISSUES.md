@@ -436,7 +436,7 @@ responses, user input) through those import sites:
 - `src/x402server.ts`: `verifySolanaPaymentRpc` queried Solana RPC `getTransaction` without specifying a `commitment` level, defaulting on Solana nodes to `"finalized"`. Meanwhile, `src/sdk/index.ts` confirmed payment transactions at `"confirmed"` commitment and immediately retried the endpoint, causing the server to respond with 402 `"Transaction not found on-chain"`.
 - Resolved in C1:
   - Server now reads `RADAR_X402_COMMITMENT` ("confirmed" or "finalized", default "confirmed"; invalid values logged with warning and fallback to "confirmed"), and passes `commitment` to `getTransaction`.
-  - When RPC returns `null`, server retries up to 3 times with 1-second pause before returning 402 with hint `"Transaction not found on-chain (retry in a few seconds if you just paid)"`.
+  - When RPC returns `null`, server retries up to 3 times with 1-second pause (only if signature matches 86-90 base58 characters; malformed signatures fail immediately without retries) before returning 402 with hint `"Transaction not found on-chain (retry in a few seconds if you just paid)"`.
   - SDK polls `getSignatureStatuses` for up to 20 seconds after transaction submission until desired `commitment` is reached, and retries 402 "not found" responses up to 3 times with 2-second delay.
 - **Status:** fixed in branch fixes-c (commit f888112), not deployed. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`, `test/adversarial.test.ts`).
 
@@ -447,7 +447,8 @@ responses, user input) through those import sites:
 - Resolved in C2 & C3:
   - `src/x402server.ts` validates `txs` format before checking payment and before returning 402. Invalid transaction items return HTTP 400 with `"txs[i] must be a Helius Enhanced transaction object with signature (string) and timestamp (number); got raw RPC format?"`.
   - `src/sdk/index.ts` (`client.analyze`) validates `txs` format prior to payment, throwing descriptive error without sending funds or invoking payment signers.
-  - Handler input errors return HTTP 400; unexpected errors return HTTP 500 `"Internal server error"` without internal details.
+  - Handler input errors return HTTP 400; unexpected errors return HTTP 500 `"Internal server error"` without internal details. `isInputError` strictly classifies errors by `status === 400`, `statusCode === 400`, or `name === "ValidationError"` / `InputError"` (no message regex matching).
+  - Responses with `"paymentVerified": true` and retry hint guarantee no `"api-key"` or `"http"` leakage.
   - If payment is verified but handler fails, response sets `"paymentVerified": true` and hint `"retry with the same signature within <secondsLeft>s"`, keeping the payment unspent (`settled_payments` not marked) so retrying with a corrected body succeeds without re-paying.
 - **Status:** fixed in branch fixes-c (commit b2a85e1, commit 178ee43), not deployed. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`).
 
