@@ -603,3 +603,19 @@ The on-chain outcome evaluation code (`scripts/shadow/outcomes.mjs`), database s
 
 1. **Code version**: implementation is locked with annotated tag `analysis-v1` on the final commit of the `analysis` branch.
 2. **Execution schedule**: data analysis (`scripts/shadow/analyze.mjs`) will be performed on a separate copy of the live database strictly after completion of the collection window and outcome computation — after **2026-10-10 09:00 UTC** (§15g).
+
+## 21. Code Changes After Collection Stopped
+
+Sections 1-20 are not rewritten. Collection stopped at <STOP_UTC> (server journal on the board). The following was merged into main after the stop.
+
+### 21a. What was merged
+Branches fixes-a, fixes-b, fixes-c, analysis (tag analysis-v1) and dashboard. Changed files in src/: HTTP server authorization and rate limits (including /gate-copy), address validation (32 bytes), sanitized payment errors, 409 on a repeated signature, aligned x402 confirmation level between SDK and server, /analyze body validation before payment, the tokenCheck field and a token-check-unavailable marker, Token-2022 extensions in the TOXIC_MINT rule, a price-unavailable marker, TAINTED_FUNDING over all incoming transfers of the supplied history, the dormancy measure on the trust path for DORMANT_ACTIVE, an optional issuer token list (off by default), the new dashboard; analysis code scripts/shadow/analyze.mjs (section 20).
+
+### 21b. What was not changed
+scripts/shadow/collect.mjs, db.mjs, preflight.mjs, outcomes.mjs, tags shadow-v1, shadow-v2, shadow-v3 and outcomes-v1. The git diff check (shadow-v3 and outcomes-v1 against the merged branch) for these files is empty; the output is in the merge report.
+
+### 21c. Which version the result refers to
+Collection ran under shadow-v3, outcome computation under outcomes-v1. The changes in 21a were not deployed to the board and did not take part in collection or computation. The test result refers to shadow-v3 and does not transfer to the current main without re-verification: detection rules and thresholds in main differ from the tested version.
+
+### 21d. Computation schedule
+The outcome-computation timer was extended with runs at 09:00, 15:00 and 21:00 UTC (reason: GeckoTerminal rate limiting, HTTP 429). The outcomes-v1 code was not changed.
