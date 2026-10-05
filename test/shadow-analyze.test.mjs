@@ -32,6 +32,10 @@ import {
   topBuyers,
   oneRecordPerBuyer,
   evaluateClusteredUsefulness,
+  SAMPLING_FRAME_MAX_GAP_MINUTES,
+  isSamplingFrameViolation,
+  getSelectedPoolCandidatesMap,
+  isNoBuyerRow,
 } from "../scripts/shadow/analyze.mjs";
 import { openDb, insertTrade, updateTradeOutcome, incrementSkipCounter, getSkipCounters, logError, recordPoolCandidate } from "../scripts/shadow/db.mjs";
 
@@ -691,5 +695,237 @@ describe("Shadow Analyze Unit Tests (read-only, offline)", () => {
     assert.match(report, /одна запись на покупателя/i);
     assert.match(report, /Доля формы F1/);
     assert.match(report, /section 14г/);
+  });
+
+  // --- Stage 15C / PREREGISTRATION.md section 18b, 18c, 20: Pre-outcome analysis rules ---
+
+  test("Stage 15C: sampling frame violation -- gap 1258803.97 min is excluded from primary/secondary tables and shown as separate line", () => {
+    const db = openDb(":memory:");
+    const seenAtIso = "2026-10-01T01:14:44.000Z";
+    recordPoolCandidate(db, {
+      cycleTs: "2026-10-01T01:14:00.000Z",
+      pool: "PAIR_GAP_1258803",
+      mint: "MINT_GAP",
+      seenAt: seenAtIso,
+      selected: 1,
+    });
+    // t = 1715289046 (2024-05-09T21:10:46Z), exactly 1258803.97 minutes prior to seenAt
+    const tGap = 1715289046;
+    const calcGap = (Date.parse(seenAtIso) - tGap * 1000) / 60000;
+    assert.ok(Math.abs(calcGap - 1258803.97) < 0.01, `expected 1258803.97, got ${calcGap}`);
+
+    const { lastInsertRowid: gapTradeId } = insertTrade(db, {
+      mint: "MINT_GAP",
+      pair: "PAIR_GAP_1258803",
+      t: tGap,
+      strat: "A",
+      buyer: "BuyerGap",
+      copyAmountUsd: 10,
+      radar_verdict: JSON.stringify({ action: "allow" }),
+    });
+    updateTradeOutcome(db, gapTradeId, "DANGEROUS", null);
+
+    // Also insert a normal, non-violating trade in strat A
+    recordPoolCandidate(db, {
+      cycleTs: "2026-10-01T01:14:00.000Z",
+      pool: "PAIR_NORMAL",
+      mint: "MINT_NORM",
+      seenAt: seenAtIso,
+      selected: 1,
+    });
+    const tNorm = Math.floor(Date.parse(seenAtIso) / 1000) - 10 * 60; // 10 minutes gap
+    const { lastInsertRowid: normTradeId } = insertTrade(db, {
+      mint: "MINT_NORM",
+      pair: "PAIR_NORMAL",
+      t: tNorm,
+      strat: "A",
+      buyer: "BuyerNorm",
+      copyAmountUsd: 10,
+      radar_verdict: JSON.stringify({ action: "allow" }),
+    });
+    updateTradeOutcome(db, normTradeId, "SAFE", null);
+
+    const rows = db.prepare("SELECT * FROM shadow_trades").all();
+    const candidates = loadPoolCandidates(db);
+    const result = analyze(rows, candidates);
+
+    assert.equal(result.totalRows, 2);
+    assert.equal(result.excludedSamplingFrame.count, 1);
+    assert.deepEqual(result.excludedSamplingFrame.ids, [gapTradeId]);
+
+    // Primary tables (stratum A): only normTradeId is resolved; gap trade is NOT in table 1 or table 2
+    assert.equal(result.strata.A.resolvedCount, 1);
+    assert.equal(result.strata.A.totalDangerous, 0, "gap trade outcome DANGEROUS must be excluded");
+
+    // Secondary table: one record per buyer
+    assert.equal(result.buyerIndependence.oneRecordPerBuyerStrata.A.resolvedCount, 1);
+
+    // Secondary table: response forms
+    assert.equal(result.responseForms.F6.count, 1);
+    assert.equal(result.responseForms.F6.dangerous, 0);
+
+    const report = formatReport(result);
+    assert.match(report, new RegExp(`excluded as violating sampling frame: 1 \\(ids: ${gapTradeId}\\)`));
+  });
+
+  test("Stage 15C: sampling frame boundary -- gap 999 min is NOT excluded", () => {
+    const db = openDb(":memory:");
+    const seenAtIso = "2026-10-01T12:00:00.000Z";
+    recordPoolCandidate(db, {
+      cycleTs: "2026-10-01T12:00:00.000Z",
+      pool: "PAIR_999",
+      mint: "MINT_999",
+      seenAt: seenAtIso,
+      selected: 1,
+    });
+    const t999 = Math.floor(Date.parse(seenAtIso) / 1000) - 999 * 60; // exactly 999 minutes
+    const { lastInsertRowid: id999 } = insertTrade(db, {
+      mint: "MINT_999",
+      pair: "PAIR_999",
+      t: t999,
+      strat: "A",
+      buyer: "Buyer999",
+      radar_verdict: JSON.stringify({ action: "allow" }),
+    });
+    updateTradeOutcome(db, id999, "DANGEROUS", null);
+
+    const result = analyze(db.prepare("SELECT * FROM shadow_trades").all(), loadPoolCandidates(db));
+    assert.equal(result.excludedSamplingFrame.count, 0);
+    assert.deepEqual(result.excludedSamplingFrame.ids, []);
+    assert.equal(result.strata.A.resolvedCount, 1);
+    assert.equal(result.strata.A.totalDangerous, 1);
+
+    const report = formatReport(result);
+    assert.match(report, /excluded as violating sampling frame: 0/);
+  });
+
+  test("Stage 15C: sampling frame boundary -- gap exactly 1000 min is NOT excluded (strict inequality > 1000)", () => {
+    const db = openDb(":memory:");
+    const seenAtIso = "2026-10-01T12:00:00.000Z";
+    recordPoolCandidate(db, {
+      cycleTs: "2026-10-01T12:00:00.000Z",
+      pool: "PAIR_1000",
+      mint: "MINT_1000",
+      seenAt: seenAtIso,
+      selected: 1,
+    });
+    const t1000 = Math.floor(Date.parse(seenAtIso) / 1000) - 1000 * 60; // exactly 1000 minutes
+    const { lastInsertRowid: id1000 } = insertTrade(db, {
+      mint: "MINT_1000",
+      pair: "PAIR_1000",
+      t: t1000,
+      strat: "A",
+      buyer: "Buyer1000",
+      radar_verdict: JSON.stringify({ action: "allow" }),
+    });
+    updateTradeOutcome(db, id1000, "DANGEROUS", null);
+
+    const result = analyze(db.prepare("SELECT * FROM shadow_trades").all(), loadPoolCandidates(db));
+    assert.equal(result.excludedSamplingFrame.count, 0);
+    assert.deepEqual(result.excludedSamplingFrame.ids, []);
+    assert.equal(result.strata.A.resolvedCount, 1);
+    assert.equal(result.strata.A.totalDangerous, 1);
+
+    const report = formatReport(result);
+    assert.match(report, /excluded as violating sampling frame: 0/);
+  });
+
+  test("Stage 15C: NO_BUYER in response forms table is shown as separate 'no buyer' line, not UNCLASSIFIED", () => {
+    const db = openDb(":memory:");
+    // 1. Trade with NO buyer (resolveBuyer failed -> buyer is null, /gate-copy never called -> radar_verdict null)
+    insertTrade(db, {
+      mint: "MINT_NO_BUYER",
+      pair: "PAIR_NO_BUYER",
+      t: 1000,
+      strat: "A",
+      buyer: null,
+      radar_verdict: null,
+    });
+
+    // 2. Trade with buyer and valid verdict (F6)
+    insertTrade(db, {
+      mint: "MINT_SAFE",
+      pair: "PAIR_SAFE",
+      t: 1001,
+      strat: "A",
+      buyer: "BuyerSafe",
+      radar_verdict: JSON.stringify({ action: "allow" }),
+    });
+
+    // 3. Trade with buyer where radar returned error (genuine UNCLASSIFIED)
+    insertTrade(db, {
+      mint: "MINT_ERR",
+      pair: "PAIR_ERR",
+      t: 1002,
+      strat: "A",
+      buyer: "BuyerErr",
+      radar_verdict: null,
+      radar_error: JSON.stringify({ error: "timeout" }),
+    });
+
+    const rows = db.prepare("SELECT * FROM shadow_trades").all();
+    const counts = countRowsByForm(rows);
+
+    assert.equal(counts["no buyer"], 1, "trade without buyer must be classified as 'no buyer'");
+    assert.equal(counts.UNCLASSIFIED, 1, "genuine error with buyer is UNCLASSIFIED");
+    assert.equal(counts.F6, 1);
+
+    const countersReport = formatCountersOnlyReport(rows, [], 0, []);
+    assert.match(countersReport, /  no buyer: 1/);
+    assert.match(countersReport, /  UNCLASSIFIED: 1/);
+  });
+
+  test("Stage 15C: --counters-only mode reports counters and response forms but zero outcomes", () => {
+    const db = openDb(":memory:");
+    const { lastInsertRowid: id1 } = insertTrade(db, {
+      mint: "MINT_DANGEROUS",
+      pair: "PAIR_1",
+      t: 2000,
+      strat: "A",
+      buyer: "Buyer1",
+      radar_verdict: JSON.stringify({ action: "block" }),
+    });
+    updateTradeOutcome(db, id1, "DANGEROUS", null);
+
+    const { lastInsertRowid: id2 } = insertTrade(db, {
+      mint: "MINT_SAFE",
+      pair: "PAIR_2",
+      t: 2001,
+      strat: "A",
+      buyer: "Buyer2",
+      radar_verdict: JSON.stringify({ action: "allow" }),
+    });
+    updateTradeOutcome(db, id2, "SAFE", null);
+
+    insertTrade(db, {
+      mint: "MINT_NO_BUYER",
+      pair: "PAIR_3",
+      t: 2002,
+      strat: "B",
+      buyer: null,
+      radar_verdict: null,
+    });
+
+    incrementSkipCounter(db, "TOKEN_TOO_OLD", 7);
+
+    const rows = db.prepare("SELECT * FROM shadow_trades").all();
+    const skipRows = loadSkipCounters(db);
+    const candidates = loadPoolCandidates(db);
+    const out = formatCountersOnlyReport(rows, skipRows, 0, candidates);
+
+    // Verifies counter presence
+    assert.match(out, /\[COUNTERS-ONLY\] Всего строк в shadow_trades: 3/);
+    assert.match(out, /\[COUNTERS-ONLY\] Число записей по формам ответа/);
+    assert.match(out, /  no buyer: 1/);
+    assert.match(out, /  TOKEN_TOO_OLD: 7/);
+
+    // Verifies strict absence of any outcomes
+    assert.doesNotMatch(out, /DANGEROUS/, "--counters-only must never print DANGEROUS");
+    assert.doesNotMatch(out, /SAFE/, "--counters-only must never print SAFE");
+    assert.doesNotMatch(out, /RESOLVED/, "--counters-only must never print RESOLVED");
+    assert.doesNotMatch(out, /Таблица 1/, "--counters-only must never print Таблица 1");
+    assert.doesNotMatch(out, /Таблица 2/, "--counters-only must never print Таблица 2");
+    assert.doesNotMatch(out, /CI95/, "--counters-only must never print CI95");
+    assert.doesNotMatch(out, /p=\d/, "--counters-only must never print proportion p=");
   });
 });

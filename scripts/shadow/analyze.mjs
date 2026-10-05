@@ -19,6 +19,8 @@ export const WILSON_Z = 1.96;
 export const USEFUL_RATIO_THRESHOLD = 3;
 // --- PREREGISTRATION.md section 4.6: < 30 DANGEROUS in a stratum -> "insufficient data" ---
 export const MIN_DANGEROUS_FOR_PUBLICATION = 30;
+// --- PREREGISTRATION.md section 18b/20: sampling frame threshold (> 1000 min) ---
+export const SAMPLING_FRAME_MAX_GAP_MINUTES = 1000;
 
 /**
  * Wilson score interval for a proportion x/n, per docs/PREREGISTRATION.md section 4.4:
@@ -103,16 +105,34 @@ export function classifyResponseForm(radarVerdictRaw) {
 }
 
 /**
+ * Helper to determine whether a row represents a trade where no buyer was resolved.
+ * Per PREREGISTRATION.md section 18в/20: when buyer is null/empty, /gate-copy was never
+ * invoked, so it must be reported as "no buyer" rather than bundled into "UNCLASSIFIED".
+ */
+export function isNoBuyerRow(row) {
+  if (row.buyer === null || row.buyer === "") return true;
+  if ("buyer" in row && !row.buyer) return true;
+  return false;
+}
+
+/**
  * Counts ALL rows by response form, regardless of outcome -- never reads row.outcome
  * at all. Used both by the descriptive full-mode tables (further filtered to RESOLVED
  * rows by the caller) and, unfiltered, by --counters-only mode (task 1's "look-ahead
  * rule": before collection stops and the final outcomes run, this script may only
  * report record counts, never outcome-derived shares).
+ *
+ * Per PREREGISTRATION.md section 18в/20: rows without a buyer (NO_BUYER) are counted
+ * separately under "no buyer" rather than folded into UNCLASSIFIED.
  */
 export function countRowsByForm(rows) {
-  const counts = { F1: 0, F2: 0, F3: 0, F4: 0, F5: 0, F6: 0, UNCLASSIFIED: 0 };
+  const counts = { F1: 0, F2: 0, F3: 0, F4: 0, F5: 0, F6: 0, UNCLASSIFIED: 0, "no buyer": 0 };
   for (const row of rows) {
-    counts[classifyResponseForm(row.radar_verdict)]++;
+    if (isNoBuyerRow(row)) {
+      counts["no buyer"]++;
+    } else {
+      counts[classifyResponseForm(row.radar_verdict)]++;
+    }
   }
   return counts;
 }
@@ -242,9 +262,13 @@ function computeStratumTables(resolvedInStrat) {
  * for each form -- nothing aggregated across forms, nothing decided.
  */
 export function dangerousShareByForm(resolvedRows) {
-  const byForm = { F1: [], F2: [], F3: [], F4: [], F5: [], F6: [], UNCLASSIFIED: [] };
+  const byForm = { F1: [], F2: [], F3: [], F4: [], F5: [], F6: [], UNCLASSIFIED: [], "no buyer": [] };
   for (const row of resolvedRows) {
-    byForm[classifyResponseForm(row.radar_verdict)].push(row);
+    if (isNoBuyerRow(row)) {
+      byForm["no buyer"].push(row);
+    } else {
+      byForm[classifyResponseForm(row.radar_verdict)].push(row);
+    }
   }
   const result = {};
   for (const [form, formRows] of Object.entries(byForm)) {
@@ -394,7 +418,12 @@ function percentile(sortedAsc, p) {
  * A row with no such candidate is counted separately as unmatched, never silently dropped
  * or defaulted to a gap of 0.
  */
-export function computeSeenAtVsTGapMinutes(rows, poolCandidateRows) {
+/**
+ * Builds a Map of pool -> selected pool_candidate from poolCandidateRows.
+ * Uses earliest selected candidate seen if duplicates exist.
+ */
+export function getSelectedPoolCandidatesMap(poolCandidateRows = []) {
+  if (poolCandidateRows instanceof Map) return poolCandidateRows;
   const selectedByPool = new Map();
   for (const c of poolCandidateRows) {
     if (!c.selected) continue;
@@ -403,6 +432,30 @@ export function computeSeenAtVsTGapMinutes(rows, poolCandidateRows) {
     // mean it was processed in two different cycles; keep the earliest.
     if (!selectedByPool.has(c.pool)) selectedByPool.set(c.pool, c);
   }
+  return selectedByPool;
+}
+
+/**
+ * Stage 15C (PREREGISTRATION.md section 18b / 20):
+ * Checks whether a shadow_trades row violates the sampling frame:
+ * seen_at (pool_candidates, selected=1) minus t is strictly greater than 1000 minutes.
+ */
+export function isSamplingFrameViolation(row, selectedByPool) {
+  let seenAt = null;
+  if (selectedByPool && selectedByPool.has(row.pair)) {
+    seenAt = selectedByPool.get(row.pair).seen_at;
+  } else if (row.seen_at) {
+    seenAt = row.seen_at;
+  }
+  if (!seenAt || row.t == null) return false;
+  const seenAtMs = new Date(seenAt).getTime();
+  const tMs = row.t * 1000;
+  const gapMinutes = (seenAtMs - tMs) / 60000;
+  return gapMinutes > SAMPLING_FRAME_MAX_GAP_MINUTES;
+}
+
+export function computeSeenAtVsTGapMinutes(rows, poolCandidateRows) {
+  const selectedByPool = getSelectedPoolCandidatesMap(poolCandidateRows);
 
   const gapsMinutes = [];
   let unmatchedCount = 0;
@@ -527,7 +580,19 @@ export function formatCountersOnlyReport(rows, skipCounterRows, errorLogCount, p
   return lines.join("\n");
 }
 
-export function analyze(rows) {
+export function analyze(rows, poolCandidateRows = []) {
+  const selectedCandidates = getSelectedPoolCandidatesMap(poolCandidateRows);
+  const excludedSamplingFrame = [];
+  const analysisRows = [];
+
+  for (const row of rows) {
+    if (isSamplingFrameViolation(row, selectedCandidates)) {
+      excludedSamplingFrame.push(row);
+    } else {
+      analysisRows.push(row);
+    }
+  }
+
   const byClass = {
     RADAR_ERROR: [],
     NO_BUYER: [],
@@ -542,12 +607,22 @@ export function analyze(rows) {
     RESOLVED: [],
     UNKNOWN_OUTCOME: [],
   };
-  for (const row of rows) {
+  for (const row of analysisRows) {
     byClass[classifyRow(row)].push(row);
   }
 
   const stratTotals = { A: {}, B: {} };
-  const result = { totalRows: rows.length, separateLines: {}, strata: {}, radarTokenCheckMissing: {} };
+  const result = {
+    totalRows: rows.length,
+    separateLines: {},
+    strata: {},
+    radarTokenCheckMissing: {},
+    excludedSamplingFrame: {
+      count: excludedSamplingFrame.length,
+      ids: excludedSamplingFrame.map((r) => (r.id !== undefined ? r.id : r.pair)),
+      rows: excludedSamplingFrame,
+    },
+  };
 
   for (const cls of [
     "ISSUER_CONTROLLED",
@@ -582,7 +657,7 @@ export function analyze(rows) {
   // is a distinct stored string value, never conflated with "no verdict at all" (null,
   // e.g. NO_BUYER/RADAR_ERROR rows where the column was never set).
   const rtcCounts = { true: 0, false: 0, NOT_DETERMINABLE: 0, NOT_APPLICABLE: 0, "null (no verdict)": 0 };
-  for (const row of rows) {
+  for (const row of analysisRows) {
     const v = row.radar_token_check_missing;
     if (v === "true") rtcCounts.true++;
     else if (v === "false") rtcCounts.false++;
@@ -652,6 +727,9 @@ export function formatReport(result) {
     lines.push(`  ${cls}: ${count}`);
   }
   lines.push(`  PAIR_MISSING (две границы): ${result.pairMissingBounds.count} -- ${result.pairMissingBounds.note}`);
+  const sf = result.excludedSamplingFrame;
+  const sfIdsStr = sf && sf.ids && sf.ids.length > 0 ? ` (ids: ${sf.ids.join(", ")})` : "";
+  lines.push(`  excluded as violating sampling frame: ${sf ? sf.count : 0}${sfIdsStr}`);
   lines.push("");
   lines.push("=== radar_token_check_missing (task 3, справочно, не часть основной метрики) ===");
   for (const [k, v] of Object.entries(result.radarTokenCheckMissing)) {
@@ -733,7 +811,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       // outcome-derived can leak into the printed report while collection is still live.
       console.log(formatCountersOnlyReport(rows, loadSkipCounters(db), countErrorLogs(db), loadPoolCandidates(db)));
     } else {
-      const result = analyze(rows);
+      const result = analyze(rows, loadPoolCandidates(db));
       console.log(formatReport(result));
       console.log("");
       console.log("=== skip_counters (task 3 stage 7F, по всем датам суммарно) ===");
