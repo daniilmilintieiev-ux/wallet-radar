@@ -78,7 +78,7 @@ def render_slide_1(lang="ru"):
     
     cards = [
         ("AI AGENT LAYER", "Autonomous trading & copy agents\nGenerating transactions to execute", 80, False),
-        ("PRE-TRADE FIREWALL GATE", "Wallet Radar continuous baseline\n9 deterministic rules · 0x1771 check", 700, True),
+        ("PRE-TRADE FIREWALL GATE", "Wallet Radar continuous baseline\n9 behavioral rules · 0x1771 check", 700, True),
         ("SOLANA RUNTIME", "SPL Token-2022 Transfer Hook\nInstant execution or hard revert", 1320, False)
     ]
     
@@ -159,7 +159,7 @@ def render_slide_3(lang="ru"):
     f_desc = get_font(22)
     
     draw.text((80, 110), "03 // DETERMINISTIC REASONING ENGINE", fill=AMBER, font=f_eye)
-    draw.text((80, 145), "9 Deterministic Rules · Zero Hallucinations · Adaptive Burst Scaling", fill=TEXT_WHITE, font=f_tit)
+    draw.text((80, 145), "9 behavioral rules plus a funding-source check · Adaptive Burst Scaling", fill=TEXT_WHITE, font=f_tit)
     draw.text((80, 205), "Mathematical certainty instead of black-box probabilistic text generation.", fill=TEXT_MUTED, font=f_desc)
     
     # 3x3 Rules Grid
@@ -195,7 +195,7 @@ def render_slide_3(lang="ru"):
         draw.text((x + 25, y + 75), desc, fill=TEXT_MUTED, font=f_r_d)
         draw.text((x + 25, y + 115), "Status: independent validation pending", fill=TEXT_DIM, font=get_font(13))
         
-    sub = "Второе: девять детерминированных правил и ноль галлюцинаций. Полностью исключили нейросети..." if lang == "ru" else "Second: nine deterministic rules with zero hallucinations. LLMs completely removed from decision path..."
+    sub = "Второе: девять поведенческих правил плюс проверка источника фондирования. Полностью исключили нейросети..." if lang == "ru" else "Second: nine behavioral rules plus a funding-source check. LLMs completely removed from decision path..."
     draw_footer(draw, sub)
     return img
 

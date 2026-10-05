@@ -2,7 +2,7 @@
 
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
-[![Tests](https://img.shields.io/badge/tests-666%20passing%20%7C%2029%20suites-3fb950.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/test)
+[![Tests](https://img.shields.io/badge/tests-751%20passing%20%7C%2030%20suites-3fb950.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/test)
 [![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20internal%20revisions-blue.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
 [![ZK Compression](https://img.shields.io/badge/light%20protocol-~400x%20less%20locked--up%20rent-ffb000.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/src/oracle)
@@ -23,7 +23,7 @@ When an autonomous agent interacts with a wallet, it faces critical risks:
 
 It enforces safety at two coordinated layers:
 - **Layer 1 (Off-Chain Pre-Trade Gate):** Offline analysis: milliseconds. Live check: about 1-2 seconds. Risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
-- **Layer 2 (On-Chain Hard Enforcement):** SPL Token-22 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level, backed by Light Protocol ZK compression (~0.000005 SOL audit attestations).
+- **Layer 2 (On-Chain Hard Enforcement):** SPL Token-2022 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level, backed by Light Protocol ZK compression (~0.000005 SOL audit attestations).
 
 ```
                      ┌────────────────────────────────────────────────────────┐
@@ -37,7 +37,7 @@ It enforces safety at two coordinated layers:
       │                                                                                     │
       │  ┌───────────────────────┐   ┌───────────────────────────┐   ┌───────────────────┐  │
       │  │  Behavioral Profiler   │   │     Anomaly Detector      │   │  Decision Engine  │  │
-      │  │ • Bounded USD Baseline │──▶│ • 9 Deterministic Rules   │──▶│ • allow / throttle│  │
+      │  │ • Bounded USD Baseline │──▶│ • 9 behavioral rules      │──▶│ • allow / throttle│  │
       │  │ • PnL-Lite FIFO Engine │   │ • Anti-Evasion / Warming  │   │ • block / review  │  │
       │  └───────────────────────┘   └───────────────────────────┘   └───────────────────┘  │
       │                                                                        │            │
@@ -52,7 +52,7 @@ It enforces safety at two coordinated layers:
       │                     LAYER 2: ON-CHAIN HARD ENFORCEMENT                              │
       │                                                                                     │
       │  ┌─────────────────────────────────────────┐  ┌───────────────────────────────────┐ │
-      │  │ SPL Token-22 Transfer Hook (Devnet)     │  │ Light Protocol ZK Scan Ledger     │ │
+      │  │ SPL Token-2022 Transfer Hook (Devnet)   │  │ Light Protocol ZK Scan Ledger     │ │
       │  │ • Program: wvN1kyvjoFSJq...MGSayAzHwoV  │  │ • RS01 Ed25519 Signed Attestations│ │
       │  │ • Two-Sided Counterparty Verification   │  │ • ~0.000005 SOL Rent-Free State   │ │
       │  │ • Live CPI Revert on Flagged Accounts   │  │ • ~400x Less Locked-Up Rent       │ │
@@ -77,10 +77,10 @@ It enforces safety at two coordinated layers:
 |---|---|---|
 | **Devnet Transfer Hook** | [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet) | **LIVE ON DEVNET** (ProgramData: 245,778 B, `d8f9a92`) |
 | **Hook Authority** | `4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY` | On-chain verified upgrade authority |
-| **Token-22 Test Mint** | [`2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV`](https://explorer.solana.com/address/2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV?cluster=devnet) (configured with `TransferHook`) | Reverts on flagged transfer (`0x1771`); full address found by searching the program's transaction history, stage 9B |
+| **Token-2022 Test Mint** | [`2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV`](https://explorer.solana.com/address/2YDsAV3y99TCKNVQHB71FgrvsN3sf5f4NoTnHhr4dHUV?cluster=devnet) (configured with `TransferHook`) | Reverts on flagged transfer (`0x1771`); full address found by searching the program's transaction history, stage 9B |
 | **A2A Agent Gate** | [`https://radar.cbellory.xyz`](https://radar.cbellory.xyz) | `POST /a2a`, `GET /.well-known/agent.json` |
 | **x402 Pay-per-Call** | [`https://pay.cbellory.xyz`](https://pay.cbellory.xyz) | `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC) |
-| **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | Monospace ZK Ledger & Active Defense UI |
+| **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | radar view of detected anomalies, a recorded replay (?demo=replay), the on-chain hook log, and the independent-test timeline; shows behavioral signals, not accuracy |
 | **Trust Proof API** | `https://radar.cbellory.xyz/trust-proof?wallet=<addr>` | Verifiable on-chain attestation + x402 receipt |
 | **Actions & Blinks** | [`https://pay.cbellory.xyz/actions.json`](https://pay.cbellory.xyz/actions.json) | Phantom, Solflare, Dialect one-tap scan card |
 | **Canary Node** | Orange Pi 6 Plus (ARM64, 12 cores, 32 GB RAM, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
@@ -127,7 +127,7 @@ These are computed by different code paths, on different timescales, and are eas
 
 ### 4. CI Regression Suite (synthetic fixtures, not an empirical benchmark)
 
-**Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: a zero-network, fully reproducible regression harness executed on every build, using 24 versioned, hand-authored test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing). Each fixture's expected outcome is defined by construction (the author writes a transaction sequence designed to trigger, or not trigger, a specific rule) — this is a **regression test against the ruleset itself**, not an independent measurement against real-world wallets. It currently passes 24/24 (100% precision/recall/accuracy on this fixture set). Run locally via `npm run radar -- benchmark`.
+**Deterministic CI Regression Suite (24 Cases, `src/benchmark.ts`)**: a zero-network, fully reproducible regression harness executed on every build, using 24 versioned, hand-authored test fixtures (known-good, known-bad, baseline poisoning, manufactured warming, PDA spoofing). The `/benchmark` endpoint and `radar_benchmark` tool run a regression suite of 24 fixtures; its accuracy value is not a measure of detection quality. Each fixture's expected outcome is defined by construction (the author writes a transaction sequence designed to trigger, or not trigger, a specific rule) — this is a **regression test against the ruleset itself**, not an independent measurement against real-world wallets. It currently passes 24/24 (100% precision/recall/accuracy on this fixture set). Run locally via `npm run radar -- benchmark`.
 
 This regression suite is a different kind of evidence than an empirical accuracy claim on real mainnet wallets, and should not be read as one. See **Status of independent evaluation** below for where that empirical validation currently stands.
 
@@ -176,22 +176,22 @@ Wallet Radar does not rely on a single defensive checkpoint. It provides an end-
                     │                                │
 ┌───────────────────▼────────────────────────────────▼───────────────────┐
 │                   7. ON-CHAIN ENFORCEMENT LAYER                        │
-│   Token-22 Transfer Hook (Devnet Proven · Mainnet-Ready Revert Gate)   │
+│   Token-2022 Transfer Hook (Devnet Proven · Mainnet-Ready Revert Gate) │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. SPL Token-22 Transfer Hook (Scan-on-Transfer)
+### 1. SPL Token-2022 Transfer Hook (Scan-on-Transfer)
 
 Located in `programs/radar-transfer-hook` (deployed and validated on Solana Devnet at [`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)):
 
-When a Token-22 mint enables Wallet Radar's hook, every `transfer_checked` instruction automatically CPIs into the hook program.
+When a Token-2022 mint enables Wallet Radar's hook, every `transfer_checked` instruction automatically CPIs into the hook program.
 
 ```
        Sender TransferChecked
                  │
                  ▼
        ┌──────────────────┐       CPI        ┌────────────────────────────┐
-       │   SPL Token-22   │─────────────────▶│    radar-transfer-hook     │
+       │   SPL Token-2022 │─────────────────▶│    radar-transfer-hook     │
        │     Program      │                  │ (wvN1ky...MGSayAzHwoV)     │
        └──────────────────┘                  └─────────────┬──────────────┘
                                                            │
@@ -226,9 +226,13 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 - **`RS01` Binary Encoding**: 48-byte fixed header (`magic: RS01`, `wallet: 32B`, `risk_score: u8`, `verdict_code: u8`, `timestamp: u64LE`, `payload_len: u16LE`) with JSON evidence and 96-byte Ed25519 signature trailer.
 - **Instant Client Read**: Read historical scan attestations directly without complex zero-knowledge proving overhead.
 
+### 3. Web Dashboard
+
+The web dashboard (`GET /dashboard`) provides a radar view of detected anomalies, a recorded replay (`?demo=replay`), the on-chain hook log, and the independent-test timeline. It displays an empty prompt state when no wallet is selected or found. The dashboard visualizes behavioral signals and does not compute detection verdicts itself.
+
 ---
 
-## 9 Deterministic Anomaly Rules (No Hallucinations)
+## 9 behavioral rules plus a funding-source check
 
 Wallet Radar rejects opaque LLM prompts in the critical security path. Detection is 100% deterministic and replayable:
 
@@ -305,10 +309,10 @@ npm install
 npm run build
 ```
 
-### 2. Verify System Integrity (666 Tests)
+### 2. Verify System Integrity (751 Tests)
 
 ```bash
-# Run the complete test suite (29 suites, 0 failures)
+# Run the complete test suite (30 suites, 0 failures)
 npm test
 
 # Run offline smoke selftest (no network or API keys required)
@@ -372,7 +376,7 @@ Add Wallet Radar to your MCP host configuration (`claude_desktop_config.json`, C
 - `radar_simulate`: Pre-trade what-if simulation (liquidity stress, risk delta, limits).
 - `radar_batch`: Safety-gate up to 20 copy-trader wallets in a single deterministic pass.
 - `radar_analyze`: Offline anomaly analysis over pre-recorded transaction fixtures.
-- `radar_benchmark`: Deterministic 24-case quality evaluation report.
+- `radar_benchmark`: Deterministic 24-case quality evaluation report (a regression suite of 24 fixtures; its accuracy value is not a measure of detection quality).
 - `radar_selftest`: System health check and self-test.
 
 ### 2. Autonomous Agent TypeScript SDK
@@ -514,13 +518,13 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 - **On-Chain Devnet Deployment**: Compiled Transfer Hook to SBF, deployed to Solana Devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), and verified live revert on flagged accounts (`886579b`, `56d3caa`, `d8f9a92`).
 - **11 Security Audit Revisions**: Comprehensive hardening against front-running, CPI injection, account hijacking, and double-spending (`990bb36`, `93d32f6`, `a4cf128`).
 - **Trust Proof API**: Launched independently verifiable `/trust-proof` cryptographic bundle (`7707e7d`).
-- **Full Test Suite Expansion**: Expanded to **600+ automated tests across 28 test suites (100% pass)**.
+- **Full Test Suite Expansion**: Expanded to **750+ automated tests across 30 test suites (100% pass)**.
 
 ---
 
 ## Status
 
-**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), deterministic analyzer (9 rules, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
+**Early-access (package `1.0.0`, per `package.json`)** — the core is production-usable and live: collector (Helius), per-wallet behavioral baseline (incl. USD median), behavioral analyzer (9 rules plus a funding-source check, USD-normalized, unit-tested), `trust` gate-before-you-copy verdict (risk + liquidity → `safe`/`hold`/`unknown`, with per-rule reasons, summary, and data freshness), MCP server (stdio), HTTP service, x402 pay-per-call, Telegram / Webhook / console alerts, deterministic replay, and self-contained HTML reports. Continuous monitoring watches a wallet list and alerts on fresh anomalies.
 
 ## Feature status
 
@@ -536,9 +540,9 @@ Verified on branch `docs/claims-fix`, date 2026-09-30.
 | CLI `radar digest` | live run | local run without Telegram keys |
 | CLI `radar replay` | tests | not verified with live run without Helius key (6 tests in `test/replay.test.js`) |
 | CLI `radar scan` | code only | CLI wrapper not verified with live run; HTTP `/scan` confirmed separately (below) |
-| CLI `radar trust` | tests | algorithm verified by 34 tests in `test/trust.test.js`; live run confirmed only for HTTP `/trust` |
+| CLI `radar trust` | tests | algorithm verified by 38 tests in `test/trust.test.js`; live run confirmed only for HTTP `/trust` |
 | CLI `radar watch` | tests | loop verified by tests in `test/watch.test.js`/`test/defense.test.js` and systemd service on board |
-| `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` | live run | without paid Helius key (offline/public data) |
+| `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` — 23 endpoints (see GET /health) | live run | without paid Helius key (offline/public data) |
 | `POST /analyze` | live run | offline, median response time 3.69 ms |
 | `POST /trust` | live run (Helius key, 1-2.5 s) | verified across 5 wallets |
 | `POST /scan` | live run (Helius key, 1-2.5 s) | verified across 5 wallets |
@@ -548,7 +552,7 @@ Verified on branch `docs/claims-fix`, date 2026-09-30.
 | `POST /batch` | tests | covered by `test/trust.test.js` |
 | MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | live run | |
 | MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | tests | covered by `test/mcp.test.js` |
-| SPL Token-22 Transfer Hook (Devnet) | live run | real transaction with rollback `0x1771`/`CounterpartyFlagged` |
+| SPL Token-2022 Transfer Hook (Devnet) | live run | real transaction with rollback `0x1771`/`CounterpartyFlagged` |
 | Demo `examples/copy-bot-firewall.ts` | unconfirmed | `fetchFn` uses built-in mocks with hardcoded verdicts, no real call to radar by default |
 | Light Protocol attestation recording (on-chain, Devnet) | unconfirmed | `getCompressedAccountsByOwner` unavailable on standard Devnet RPC (`-32601 Method not found`); only offline logic confirmed (`test/oracle.test.js`) |
 
@@ -556,8 +560,8 @@ Verified on branch `docs/claims-fix`, date 2026-09-30.
 
 Full list with file:line — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). In brief:
 
-- Version in `package.json` (`1.0.0`) does not match the version returned by the A2A card (`src/http-server.ts:592`, `"0.3.0"`) — unrelated fields, not synchronized.
-- Rule count: `analyzer.ts` implements 9 rules, counted everywhere as "9", plus a separate `TAINTED_FUNDING` not included in this count anywhere in code or tests (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
+- Version in the A2A card endpoint: fixed in this branch, not deployed: the public server still returns 0.3.0 until redeployed.
+- Rule count: 9 behavioral rules plus a funding-source check (`TAINTED_FUNDING`, `src/analyzer.ts:471-501`) — previously counted in code as "9 rules" without reflecting the funding check (`src/http-server.ts`, `src/mcp.ts`, `test/regime.test.ts`).
 - ~~`TAINTED_FUNDING` checks only the very first inbound transfer~~ — fixed in branch `fixes-b` (not deployed): now checks every incoming transfer in the supplied history.
 - ~~`DORMANT_ACTIVE` may fire on a wallet that trades daily without real gaps, as an artifact of the trust-window boundary~~ — fixed in branch `fixes-b` (not deployed): the `trust` path now measures the dormancy gap from the evaluated batch's earliest tx (`RadarConfig.dormantMeasure: "first"`) instead of its newest; the `scan`/walk-forward path is unchanged (`"newest"`, the default). Confirmed against `benchmarks/history-cache` (1001 wallets, offline): `DORMANT_ACTIVE` firings on the `trust` path caused by the trust-window boundary dropped from 197 to 133 (no ground-truth labels exist for these wallets, so whether any individual firing was "correct" or not is not established either way); live-data confirmation after shadow collector stops is still open.
 - `/gate-copy` is not part of either authorization set (`isMutating`/`isHeavy`, `src/http-server.ts:108-131`) and cannot be gated by `RADAR_API_TOKEN` under any configuration; calls Helius and without a token all routes are open by default (`authorizeMutating`, `:115`).
@@ -577,7 +581,7 @@ Full list with file:line — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). In br
 
 Five reproducible commands (each verified in stages 9B–9E):
 
-1. **Full test suite**: `npm test` → 666/666, 29 suites.
+1. **Full test suite**: `npm test` → 751/751, 30 suites.
 2. **Deterministic benchmark**: `npm run radar -- benchmark` → 24/24 on a versioned synthetic fixture set (this is a regression test on the rules themselves, not an independent empirical accuracy benchmark on real data — see "Status of independent evaluation").
 3. **Offline self-test**: `npm run radar -- selftest` → no network or API keys, runs the full detection pipeline on a synthetic wallet.
 4. **Deterministic replay**: `node dist/src/cli.js replay <wallet> --since <unix-ts> --until <unix-ts>` → replays the detector over a historical window of a real wallet; identical input data always yields an identical verdict.

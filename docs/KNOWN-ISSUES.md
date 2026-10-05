@@ -15,7 +15,7 @@ a separate, future change.
   the only two `0.3.0` occurrences in the repository are this literal and an
   unrelated transitive dependency version (`@solana/buffer-layout-utils`,
   `package-lock.json:196-197`, not a project version at all).
-- **Status:** fixed in branch fixes-a (commit 53f1701), not deployed.
+- **Status:** fixed in this branch, not deployed: the public server still returns 0.3.0 until redeployed.
 
 ## Rule count: analyzer.ts implements a 9th independent check not reflected in the "9 rules" count anywhere
 
