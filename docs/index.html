@@ -7,13 +7,14 @@
 <link rel="icon" type="image/png" sizes="32x32" href="brand/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="brand/favicon-16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="brand/favicon-180.png">
-<meta property="og:title" content="Wallet Radar — continuous Solana wallet anomaly detection">
+<meta property="og:url" content="https://daniilmilintieiev-ux.github.io/wallet-radar/">
+<meta property="og:title" content="Wallet Radar">
 <meta property="og:description" content="Wallet Radar builds each Solana wallet's behavioral baseline and flags the exact moment the behavior breaks — deterministically, 24/7, as an MCP tool any agent can call before it acts.">
-<meta property="og:image" content="https://radar.cbellory.xyz/brand/og-image.png">
+<meta property="og:image" content="https://daniilmilintieiev-ux.github.io/wallet-radar/brand/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://radar.cbellory.xyz/brand/og-image.png">
+<meta name="twitter:image" content="https://daniilmilintieiev-ux.github.io/wallet-radar/brand/og-image.png">
 <style>
 :root{--bg:#05070a;--panel:#0d1117;--border:#21262d;--ink:#f5f5f5;--muted:#8b949e;--dim:#5c6370;--accent:#FF4D1A;--green:#3FB950;--red:#F85149;}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -73,11 +74,7 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
 <section>
   <h2>Demo</h2>
   <div class="sub">One scope, one story: a wallet dormant for 173 days wakes up and moves 5× its norm on a brand-new venue.</div>
-  <div class="video-frame">
-    <video controls playsinline preload="metadata" poster="posters/scope.png" src="videos/wallet-radar-scope.mp4"></video>
-  </div>
-  <div class="sub">Note: this recording predates the stage 9B/9D documentation corrections (rule count, error names, hook figures) and may show retracted numbers. Kept for reference, not deleted; see the corrected figures in the text on this page and in README.md.</div>
-  <div class="hero-cap">Recorded replay of a historical window: risk 100/100, 8 anomalies (reactivation after ~173 days, new venue, one swap of about $4,000, several times the wallet's median, new protocol, 3 new counterparties, regime shift). Historical replay, not a confirmed incident.</div>
+  <!-- new video: added 2026-10-11 -->
 </section>
 
 <section>
@@ -121,6 +118,10 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
     <div class="step"><div class="k">AGENT SDK</div><b>createRadarClient()</b><span>A JS/TS client that calls the x402 server, auto-pays USDC, and returns the result with its on-chain ledger signature.</span></div>
     <div class="step"><div class="k">BLINK</div><b>One-tap scan</b><span>A Solana Action / Blink — "Radar scan &lt;addr&gt;" — x402 pay, verdict back, straight from the wallet UI.</span></div>
     <div class="step"><div class="k">HOOK</div><b>Scan-on-transfer</b><span>A Token-2022 transfer hook scores the transfer on-chain (oracle PDA) — the gate at the moment of transfer.</span></div>
+  </div>
+  <div style="text-align:center;margin-top:28px;padding:0 16px">
+    <a href="dashboard-preview.html" class="chip" style="display:inline-block;padding:9px 20px;font-size:14px;color:var(--ink);background:var(--panel);border:1px solid var(--accent);border-radius:6px;text-decoration:none;font-weight:600">Dashboard preview</a>
+    <div style="color:var(--muted);font-size:13px;margin-top:8px">Recorded replay of a historical window; the live dashboard runs on radar.cbellory.xyz/dashboard once the server is updated.</div>
   </div>
 </section>
 
