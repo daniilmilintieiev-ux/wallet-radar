@@ -167,7 +167,8 @@ export type AnomalyType =
   | "OFF_HOURS"
   | "REGIME_SHIFT"
   | "WARMING"
-  | "TAINTED_FUNDING";
+  | "TAINTED_FUNDING"
+  | "TOKEN_CHECK_UNAVAILABLE";
 
 export interface MintRiskInfo {
   mint: string;
@@ -181,6 +182,16 @@ export interface MintRiskInfo {
   isPumpFun?: boolean;
   /** True when authorities are confirmed revoked (both mint and freeze are null). */
   isAuthorityRevoked?: boolean;
+  /**
+   * Token-2022 extensions (B1), parsed from the mint account's jsonParsed
+   * `extensions` array. `undefined` when the mint has no parsed extensions
+   * at all (legacy SPL Token mint, or extensions were not fetched).
+   */
+  permanentDelegate?: boolean;
+  pausable?: boolean;
+  /** Transfer hook program id, when the transferHook extension is present. `null` if the extension is absent. */
+  transferHook?: string | null;
+  defaultAccountStateFrozen?: boolean;
 }
 
 export type MintRiskMap = Record<string, MintRiskInfo>;
@@ -225,6 +236,20 @@ export interface RadarConfig {
   concentrationCount: number;
   quietPolls: number;
   maxPollMs: number;
+  /**
+   * B5: which transaction's timestamp DORMANT_ACTIVE measures the gap from,
+   * against baseline.lastSeenAt.
+   * - "newest" (default): the batch's most recent tx. Preserves existing
+   *   replay/scan behavior exactly -- do not change this default.
+   * - "first": the batch's EARLIEST tx. Used by the trust path (selectScoring)
+   *   specifically, where "newest" structurally understates the gap for a
+   *   continuously-active wallet: selectScoring's windowed split pins
+   *   baseline.lastSeenAt to the end of the prior window, which sits
+   *   windowDays in the past relative to "now" by construction, so judging
+   *   the gap by the batch's own latest tx (which can be from today) makes
+   *   an active wallet look freshly "reactivated" every single call.
+   */
+  dormantMeasure?: "newest" | "first";
 }
 
 export const DEFAULT_CONFIG: RadarConfig = {
@@ -237,6 +262,7 @@ export const DEFAULT_CONFIG: RadarConfig = {
   concentrationCount: 2,
   quietPolls: 3,
   maxPollMs: 3_600_000,
+  dormantMeasure: "newest",
 };
 
 /**

@@ -16,6 +16,42 @@ import { detectCounterpartyAnomalies } from "./counterparty.js";
 import { median, maxOf, minOf } from "./stats.js";
 import { classifyWalletArchetype, WalletArchetype } from "./archetype.js";
 import { KNOWN_SAFE_MINTS, KNOWN_AMM_OWNERS } from "./mint.js";
+import { DEFAULT_HOOK_PROGRAM_ID } from "./hook/index.js";
+import fs from "node:fs";
+
+/**
+ * B6: optional, default-OFF issuer-controlled-mint list. Unset by default ->
+ * empty set -> no behavior change. Loaded from the JSON array of mint
+ * address strings at RADAR_ISSUER_MINTS_FILE, e.g. ["Mint1...", "Mint2..."].
+ * Deliberately NOT the ground-truth audit dataset's own issuer-mints list
+ * (kept under ground-truth/) -- that stays an audit artifact, not a product
+ * input; wiring it in here would make the product trust its own audit
+ * dataset as "fact".
+ * Cached by file path value so tests can change/unset the env var and get
+ * a fresh read, without re-reading the file on every call when it's stable.
+ */
+let issuerMintsCacheKey: string | undefined;
+let issuerMintsCacheSet: Set<string> = new Set();
+function loadIssuerControlledMints(): Set<string> {
+  const filePath = process.env.RADAR_ISSUER_MINTS_FILE;
+  if (filePath === issuerMintsCacheKey) return issuerMintsCacheSet;
+  issuerMintsCacheKey = filePath;
+  issuerMintsCacheSet = new Set();
+  if (filePath) {
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const m of parsed) {
+          if (typeof m === "string") issuerMintsCacheSet.add(m);
+        }
+      }
+    } catch {
+      // Missing/unreadable/malformed file: treat as empty list, not an error.
+    }
+  }
+  return issuerMintsCacheSet;
+}
 
 /** Top-10 holder concentration (% of supply) at/above which a mint is flagged TOXIC_MINT. */
 export const TOP10_CONCENTRATION_PCT = 60;
@@ -465,8 +501,12 @@ export function txCounterparties(tx: EnhancedTx, wallet?: string): string[] {
 }
 
 /**
- * 1-Hop Funding Source Check: inspects the earliest incoming native SOL transfer
- * to identify if the wallet was seeded from known malicious drainers or mixers.
+ * 1-Hop Funding Source Check (B4: checks ALL incoming native SOL transfers in
+ * the supplied history, not just the first found -- a wallet whose first
+ * incoming transfer is clean but whose second (or later) came from a known
+ * exploiter must still be flagged). Fires on the earliest tainted transfer
+ * when more than one matches, so `text`/`timestamp` describe how the wallet
+ * was first seeded from a malicious source.
  */
 export function checkFundingSource(wallet: string, txs: EnhancedTx[]): Anomaly | null {
   if (txs.length === 0) return null;
@@ -477,23 +517,21 @@ export function checkFundingSource(wallet: string, txs: EnhancedTx[]): Anomaly |
         nt.toUserAccount === wallet &&
         nt.fromUserAccount &&
         nt.fromUserAccount !== wallet &&
-        (nt.amount ?? 0) > 0
+        (nt.amount ?? 0) > 0 &&
+        KNOWN_EXPLOITERS.has(nt.fromUserAccount)
       ) {
-        if (KNOWN_EXPLOITERS.has(nt.fromUserAccount)) {
-          return {
-            type: "TAINTED_FUNDING",
-            wallet,
-            severity: "high",
-            timestamp: tx.timestamp ?? 0,
-            evidence: {
-              funder: nt.fromUserAccount,
-              amountSol: (nt.amount ?? 0) / 1e9,
-              sig: tx.signature,
-            },
-            text: `Initial funding of ${((nt.amount ?? 0) / 1e9).toFixed(3)} SOL received from known malicious actor (${nt.fromUserAccount}).`,
-          };
-        }
-        return null;
+        return {
+          type: "TAINTED_FUNDING",
+          wallet,
+          severity: "high",
+          timestamp: tx.timestamp ?? 0,
+          evidence: {
+            funder: nt.fromUserAccount,
+            amountSol: (nt.amount ?? 0) / 1e9,
+            sig: tx.signature,
+          },
+          text: `Initial funding of ${((nt.amount ?? 0) / 1e9).toFixed(3)} SOL received from known malicious actor (${nt.fromUserAccount}).`,
+        };
       }
     }
   }
@@ -523,19 +561,21 @@ export function detectAnomalies(
   }
 
   // DORMANT_ACTIVE: activity after N days of silence.
-  // Judge the gap by the NEWEST tx only: the batch may legitimately contain
-  // an already-seen tx (pagination overlap), which must not suppress the alert.
+  // Judge the gap by the NEWEST tx by default (config.dormantMeasure ==
+  // "newest"): the batch may legitimately contain an already-seen tx
+  // (pagination overlap), which must not suppress the alert. The trust path
+  // (selectScoring) uses "first" instead (B5) -- see RadarConfig.dormantMeasure.
   // DAO treasuries / protocol vaults naturally have long dormancy between proposals.
   if (baseline?.lastSeenAt && txs.length > 0) {
-    const newest = maxOf(txs.map(ts));
-    const daysSince = (newest - baseline.lastSeenAt) / 86_400;
+    const measureTs = config.dormantMeasure === "first" ? minOf(txs.map(ts)) : maxOf(txs.map(ts));
+    const daysSince = (measureTs - baseline.lastSeenAt) / 86_400;
     const effectiveDormantDays = archetype === "protocol_vault" ? 90 : config.dormantDays;
     if (daysSince >= effectiveDormantDays) {
       anomalies.push({
         type: "DORMANT_ACTIVE",
         wallet,
         severity: daysSince >= 60 && archetype !== "protocol_vault" ? "high" : "medium",
-        timestamp: newest,
+        timestamp: measureTs,
         evidence: { daysSilent: Number(daysSince.toFixed(1)) },
         text: `Wallet reactivated after ~${Math.floor(daysSince)} days of inactivity.`,
       });
@@ -782,16 +822,43 @@ export function detectAnomalies(
         const hasMint = Boolean(meta.mintAuthority);
         const top10 = typeof meta.top10Pct === "number" ? meta.top10Pct : null;
         const concentrated = top10 != null && top10 >= TOP10_CONCENTRATION_PCT;
-        if (hasFreeze || hasMint || concentrated) {
+        // Token-2022 extensions (B1). Fixed severities, not tuned to results:
+        // permanentDelegate and a frozen defaultAccountState are `high`
+        // (either lets the mint's authority move or freeze tokens out of any
+        // holder's account at will); pausable and a transfer hook pointing
+        // at a program other than this project's own hook are `medium`.
+        const permanentDelegate = Boolean(meta.permanentDelegate);
+        const defaultFrozen = Boolean(meta.defaultAccountStateFrozen);
+        const pausable = Boolean(meta.pausable);
+        const foreignTransferHook =
+          typeof meta.transferHook === "string" && meta.transferHook !== DEFAULT_HOOK_PROGRAM_ID.toBase58();
+        if (hasFreeze || hasMint || concentrated || permanentDelegate || defaultFrozen || pausable || foreignTransferHook) {
           flaggedMints.add(m);
           const veryConcentrated = top10 != null && top10 >= TOP10_HIGH_PCT;
           const isPump = Boolean(meta.isPumpFun || m.toLowerCase().endsWith("pump"));
-          const severity: Severity = hasFreeze || veryConcentrated || (isPump && (hasMint || concentrated)) ? "high" : "medium";
+          // B6 (optional, default off via RADAR_ISSUER_MINTS_FILE): a
+          // freeze-authority finding on an issuer-controlled mint is
+          // downgraded from `high` to `medium` -- other independent `high`
+          // triggers (extreme concentration, a pump.fun combo, permanentDelegate,
+          // a frozen defaultAccountState) are NOT affected by this listing.
+          const isIssuerListed = loadIssuerControlledMints().has(m);
+          const severity: Severity =
+            (hasFreeze && !isIssuerListed) ||
+            veryConcentrated ||
+            (isPump && (hasMint || concentrated)) ||
+            permanentDelegate ||
+            defaultFrozen
+              ? "high"
+              : "medium";
           const reasons: string[] = [];
-          if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})`);
+          if (hasFreeze) reasons.push(`freeze authority (${meta.freezeAuthority})${isIssuerListed ? ", issuer-controlled mint" : ""}`);
           if (hasMint) reasons.push(`mint authority (${meta.mintAuthority})`);
           if (concentrated) reasons.push(`top-10 holders control ${top10}% of supply`);
           if (isPump) reasons.push(`pump.fun token`);
+          if (permanentDelegate) reasons.push(`permanent delegate extension`);
+          if (defaultFrozen) reasons.push(`default account state: frozen`);
+          if (pausable) reasons.push(`pausable extension`);
+          if (foreignTransferHook) reasons.push(`transfer hook program (${meta.transferHook})`);
           anomalies.push({
             type: "TOXIC_MINT",
             wallet,
@@ -803,6 +870,11 @@ export function detectAnomalies(
               mintAuthority: meta.mintAuthority,
               top10Pct: top10,
               isPumpFun: isPump,
+              permanentDelegate,
+              defaultAccountStateFrozen: defaultFrozen,
+              pausable,
+              transferHook: meta.transferHook ?? null,
+              issuer_listed: isIssuerListed,
               sig: s.signature,
             },
             text: `Token ${m}: ${reasons.join("; ")}.`,
@@ -1079,8 +1151,13 @@ const SEVERITY_POINTS: Record<string, number> = {
 /**
  * Aggregate anomaly list into a single 0-100 risk score for humans and agents.
  * Deterministic: high=30, medium=15, low=5 points per anomaly, capped at 100.
+ * TOKEN_CHECK_UNAVAILABLE (B2) is informational -- "we could not check", not
+ * a risk signal -- and always contributes 0 regardless of its `low` severity.
  */
 export function computeRiskScore(anomalies: Anomaly[]): number {
-  const total = anomalies.reduce((sum, a) => sum + (SEVERITY_POINTS[a.severity] ?? 0), 0);
+  const total = anomalies.reduce(
+    (sum, a) => sum + (a.type === "TOKEN_CHECK_UNAVAILABLE" ? 0 : SEVERITY_POINTS[a.severity] ?? 0),
+    0,
+  );
   return Math.min(100, total);
 }

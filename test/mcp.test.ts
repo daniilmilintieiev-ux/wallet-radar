@@ -10,8 +10,8 @@ interface JsonRpcResponse {
   error?: any;
 }
 
-async function createTestClient() {
-  const server = buildServer();
+async function createTestClient(options: Parameters<typeof buildServer>[0] = {}) {
+  const server = buildServer(options);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
 
@@ -142,7 +142,7 @@ test("MCP radar_scan: reports error when HELIUS_API_KEY is not set", async () =>
   try {
     const res = await client.request("tools/call", {
       name: "radar_scan",
-      arguments: { wallet: "DemoWallet" },
+      arguments: { wallet: "11111111111111111111111111111111" },
     });
     assert.equal(res.result.isError, true);
     assert.match(res.result.content[0].text, /HELIUS_API_KEY is not set/);
@@ -156,7 +156,7 @@ test("MCP radar_gate_copy: fetches mintRisk for body.mint and blocks on freezeAu
   const originalFetch = globalThis.fetch;
   const savedApiKey = process.env.HELIUS_API_KEY;
   process.env.HELIUS_API_KEY = "test_api_key";
-  const targetWallet = "WappetTest1111111111111111111111111111";
+  const targetWallet = "WappetTest111111111111111111111111111111111";
   const toxicMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -313,8 +313,8 @@ test("A8: MCP radar_gate_copy returns tokenCheck ('applied', 'skipped_no_mint', 
   const originalFetch = globalThis.fetch;
   const savedApiKey = process.env.HELIUS_API_KEY;
   process.env.HELIUS_API_KEY = "test_api_key";
-  const safeWallet = "SafeWa11et1111111111111111111111111111";
-  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111111";
   const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -418,4 +418,64 @@ test("A8: MCP radar_gate_copy returns tokenCheck ('applied', 'skipped_no_mint', 
   }
 });
 
+test("B2: MCP radar_gate_copy caps the verdict at manual_review when fetchMintMetadata throws (tokenCheck='unavailable')", async () => {
+  const originalFetch = globalThis.fetch;
+  const savedApiKey = process.env.HELIUS_API_KEY;
+  process.env.HELIUS_API_KEY = "test_api_key";
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([{ signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (urlStr.includes("jup.ag")) {
+      return new Response(JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 150 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  const client = await createTestClient({
+    fetchMintMetadata: async () => {
+      throw new Error("mocked RPC timeout");
+    },
+  });
+  try {
+    const res = await client.request("tools/call", {
+      name: "radar_gate_copy",
+      arguments: { targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint },
+    });
+    assert.equal(res.result.isError, undefined);
+    const parsed = JSON.parse(res.result.content[0].text);
+    assert.equal(parsed.tokenCheck, "unavailable", `expected tokenCheck 'unavailable', got ${JSON.stringify(parsed)}`);
+    assert.equal(parsed.action, "manual_review", "a mint-check failure with a real USD amount must cap the verdict at manual_review");
+    assert.equal(parsed.allow, false, "manual_review must not allow execution");
+    assert.ok(parsed.details?.tokenCheckAnomaly, "response must include the TOKEN_CHECK_UNAVAILABLE anomaly");
+    assert.equal(parsed.details.tokenCheckAnomaly.type, "TOKEN_CHECK_UNAVAILABLE");
+    assert.equal(parsed.details.tokenCheckAnomaly.severity, "low");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedApiKey !== undefined) process.env.HELIUS_API_KEY = savedApiKey;
+    else delete process.env.HELIUS_API_KEY;
+    await client.close();
+  }
+});
 

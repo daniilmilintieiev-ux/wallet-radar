@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { createServer, clientIp, createRateLimiter } from "../src/http-server.js";
+import { computeRiskScore } from "../src/analyzer.js";
 import { getVersion } from "../src/mcp-server.js";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -1318,6 +1319,34 @@ test("A1: /gate-copy isHeavy auth, RADAR_PROTECT_READS, and RADAR_LIVE_RATE_LIMI
         assert.notEqual(resReadAuth.status, 401, `GET ${p} with auth must not be 401`);
       }
 
+      // 3.5 (B0b): liveRateLimitPerMin must default to 30 regardless of
+      // rateLimitPerMin, i.e. the two must be independent. This server was
+      // started with rateLimitPerMin: 100 and NO liveRateLimitPerMin / env
+      // var -- under the old coupled logic, the live limit silently became
+      // max(30, 100) = 100 instead of the documented default of 30. The rate
+      // limiter runs before auth, so both step 1 (unauthorized) and step 2
+      // already counted 2 /gate-copy calls against the live-limited budget;
+      // 28 more must still succeed (bringing the total to exactly 30), and
+      // the 29th new call (31st overall) must 429.
+      let got429B0b = false;
+      for (let i = 1; i <= 29; i++) {
+        const res = await fetch(`${r.base}/gate-copy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer secret-token-123",
+          },
+          body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+        });
+        if (i <= 28) {
+          assert.notEqual(res.status, 429, `/gate-copy call ${i + 2} overall (default liveLimit=30) should not be 429`);
+        } else {
+          assert.equal(res.status, 429, `/gate-copy call ${i + 2} overall must hit the default liveLimit=30, independent of rateLimitPerMin=100`);
+          got429B0b = true;
+        }
+      }
+      assert.equal(got429B0b, true, "31st overall /gate-copy call should trigger 429 under the default liveLimit, not rateLimitPerMin=100");
+
     } finally {
       await r.close();
     }
@@ -1559,7 +1588,11 @@ test("A7: POST /trust and /batch reject invalid base58 and length bounds with 40
       const data32 = (await res32.json()) as any;
       assert.equal(data32.verdict, "unknown");
 
-      const valid44 = "1".repeat(44);
+      // A real 44-char base58 string that decodes to exactly 32 bytes (32
+      // 0xff bytes) -- "1".repeat(44) decodes to 44 bytes, not 32, so it was
+      // never actually a valid address; it only passed the old regex-only
+      // isValidBase58 check (32-44 chars, valid alphabet), not a true decode.
+      const valid44 = "JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG";
       const res44 = await originalFetch(`${r.base}/trust`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1582,8 +1615,8 @@ test("A8: /gate-copy returns tokenCheck ('applied', 'skipped_no_mint', 'skipped_
   const { store, dir } = tmpStore();
   const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
   const originalFetch = globalThis.fetch;
-  const safeWallet = "SafeWa11et1111111111111111111111111111";
-  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111111";
   const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1698,8 +1731,195 @@ test("A8: /gate-copy returns tokenCheck ('applied', 'skipped_no_mint', 'skipped_
   }
 });
 
+test("B2: /gate-copy caps the verdict at manual_review when fetchMintMetadata throws (tokenCheck='unavailable')", async () => {
+  const { store, dir } = tmpStore();
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+  const originalFetch = globalThis.fetch;
 
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+    if (urlStr.startsWith("http://127.0.0.1")) return originalFetch(input, init);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([{ signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (urlStr.includes("jup.ag")) {
+      return new Response(JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 150 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
 
+  const r = await startWatchServer(store, {
+    apiKey: "mock_helius_key",
+    rateLimitPerMin: 0,
+    liveRateLimitPerMin: 0,
+    fetchMintMetadata: async () => {
+      throw new Error("mocked RPC timeout");
+    },
+  });
+
+  try {
+    const res = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as any;
+    assert.equal(data.tokenCheck, "unavailable", `expected tokenCheck 'unavailable', got ${JSON.stringify(data)}`);
+    assert.equal(data.action, "manual_review", "a mint-check failure with a real USD amount must cap the verdict at manual_review");
+    assert.equal(data.allow, false, "manual_review must not allow execution");
+    assert.ok(data.details?.tokenCheckAnomaly, "response must include the TOKEN_CHECK_UNAVAILABLE anomaly");
+    assert.equal(data.details.tokenCheckAnomaly.type, "TOKEN_CHECK_UNAVAILABLE");
+    assert.equal(data.details.tokenCheckAnomaly.severity, "low");
+    assert.match(data.details.tokenCheckAnomaly.text, /mocked RPC timeout/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("B2: TOKEN_CHECK_UNAVAILABLE contributes 0 risk points to computeRiskScore regardless of its 'low' severity", () => {
+  const anomalies: Array<{ type: string; wallet: string; severity: "low"; timestamp: number; evidence: Record<string, unknown>; text: string }> = [
+    { type: "TOKEN_CHECK_UNAVAILABLE", wallet: "W", severity: "low", timestamp: 1, evidence: {}, text: "t" },
+  ];
+  assert.equal(computeRiskScore(anomalies as any), 0);
+});
+
+test("B3: POST /scan reports degraded: ['PRICES_UNAVAILABLE'] when the Jupiter price fetch fails, without changing verdict/riskScore", async () => {
+  const { store, dir } = tmpStore();
+  const wallet = "5nY93xYzVdqbtrsU2PjEmwkJNJogsnKjLYNGCMdFjJM8";
+  const txs: EnhancedTx[] = [
+    { signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+  ];
+
+  const rOk = await startWatchServer(store, {
+    apiKey: "mock_helius_key",
+    rateLimitPerMin: 0,
+    fetchTxs: async () => txs,
+    fetchPrices: async () => ({ So11111111111111111111111111111111111111112: 150 }),
+    fetchMintRisk: async () => ({}),
+  });
+  const rDegraded = await startWatchServer(store, {
+    apiKey: "mock_helius_key",
+    rateLimitPerMin: 0,
+    fetchTxs: async () => txs,
+    fetchPrices: async () => null, // mocked Jupiter price-fetch failure
+    fetchMintRisk: async () => ({}),
+  });
+
+  try {
+    const resOk = await fetch(`${rOk.base}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet }),
+    });
+    const dataOk = (await resOk.json()) as any;
+    assert.equal(dataOk.degraded, undefined, "no degraded field when prices are available");
+
+    const resDegraded = await fetch(`${rDegraded.base}/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet }),
+    });
+    const dataDegraded = (await resDegraded.json()) as any;
+    assert.deepEqual(dataDegraded.degraded, ["PRICES_UNAVAILABLE"]);
+    assert.equal(dataDegraded.pricesAvailable, false);
+    // Same verdict/riskScore either side -- this fixture has no price-dependent anomalies.
+    assert.equal(dataDegraded.verdict, dataOk.verdict);
+    assert.equal(dataDegraded.riskScore, dataOk.riskScore);
+  } finally {
+    await rOk.close();
+    await rDegraded.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("B3: /gate-copy reports degraded: ['PRICES_UNAVAILABLE'] (propagated from runTrustCheck) when the Jupiter price fetch fails", async () => {
+  const { store, dir } = tmpStore();
+  const safeWallet = "SafeWa11et111111111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+    if (urlStr.startsWith("http://127.0.0.1")) return originalFetch(input, init);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([{ signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    // Mocked Jupiter price-fetch failure (B3).
+    if (urlStr.includes("jup.ag")) {
+      return new Response("Internal Server Error", { status: 500 });
+    }
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (parsed?.method === "getAccountInfo") {
+        const address = parsed.params?.[0];
+        if (address === testMint) {
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { type: "mint", info: { freezeAuthority: null, mintAuthority: null, isInitialized: true } } } } } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111" } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  try {
+    const res = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as any;
+    assert.equal(data.tokenCheck, "applied");
+    assert.deepEqual(data.degraded, ["PRICES_UNAVAILABLE"]);
+    assert.deepEqual(data.details.trust.degraded, ["PRICES_UNAVAILABLE"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
 
 
 

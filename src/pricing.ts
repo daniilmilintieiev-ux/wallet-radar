@@ -112,6 +112,18 @@ export function collectSwapMints(txs: EnhancedTx[], wallet?: string): string[] {
   return Array.from(mints);
 }
 
+/**
+ * DEAD CODE in production (B3): no file under src/ reads this export. The
+ * live /scan, /trust, /gate-copy paths never fall back to it -- when the
+ * Jupiter price fetch fails they simply report `prices: null` /
+ * `degraded: ["PRICES_UNAVAILABLE"]`, which is the honest signal (these
+ * numbers are frozen at whatever they were when this file was last edited
+ * and go stale immediately). Kept only because scripts/audit/*.mjs and
+ * scratch/capture-snapshot.mjs import it to reconstruct a fixed, reproducible
+ * price set for OFFLINE historical replay over benchmarks/history-cache,
+ * where live pricing isn't an option and a frozen reference set is the point.
+ * Do not wire this into any live request path.
+ */
 export const BLUECHIP_FALLBACK_PRICES: Readonly<Record<string, number>> = {
   [SOL_MINT]: 150.0,
   [USDC_MINT]: 1.0,

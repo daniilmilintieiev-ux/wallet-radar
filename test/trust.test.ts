@@ -372,7 +372,7 @@ test("formatShortlist renders formatted summary with all sections", () => {
 
 test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async () => {
   const originalFetch = globalThis.fetch;
-  const targetWallet = "WappetTest1111111111111111111111111111";
+  const targetWallet = "WappetTest111111111111111111111111111111111";
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const urlStr = String(input);
@@ -463,9 +463,160 @@ test("runTrustCheck: end-to-end with mocked RPC, pricing, and history", async ()
   }
 });
 
+test("B3: runTrustCheck reports degraded: ['PRICES_UNAVAILABLE'] when the Jupiter price fetch fails, without changing verdict/riskScore", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      const mockTxs: EnhancedTx[] = [
+        { signature: "sigHist1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+      ];
+      return new Response(JSON.stringify(mockTxs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    // Mocked Jupiter price-fetch failure (B3) -- everything else succeeds.
+    if (urlStr.includes("jup.ag")) {
+      return new Response("Internal Server Error", { status: 500 });
+    }
+    if (bodyStr) {
+      try {
+        const parsed = JSON.parse(bodyStr);
+        if (parsed.method === "getBalance") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (parsed.method === "getTokenAccountsByOwner") {
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 50 } } } } } }] } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (parsed.method === "getAccountInfo") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: SYSTEM_PROGRAM } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      } catch {}
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, {});
+    assert.deepEqual(res.degraded, ["PRICES_UNAVAILABLE"]);
+    assert.equal(res.solPriced, false);
+    assert.equal(res.solPrice, null);
+    // Verdict is unaffected: this fixture has no price-dependent anomalies either way.
+    assert.equal(res.verdict, "safe");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("B3: runTrustCheck with opts.noPrices does NOT report degraded (deliberate skip, not a failure)", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (urlStr.includes("jup.ag")) {
+      throw new Error("must not be called when opts.noPrices is set");
+    }
+    if (bodyStr) {
+      try {
+        const parsed = JSON.parse(bodyStr);
+        if (parsed.method === "getBalance") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (parsed.method === "getTokenAccountsByOwner") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [] } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (parsed.method === "getAccountInfo") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: SYSTEM_PROGRAM } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      } catch {}
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, { noPrices: true });
+    assert.equal(res.degraded, undefined, "opts.noPrices is a deliberate skip, not a degradation");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("B5: trust path does NOT fire DORMANT_ACTIVE for a wallet trading every single day for 20 days", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const DAY = 86_400;
+  // 20 consecutive daily transactions, days -20 .. -1 relative to now.
+  // windowStart = now - 7d splits this into baselineTxs (days -20..-8, 13 txs,
+  // baseline.lastSeenAt = day -8) and evalTxs (days -7..-1, 7 txs).
+  const dailyTxs: EnhancedTx[] = Array.from({ length: 20 }, (_, i) => ({
+    signature: `daily_${i}`,
+    timestamp: nowSec - (20 - i) * DAY,
+    source: "JUPITER",
+  }));
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(JSON.stringify(dailyTxs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, { noPrices: true });
+    const dormant = res.anomalies.find((a) => a.type === "DORMANT_ACTIVE");
+    assert.equal(dormant, undefined, `a continuously active wallet must not fire DORMANT_ACTIVE on the trust path, got: ${JSON.stringify(dormant)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("B5: trust path DOES fire DORMANT_ACTIVE for a wallet silent for 30 days before reactivating", async () => {
+  const originalFetch = globalThis.fetch;
+  const targetWallet = "WappetTest111111111111111111111111111111111";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const DAY = 86_400;
+  // Baseline activity ends 30 days ago; the wallet resumes in the last 2 days.
+  const txs: EnhancedTx[] = [
+    { signature: "old_1", timestamp: nowSec - 35 * DAY, source: "JUPITER" },
+    { signature: "old_2", timestamp: nowSec - 33 * DAY, source: "JUPITER" },
+    { signature: "old_3", timestamp: nowSec - 30 * DAY, source: "JUPITER" }, // baseline.lastSeenAt
+    { signature: "resumed_1", timestamp: nowSec - 2 * DAY, source: "JUPITER" },
+    { signature: "resumed_2", timestamp: nowSec - 1 * DAY, source: "JUPITER" },
+  ];
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const urlStr = String(input);
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(JSON.stringify(txs), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    const res = await runTrustCheck("test_api_key", targetWallet, { noPrices: true });
+    const dormant = res.anomalies.find((a) => a.type === "DORMANT_ACTIVE");
+    assert.ok(dormant, "a wallet silent for 30 days before reactivating must fire DORMANT_ACTIVE on the trust path");
+    assert.ok((dormant!.evidence.daysSilent as number) >= 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("runTrustCheck: error handling when history or balances fail", async () => {
   const originalFetch = globalThis.fetch;
-  const targetWallet = "WappetTest1111111111111111111111111111";
+  const targetWallet = "WappetTest111111111111111111111111111111111";
 
   try {
     // 1. History fetch fails -> risk is null, verdict is unknown
@@ -503,8 +654,8 @@ test("runTrustCheck: error handling when history or balances fail", async () => 
 
 test("runTrustChecks: batches wallets and isolates errors", async () => {
   const originalFetch = globalThis.fetch;
-  const wSuccess = "WappetGood1111111111111111111111111111";
-  const wFail = "WappetFaip1111111111111111111111111111";
+  const wSuccess = "WappetGood111111111111111111111111111111111";
+  const wFail = "WappetFaip111111111111111111111111111111111";
 
   globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -542,8 +693,8 @@ test("runTrustChecks: batches wallets and isolates errors", async () => {
 
 test("runTrustChecks: handles unhandled runTrustCheck exception in batch", async () => {
   const originalFetch = globalThis.fetch;
-  const wSuccess = "WappetGood1111111111111111111111111111";
-  const wFail = "WappetFaip1111111111111111111111111111";
+  const wSuccess = "WappetGood111111111111111111111111111111111";
+  const wFail = "WappetFaip111111111111111111111111111111111";
 
   globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -601,7 +752,7 @@ test("fetchLiquidity: RPC returning {value: 0} for getTokenAccountsByOwner does 
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     };
-    const bal = await fetchLiquidity("https://rpc.example.com", "WappetTest1111111111111111111111111111");
+    const bal = await fetchLiquidity("https://rpc.example.com", "WappetTest111111111111111111111111111111111");
     assert.deepEqual(bal, { sol: 1.5, usdc: 0, usdt: 0 });
   } finally {
     globalThis.fetch = originalFetch;

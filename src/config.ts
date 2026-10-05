@@ -5,6 +5,8 @@
  * variables are missing or invalid for the requested runtime mode.
  */
 
+import bs58 from "bs58";
+
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -44,6 +46,23 @@ export interface ConfigValidationResult {
  */
 export function isValidBase58(addr: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr.trim());
+}
+
+/**
+ * Strict Solana address check: decodes the base58 string and requires exactly
+ * 32 bytes, matching an actual Ed25519 public key. `isValidBase58` above only
+ * checks the alphabet and character-count range (32-44 chars), so a 43-44
+ * character string that decodes to fewer than 32 bytes (e.g. a single
+ * dropped/substituted character) still passes it but is not a valid address.
+ */
+export function isValidSolanaAddress(addr: string): boolean {
+  const trimmed = addr.trim();
+  if (!isValidBase58(trimmed)) return false;
+  try {
+    return bs58.decode(trimmed).length === 32;
+  } catch {
+    return false;
+  }
 }
 
 /**

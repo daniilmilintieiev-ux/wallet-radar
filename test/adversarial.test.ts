@@ -69,9 +69,9 @@ describe("Adversarial: x402 Payment Server", () => {
   // Attack 1: Parallel Double-Spend / Race Condition
   test("ADV-X402-01: Parallel double-spend race condition (20 concurrent requests with identical signature)", async () => {
     const { store, dir } = tmpDb();
-    const targetWallet = "TargetWappet11111111111111111111111111111111";
+    const targetWallet = "TargetWappet1111111111111111111111111111111";
     const sharedSig = "adv_tx_signature_race_test_" + Date.now();
-    const payer = "PayerWappet111111111111111111111111111111111";
+    const payer = "PayerWappet11111111111111111111111111111111";
 
     let verificationCalls = 0;
     const server = createX402Server({
@@ -376,7 +376,7 @@ describe("Adversarial: x402 Payment Server", () => {
     };
     const proof: PaymentProof = {
       signature: "adv_sig_unconfirmed",
-      payer: "PayerWappet111111111111111111111111111111111",
+      payer: "PayerWappet11111111111111111111111111111111",
     };
 
     // Subcase 5a: Transaction not found on-chain (result: null)
@@ -442,9 +442,9 @@ describe("Adversarial: x402 Payment Server", () => {
   // Attack 6: Cross-Header Proof Replay
   test("ADV-X402-06: Cross-header proof replay deduplication across header schemes", async () => {
     const { store, dir } = tmpDb();
-    const targetWallet = "TargetWappet11111111111111111111111111111111";
+    const targetWallet = "TargetWappet1111111111111111111111111111111";
     const sig = "adv_tx_signature_cross_header_" + Date.now();
-    const payer = "PayerWappet111111111111111111111111111111111";
+    const payer = "PayerWappet11111111111111111111111111111111";
 
     const server = createX402Server({
       store,

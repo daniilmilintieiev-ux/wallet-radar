@@ -4,6 +4,35 @@ import { Store } from "./store.js";
 import { isValidBase58 } from "./config.js";
 import { EnhancedTx, MintRiskInfo, MintRiskMap, MAJOR_MINTS } from "./types.js";
 
+/**
+ * Parses the Token-2022 `extensions` array from a jsonParsed mint account
+ * (B1). Each entry has the shape `{ extension: string, state?: object }`;
+ * unrecognized extensions are ignored. Returns `{}` (all fields undefined)
+ * when `extensions` is absent or not an array, so legacy SPL Token mints
+ * are unaffected.
+ */
+function parseToken2022Extensions(info: Record<string, unknown>): Pick<MintRiskInfo, "permanentDelegate" | "pausable" | "transferHook" | "defaultAccountStateFrozen"> {
+  const extensions = Array.isArray(info.extensions) ? info.extensions : [];
+  const result: Pick<MintRiskInfo, "permanentDelegate" | "pausable" | "transferHook" | "defaultAccountStateFrozen"> = {};
+  for (const ext of extensions) {
+    if (!ext || typeof ext !== "object") continue;
+    const name = (ext as Record<string, unknown>).extension;
+    const state = (ext as Record<string, unknown>).state as Record<string, unknown> | undefined;
+    if (name === "permanentDelegate") {
+      result.permanentDelegate = true;
+    } else if (name === "pausableConfig" || name === "pausable") {
+      result.pausable = true;
+    } else if (name === "transferHook") {
+      const programId = state && typeof state.programId === "string" ? state.programId : null;
+      result.transferHook = programId;
+    } else if (name === "defaultAccountState") {
+      const accountState = state && typeof state.accountState === "string" ? state.accountState : undefined;
+      result.defaultAccountStateFrozen = accountState === "frozen";
+    }
+  }
+  return result;
+}
+
 export type { MintRiskInfo, MintRiskMap };
 
 export function parseDasAssetResponse(data: unknown): MintRiskInfo | null {
@@ -69,7 +98,8 @@ export function parseRpcAccountInfoResponse(mint: string, data: unknown): MintRi
 
   const isPumpFun = mint.toLowerCase().endsWith("pump");
   const isAuthorityRevoked = mintAuthority === null && freezeAuthority === null;
-  return { mint, mintAuthority, freezeAuthority, isPumpFun, isAuthorityRevoked };
+  const extensions = parseToken2022Extensions(info);
+  return { mint, mintAuthority, freezeAuthority, isPumpFun, isAuthorityRevoked, ...extensions };
 }
 
 function toSupplyString(v: unknown): string | null {

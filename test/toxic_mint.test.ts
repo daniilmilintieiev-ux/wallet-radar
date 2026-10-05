@@ -129,6 +129,135 @@ test("parseRpcAccountInfoResponse: parses standard Solana parsed account data", 
   assert.equal(parsed.freezeAuthority, null);
 });
 
+test("parseRpcAccountInfoResponse: no extensions array -> all Token-2022 fields undefined (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: { value: { data: { parsed: { info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1" }, type: "mint" }, program: "spl-token" } } },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.permanentDelegate, undefined);
+  assert.equal(parsed.pausable, undefined);
+  assert.equal(parsed.transferHook, undefined);
+  assert.equal(parsed.defaultAccountStateFrozen, undefined);
+});
+
+test("parseRpcAccountInfoResponse: parses permanentDelegate extension (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: {
+              mintAuthority: null,
+              freezeAuthority: null,
+              decimals: 6,
+              supply: "1",
+              extensions: [{ extension: "permanentDelegate", state: { delegate: "SomeDelegate1111111111111111111111111111111" } }],
+            },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.permanentDelegate, true);
+  assert.equal(parsed.pausable, undefined);
+  assert.equal(parsed.transferHook, undefined);
+  assert.equal(parsed.defaultAccountStateFrozen, undefined);
+});
+
+test("parseRpcAccountInfoResponse: parses pausableConfig extension (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1", extensions: [{ extension: "pausableConfig", state: { paused: false } }] },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.pausable, true);
+  assert.equal(parsed.permanentDelegate, undefined);
+});
+
+test("parseRpcAccountInfoResponse: parses transferHook extension program id (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: {
+              mintAuthority: null,
+              freezeAuthority: null,
+              decimals: 6,
+              supply: "1",
+              extensions: [{ extension: "transferHook", state: { authority: null, programId: "SomeHookProgram111111111111111111111111111" } }],
+            },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.transferHook, "SomeHookProgram111111111111111111111111111");
+});
+
+test("parseRpcAccountInfoResponse: parses defaultAccountState=frozen extension (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1", extensions: [{ extension: "defaultAccountState", state: { accountState: "frozen" } }] },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.defaultAccountStateFrozen, true);
+});
+
+test("parseRpcAccountInfoResponse: defaultAccountState=initialized does not flag frozen (B1)", () => {
+  const rpcResponse = {
+    jsonrpc: "2.0",
+    result: {
+      value: {
+        data: {
+          parsed: {
+            info: { mintAuthority: null, freezeAuthority: null, decimals: 6, supply: "1", extensions: [{ extension: "defaultAccountState", state: { accountState: "initialized" } }] },
+            type: "mint",
+          },
+          program: "spl-token-2022",
+        },
+      },
+    },
+  };
+  const parsed = parseRpcAccountInfoResponse(TOXIC_MINT, rpcResponse);
+  assert.ok(parsed);
+  assert.equal(parsed.defaultAccountStateFrozen, false);
+});
+
 test("collectCandidateMints: collects swap mints excluding MAJOR_MINTS", () => {
   const txs = [
     makeSwapTx("s1", USDC_MINT, TOXIC_MINT),
@@ -208,6 +337,167 @@ test("detectAnomalies TOXIC_MINT: renounced mint passes (no anomaly)", () => {
 
   const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
   assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): permanentDelegate fires high severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, permanentDelegate: true },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "high");
+  assert.equal(toxic.evidence.permanentDelegate, true);
+  assert.match(toxic.text, /permanent delegate/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): defaultAccountStateFrozen fires high severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, defaultAccountStateFrozen: true },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "high");
+  assert.equal(toxic.evidence.defaultAccountStateFrozen, true);
+  assert.match(toxic.text, /default account state: frozen/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): pausable fires medium severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, pausable: true },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "medium");
+  assert.equal(toxic.evidence.pausable, true);
+  assert.match(toxic.text, /pausable extension/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): transferHook pointing at a foreign program fires medium severity", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, transferHook: "SomeOtherProgram111111111111111111111111111" },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+  assert.ok(toxic);
+  assert.equal(toxic.severity, "medium");
+  assert.equal(toxic.evidence.transferHook, "SomeOtherProgram111111111111111111111111111");
+  assert.match(toxic.text, /transfer hook program/);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): transferHook pointing at this project's OWN hook program does not fire by itself", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+  const mintRisk = {
+    [TOXIC_MINT]: {
+      mint: TOXIC_MINT,
+      freezeAuthority: null,
+      mintAuthority: null,
+      transferHook: "wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV",
+    },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
+});
+
+test("detectAnomalies TOXIC_MINT (B1): all Token-2022 extension fields absent -> no anomaly (same as before B1)", () => {
+  const txs = [makeSwapTx("s1", USDC_MINT, SAFE_MINT, 1700000000)];
+  const mintRisk = {
+    [SAFE_MINT]: { mint: SAFE_MINT, freezeAuthority: null, mintAuthority: null },
+  };
+  const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+  assert.equal(anomalies.filter((a) => a.type === "TOXIC_MINT").length, 0);
+});
+
+test("B6: with RADAR_ISSUER_MINTS_FILE unset, freeze-authority TOXIC_MINT behavior is unchanged (high severity, issuer_listed: false)", () => {
+  const prev = process.env.RADAR_ISSUER_MINTS_FILE;
+  delete process.env.RADAR_ISSUER_MINTS_FILE;
+  try {
+    const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+    const mintRisk = { [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: FREEZE_AUTH, mintAuthority: null } };
+    const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+    const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+    assert.ok(toxic);
+    assert.equal(toxic.severity, "high", "default (env unset) behavior must be unchanged -- still high");
+    assert.equal(toxic.evidence.issuer_listed, false);
+  } finally {
+    if (prev !== undefined) process.env.RADAR_ISSUER_MINTS_FILE = prev;
+    else delete process.env.RADAR_ISSUER_MINTS_FILE;
+  }
+});
+
+test("B6: a freeze-authority mint listed in RADAR_ISSUER_MINTS_FILE is downgraded to medium with issuer_listed: true", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const prev = process.env.RADAR_ISSUER_MINTS_FILE;
+  const tmpFile = path.join(os.tmpdir(), `radar-issuer-mints-${Date.now()}.json`);
+  fs.writeFileSync(tmpFile, JSON.stringify([TOXIC_MINT]));
+  process.env.RADAR_ISSUER_MINTS_FILE = tmpFile;
+  try {
+    const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+    const mintRisk = { [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: FREEZE_AUTH, mintAuthority: null } };
+    const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+    const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+    assert.ok(toxic);
+    assert.equal(toxic.severity, "medium", "a freeze-authority finding on an issuer-listed mint must be downgraded to medium");
+    assert.equal(toxic.evidence.issuer_listed, true);
+    assert.match(toxic.text, /issuer-controlled mint/);
+  } finally {
+    if (prev !== undefined) process.env.RADAR_ISSUER_MINTS_FILE = prev;
+    else delete process.env.RADAR_ISSUER_MINTS_FILE;
+    fs.rmSync(tmpFile, { force: true });
+  }
+});
+
+test("B6: issuer-listing does NOT downgrade other independent 'high' triggers (very high concentration stays high even if listed)", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const prev = process.env.RADAR_ISSUER_MINTS_FILE;
+  const tmpFile = path.join(os.tmpdir(), `radar-issuer-mints-${Date.now()}.json`);
+  fs.writeFileSync(tmpFile, JSON.stringify([TOXIC_MINT]));
+  process.env.RADAR_ISSUER_MINTS_FILE = tmpFile;
+  try {
+    const txs = [makeSwapTx("s1", USDC_MINT, TOXIC_MINT, 1700000000)];
+    // No freeze authority, but top10Pct is above TOP10_HIGH_PCT (80) -> veryConcentrated, independently `high`.
+    const mintRisk = { [TOXIC_MINT]: { mint: TOXIC_MINT, freezeAuthority: null, mintAuthority: null, top10Pct: 85 } };
+    const anomalies = detectAnomalies(WALLET, txs, null, undefined, null, mintRisk);
+    const toxic = anomalies.find((a) => a.type === "TOXIC_MINT");
+    assert.ok(toxic);
+    assert.equal(toxic.severity, "high", "issuer-listing only downgrades the freeze-authority trigger, not other independent high triggers");
+  } finally {
+    if (prev !== undefined) process.env.RADAR_ISSUER_MINTS_FILE = prev;
+    else delete process.env.RADAR_ISSUER_MINTS_FILE;
+    fs.rmSync(tmpFile, { force: true });
+  }
+});
+
+test("B6: ground-truth/issuer-controlled-mints.jsonl is NOT referenced by any file under src/", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const srcDir = path.resolve(process.cwd(), "src");
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, out);
+      else if (entry.name.endsWith(".ts")) out.push(full);
+    }
+    return out;
+  }
+  for (const file of walk(srcDir)) {
+    const content = fs.readFileSync(file, "utf8");
+    assert.equal(
+      content.includes("issuer-controlled-mints.jsonl"),
+      false,
+      `${file} must not reference ground-truth/issuer-controlled-mints.jsonl (B6 is a separate, opt-in product feature)`,
+    );
+  }
 });
 
 test("detectAnomalies TOXIC_MINT: skips MAJOR_MINTS even if passed in mintRisk", () => {

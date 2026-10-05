@@ -76,6 +76,10 @@ describe("Load Test: POST /scan concurrency and latency", () => {
     const server = createServer({
       apiKey: "mock-helius-key",
       rateLimitPerMin: 10000,
+      // liveRateLimitPerMin is independent of rateLimitPerMin (B0b) and
+      // otherwise defaults to 30 -- this test exercises /scan concurrency,
+      // not rate limiting, so raise it explicitly to match.
+      liveRateLimitPerMin: 10000,
       fetchTxs: async (_wallet: string) => [mockTx],
       fetchPrices: async () => ({}),
       fetchMintRisk: async () => ({}),

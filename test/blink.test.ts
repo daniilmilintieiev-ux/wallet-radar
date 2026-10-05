@@ -19,6 +19,7 @@ import {
 import { createX402Server } from "../src/x402server.js";
 import { Store } from "../src/store.js";
 import { USDC_MINT } from "../src/types.js";
+import { getVersion } from "../src/version.js";
 
 function tmpDb(): { store: Store; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "radar-blink-test-"));
@@ -207,6 +208,19 @@ describe("Solana Actions & Blinks (src/blink)", () => {
     assert.ok(manifest.deepLinks.phantom.startsWith("https://phantom.app/ul/browse/"));
     assert.ok(manifest.deepLinks.solflare.startsWith("https://solflare.com/ul/v1/browse/"));
     assert.equal(manifest.deepLinks.protocol, `solana-action:${manifest.actionUrl}`);
+  });
+
+  test("Step0 (A4 follow-up): manifest.version is sourced from getVersion(), not a hardcoded literal", () => {
+    const srcPath = path.resolve(process.cwd(), "src/blink/index.ts");
+    const src = fs.readFileSync(srcPath, "utf8");
+    assert.equal(
+      /version:\s*["'`]\d+\.\d+\.\d+["'`]/.test(src),
+      false,
+      "src/blink/index.ts must not hardcode a version literal; it must call getVersion() like http-server.ts and mcp.ts do",
+    );
+
+    const manifest = getBlinkRegistrationManifest("https://api.wallet-radar.app", recipientAddress);
+    assert.equal(manifest.version, getVersion());
   });
 
   test("HTTP server integration: handles OPTIONS CORS preflight on Actions endpoints", async () => {

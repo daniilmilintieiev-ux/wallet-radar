@@ -64,11 +64,21 @@ a separate, future change.
   *any* continuously-active wallet, not just a genuinely dormant one — but
   this has only been reproduced offline, against a synthetic fixture, this
   stage. It has not been checked against real wallet histories.
-- **Status:** not fixed this stage (`src/` out of scope). Needs confirmation
-  against real, live wallet data — safe to attempt only after the shadow
-  collector's data collection stops (2026-10-06 18:00 UTC,
-  `docs/PREREGISTRATION.md` section 15g), so as not to interfere with the
-  live run.
+- **Status:** fixed in branch `fixes-b` (commit bcdcef1), not deployed.
+  Added `RadarConfig.dormantMeasure` ("newest" default, unchanged; "first" —
+  measures the gap to the evaluated batch's EARLIEST tx instead) and wired
+  `"first"` into `trust.ts`'s one `detectAnomalies` call specifically. The
+  walk-forward/`scan` path is provably unaffected (never touches `trust.ts`,
+  default stays `"newest"`). Re-run against the real cached data this
+  observation describes (`benchmarks/history-cache`, 1001 wallets, offline —
+  not the live shadow-collector run, which is a separate, still-pending
+  confirmation after collection stops): `DORMANT_ACTIVE` firings on the
+  trust path dropped from 197/1001 to 133/1001; 25 wallets' overall trust
+  verdict changed (14 `LOW_TRUST_WARMING`→`VERIFIED_SAFE`, 11
+  `BLOCKED`→`LOW_TRUST_WARMING`), all 25 solely because `DORMANT_ACTIVE` no
+  longer co-fires alongside their other anomalies — 0 wallets got a worse
+  verdict. Live-data confirmation against the shadow collector's run
+  remains open (unaffected by this fix; same caveat as before).
 
 ## TAINTED_FUNDING checks only the wallet's very first incoming transfer
 
@@ -85,8 +95,13 @@ a separate, future change.
   `TAINTED_FUNDING` will never fire for it.
 - Documented next to the rule's description in README.md (§"9 Deterministic
   Anomaly Rules", the `TAINTED_FUNDING` paragraph).
-- **Status:** not fixed this stage (`src/` out of scope) — behavior is
-  recorded as a documented limitation, not changed.
+- **Status:** fixed in branch `fixes-b` (commit 54a8c6f), not deployed.
+  `checkFundingSource` now scans every incoming native transfer in the
+  supplied history, firing on the earliest one matching `KNOWN_EXPLOITERS`
+  (unmodified) rather than stopping at the first incoming transfer found
+  regardless of match. Severity unchanged (`high`). Test: a clean first
+  incoming transfer followed by a tainted second now fires (confirmed
+  failing under the pre-fix early-return logic, passing after).
 
 ## README's "Decision Engine Mapping" (§2) does not match decision.ts/trust.ts/simulate.ts's actual logic
 
@@ -137,7 +152,18 @@ a separate, future change.
   // Fetch failed or no metadata: skip rule for this mint` — a mint whose
   metadata fetch failed receives no TOXIC_MINT evaluation at all,
   regardless of its actual risk.
-- **Status:** finding, fix planned after 2026-10-06.
+- **Status:** fixed in branch `fixes-b` (commit 69c1120), not deployed, for
+  `/gate-copy` and `radar_gate_copy` specifically (the single-mint
+  `fetchMintMetadata` lookup these use, not `fetchSwapMintRisk`'s
+  batch-map path used by `/scan`/`/trust`, which this entry's `analyzer.ts:780`
+  silent-skip still applies to — that batch path was out of this stage's
+  scope). A fetch failure (thrown error, or a successful call resolving to
+  `null`) now sets `tokenCheck: "unavailable"`, emits a new
+  `TOKEN_CHECK_UNAVAILABLE` anomaly (severity `low`, contributes 0 risk
+  points), and caps the verdict at `manual_review` whenever
+  `copyAmountUsd > 0` — block stays block, but what would have been
+  `throttle`/`allow` is downgraded, so a failed check can never read as
+  safer than "needs a human."
 
 ## `BLUECHIP_FALLBACK_PRICES` is defined but never used; price-feed failure degrades LARGE_SWAP to major-mints-only
 
@@ -151,7 +177,16 @@ a separate, future change.
   comparing raw token quantities restricted to `MAJOR_MINTS` (SOL/USDC/
   USDT) only (`analyzer.ts:661-681`) — non-major mints get no LARGE_SWAP
   detection at all during a price-feed outage, not stale hardcoded prices.
-- **Status:** finding, fix planned after 2026-10-06.
+- **Status:** fixed in branch `fixes-b` (commit 3feeaba), not deployed.
+  `BLUECHIP_FALLBACK_PRICES` is explicitly commented as dead-in-production
+  (kept only for `scripts/audit/*.mjs`'s offline historical replay, which
+  legitimately needs a frozen, reproducible price set — not wired into any
+  live path). Separately, `/scan`, `/trust`/`/batch` (`TrustResult.degraded`),
+  and `/gate-copy` now report `degraded: ["PRICES_UNAVAILABLE"]` when the
+  price fetch actually failed (not when a caller deliberately requested
+  `noPrices`) — verdicts and risk scores themselves are unchanged by this
+  item; it only makes the existing degrade-to-major-mints-only behavior
+  visible in the response instead of silent.
 
 ## TOXIC_MINT does not consider Token-2022 extensions
 
@@ -165,7 +200,21 @@ a separate, future change.
   halt, `transferHook` — arbitrary on-transfer logic, `defaultAccountState`
   — new accounts start frozen) are not read or evaluated by TOXIC_MINT at
   all.
-- **Status:** finding, fix planned after 2026-10-06.
+- **Status:** fixed in branch `fixes-b` (commit 73395bc), not deployed, for
+  the RPC `getAccountInfo` jsonParsed fallback path specifically (the
+  Helius DAS `getAsset` path, `parseDasAssetResponse`, is NOT extended —
+  its Token-2022 extensions jsonParsed shape was not independently
+  confirmed, so nothing was guessed there; this is a known remaining gap).
+  `MintRiskInfo` gained `permanentDelegate`, `pausable`, `transferHook`,
+  `defaultAccountStateFrozen`. Fixed severities: `permanentDelegate` and a
+  frozen `defaultAccountState` → `high`; `pausable` and a `transferHook`
+  pointing at any program other than this project's own hook
+  (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) → `medium`. This check
+  does not currently apply to `/gate-copy`'s own mint check — see the
+  `TOKEN_CHECK_UNAVAILABLE`/`fetchMintMetadata` entry above: `simulate.ts`'s
+  TOXIC_MINT-equivalent logic (used by `/gate-copy`) only checks
+  `freezeAuthority`/`top10Pct`, not these new fields — a pre-existing gap
+  this stage did not close.
 
 ## x402 replay protection is per-process; cross-process concurrent delivery is possible
 
@@ -253,10 +302,59 @@ a separate, future change.
 - Reported packages: `bigint-buffer`, `@solana/buffer-layout-utils`,
   `@solana/spl-token` — all reachable through `@solana/spl-token@0.4.15`'s
   own dependency tree, not a direct top-level choice.
-- Impact on this project's actual usage was not assessed this stage (no
-  exploitability analysis of which code paths touch the vulnerable
-  functions).
-- **Status:** finding, fix planned after 2026-10-06.
+- Re-confirmed on branch `fixes-b` via `npm audit` (2026-10-01): still 12
+  vulnerabilities (9 moderate, 3 high) — unchanged from report 11B. No
+  dependency was changed by this update.
+
+### B7: reachability analysis (stage 15B) — dependency versions NOT changed
+
+Every place `src/` imports `@solana/spl-token`, and whether the specific
+flagged `bigint-buffer` functions (`toBigIntLE`, `toBigIntBE`, `toBufferLE`,
+`toBufferBE`) are actually reachable with externally-sourced data (RPC
+responses, user input) through those import sites:
+
+- **All `@solana/spl-token` imports in `src/`** (confirmed exhaustive via
+  `grep -rn "@solana/spl-token" src/*.ts src/**/*.ts`): exactly two files,
+  each importing exactly one function, `createAssociatedTokenAccountIdempotentInstruction`:
+  - `src/blink/index.ts:10` (import), called at `src/blink/index.ts:225-226`.
+  - `src/sdk/index.ts:3` (import), called at `src/sdk/index.ts:372-373`.
+  - No other `@solana/spl-token` export is imported anywhere in `src/`.
+- **Call-graph trace for `createAssociatedTokenAccountIdempotentInstruction`**
+  (`node_modules/@solana/spl-token/lib/esm/instructions/associatedTokenAccount.js:31-33`):
+  delegates to `buildAssociatedTokenAccountInstruction`, which only builds a
+  `TransactionInstruction` from a fixed 1-byte data buffer and account
+  pubkeys (`new PublicKey(...)`/`.toBuffer()` calls) — it does not decode any
+  on-chain account data. Its only other import from `spl-token` is
+  `getAssociatedTokenAddressSync` (`../state/mint.js:124-129`), which is pure
+  PDA derivation (`PublicKey.isOnCurve`, `PublicKey.findProgramAddressSync`)
+  and likewise never touches a byte-layout codec.
+- **Where `toBigIntLE`/`toBigIntBE`/`toBufferLE`/`toBufferBE` actually live**:
+  `node_modules/@solana/buffer-layout-utils/lib/cjs/bigint.js:21` (decode,
+  `toBigIntLE`/`toBigIntBE`) and `:32` (encode, `toBufferLE`/`toBufferBE`),
+  inside that package's `u64`/`u128`-style layout codec. `state/mint.js:1-2`
+  imports this codec (`@solana/buffer-layout-utils`'s `bool`/`publicKey`/`u64`)
+  at module scope for its OTHER exports (`MintLayout`, `unpackMint`, binary
+  decoders of on-chain mint accounts) — so the vulnerable package is loaded
+  into the process (an ES module's top-level imports always execute), but
+  `getAssociatedTokenAddressSync` specifically never calls into that codec.
+- **No other file under `src/` imports `@solana/buffer-layout-utils` or
+  `bigint-buffer` directly** (confirmed via
+  `grep -rn "buffer-layout-utils\|bigint-buffer" src/*.ts src/**/*.ts` —
+  no match).
+- **Classification for all four flagged functions** (`toBigIntLE`,
+  `toBigIntBE`, `toBufferLE`, `toBufferBE`): **недостижимо** (unreachable)
+  through this project's actual code — the only two call sites into
+  `@solana/spl-token` use a function whose own call graph never reaches the
+  codec that wraps these, and no other path into `bigint-buffer` exists in
+  `src/`. This is a reachability finding based on static tracing of the
+  exact functions called, not a claim that the dependency itself is safe to
+  leave unpatched, and it does not account for any future code change that
+  imports a different `@solana/spl-token` export (e.g. `unpackMint`,
+  `getAccount`) that WOULD reach this codec.
+- **Status:** reachability analysis complete (this stage, branch `fixes-b`,
+  not deployed) — dependency versions unchanged, `npm audit` still reports
+  the same 12 vulnerabilities; this entry documents exploitability through
+  this project's own code, it does not resolve the underlying advisories.
 
 ## "Sub-second" latency claim holds for offline `/analyze` only, not for live `/trust`
 
@@ -306,7 +404,13 @@ a separate, future change.
 - HSTS: `Strict-Transport-Security` header is nowhere set in the application (`grep -rn "Strict-Transport-Security" src/` — zero matches); whether it is enabled at the Cloudflare level — per user observation, not enabled on the public server.
 - CORS: `Access-Control-Allow-Origin: *` confirmed by reading code — `src/config.ts:71`, active when `RADAR_CORS_ORIGINS` is not set.
 - Revenue via `/economics` on the public server at the time of user check: 0.005 USDC (single payment) — user observation, not measured by this session.
-- **Status:** fixed in branch fixes-a (commit f816910), not deployed.
+- **Status:** fixed in branch fixes-a (commit f816910), not deployed. See
+  `docs/DEPLOY-CHECKLIST.md` (added in branch `fixes-b`) for the full set of
+  env vars and verification steps for a public-facing deployment, including
+  the explicit list of routes (`/dashboard`, `/economics`, `/trust-proof`,
+  `/.well-known/agent.json`, `/a2a`) that stay open under every
+  combination of those vars, since none of the auth checks ever inspect
+  them.
 
 ## Sole x402 payment: confirms pipeline, not revenue; typo in payer address in daily-digest.ts
 
@@ -314,4 +418,14 @@ a separate, future change.
 - (a) Sole payment in the recipient history of `F6wWPy4c3fXTJDqU19Nax8FhQumeMcsSVpD2YwxLpBNR`: 0.005 USDC, 2026-09-18, payer `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (labeled "x402 Payer" in `src/daily-digest.ts:24` — line number verified via `git grep -n "x402 Payer" -- src/daily-digest.ts`, matches). The payment confirms that the payment pipeline (proof → verify → settle) executes on a real transaction; this is **not** external revenue — sole known payment across all time, from the operator's own demo wallet (per project notes).
 - (b) Upgrade authority of the Transfer Hook program on devnet (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`) — regular key: `owner` = System Program, `space` = 0, no indication of multisig (Squads, etc.). Not re-verified in this session (network access was not performed in this stage) — source: report 11E.
 - (c) Typo in address: `src/daily-digest.ts:24` contains `"3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh"` — 43 characters. Directly verified in this session (base58 decoding): this string decodes to **31 bytes**, not 32 as required for a valid Solana address; the actual payer address (44 characters, decodes to 32 bytes) is `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (see item (a) above). The strings differ, though visually similar (shared prefix `3fNN`, shared suffix `5eYh`). The same invalid address in the `radar-watch` watchlist produces a Helius 400 error every 5 minutes (per report 11E, not reproduced in this session — network was not used).
-- **Status:** fixed in branch fixes-a (commit 4478183), not deployed.
+- **Status:** fixed in branch fixes-a (commit 4478183), not deployed. Branch
+  `fixes-b` (commit 295cb24) separately closes the general class of this bug:
+  `isValidBase58` (the check used everywhere before `fixes-b`) only verified
+  the base58 alphabet and a 32-44 character length range, so a 43-44
+  character string with one dropped/substituted character — exactly this
+  typo — would have passed it too, undetected, at every validation call
+  site, not just this one hardcoded address. The new `isValidSolanaAddress`
+  additionally decodes and requires exactly 32 bytes, and is now used at
+  every wallet/mint validation point for `/trust`, `/batch`, `/scan`,
+  `/simulate`, `/gate-copy`, `/watch`, `/unwatch`, `/defense`, and the
+  matching MCP tools.

@@ -10,11 +10,11 @@ import { digestAnomalies } from "./digest.js";
 import { fetchWalletTransactions, ENHANCED_TX_SCHEMA } from "./collector.js";
 import { fetchSwapPrices } from "./pricing.js";
 import { fetchSwapMintRisk, fetchMintMetadata } from "./mint.js";
-import { isValidBase58 } from "./config.js";
+import { isValidSolanaAddress } from "./config.js";
 import { runTrustCheck, runTrustChecks, buildShortlist } from "./trust.js";
 import { anomalyReasons, anomalySummary, buildFreshness } from "./explain.js";
 import { simulatePayment } from "./simulate.js";
-import { Baseline, EnhancedTx } from "./types.js";
+import { Baseline, EnhancedTx, Anomaly } from "./types.js";
 import { Store } from "./store.js";
 import { commitScan, ZKOracleClient, ScanLedgerRecord } from "./oracle/index.js";
 import { computeVerdict } from "./htmlreport.js";
@@ -65,6 +65,12 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ wallet }) => {
+      if (!isValidSolanaAddress(wallet)) {
+        return {
+          content: [{ type: "text", text: `Invalid Solana wallet address: "${wallet}". Must be 32-44 base58 characters.` }],
+          isError: true,
+        };
+      }
       const apiKey = process.env.HELIUS_API_KEY || (options.fetchTxs ? "mock-helius-key" : undefined);
       if (!apiKey) {
         return {
@@ -106,6 +112,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           summary: anomalySummary(anomalies),
           digest: digestAnomalies(anomalies),
           freshness: buildFreshness(lastActivity, Math.floor(Date.now() / 1000), windowStart, lastActivity),
+          ...(prices === null ? { degraded: ["PRICES_UNAVAILABLE"] } : {}),
         };
 
         if (options.store) {
@@ -220,7 +227,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ wallet, maxRisk, minLiquidityUsd, windowDays }) => {
-      if (!isValidBase58(wallet)) {
+      if (!isValidSolanaAddress(wallet)) {
         return {
           content: [{ type: "text", text: `Invalid Solana wallet address: "${wallet}". Must be 32-44 base58 characters.` }],
           isError: true,
@@ -281,7 +288,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
     },
     async ({ wallets, maxRisk, minLiquidityUsd, windowDays }) => {
       for (const w of wallets) {
-        if (!isValidBase58(w)) {
+        if (!isValidSolanaAddress(w)) {
           return {
             content: [{ type: "text", text: `Invalid Solana wallet address in batch: "${w}". Must be 32-44 base58 characters.` }],
             isError: true,
@@ -397,6 +404,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             riskScore: trustResult.riskScore,
             maxSafeAmountUsd: 0,
             executionTier: "blocked",
+            degraded: trustResult.degraded,
             details: { trust: trustResult },
           });
         }
@@ -408,17 +416,19 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             tokenCheck: "skipped_base_verdict",
             riskScore: trustResult.riskScore,
             maxSafeAmountUsd: 0,
+            degraded: trustResult.degraded,
             details: { trust: trustResult },
           });
         }
 
-        const hasMint = Boolean(mint && isValidBase58(mint));
+        const hasMint = Boolean(mint && isValidSolanaAddress(mint));
         const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
-        const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
+        let tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" | "unavailable" = !hasMint
           ? "skipped_no_mint"
           : !hasAmount
           ? "skipped_no_amount"
           : "applied";
+        let tokenCheckAnomaly: Anomaly | null = null;
 
         let simRes: any;
         if (hasAmount) {
@@ -427,7 +437,20 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
             try {
               const fetchMintMetadataFn = options.fetchMintMetadata ?? fetchMintMetadata;
               mintRisk = await fetchMintMetadataFn(mint!, { apiKey, store: options.store });
-            } catch {}
+              if (mintRisk === null) {
+                throw new Error("mint metadata unavailable (DAS and RPC fallback both failed, or no RPC endpoint configured)");
+              }
+            } catch (err) {
+              tokenCheck = "unavailable";
+              tokenCheckAnomaly = {
+                type: "TOKEN_CHECK_UNAVAILABLE",
+                wallet: targetWallet,
+                severity: "low",
+                timestamp: Math.floor(Date.now() / 1000),
+                evidence: { mint, error: err instanceof Error ? err.message : String(err) },
+                text: `Token mint check for ${mint} was unavailable: ${err instanceof Error ? err.message : String(err)}.`,
+              };
+            }
           }
           simRes = simulatePayment({
             wallet: targetWallet,
@@ -447,6 +470,9 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           const simAction = (simRes.decision as any)?.action ?? (simRes.decision as any)?.verdict;
           const isBlocked = simAction === "block" || simRes.executionTier === "blocked" || (simRes.wouldTrigger && simRes.wouldTrigger.includes("TOXIC_MINT"));
           const isThrottled = !isBlocked && (simAction === "throttle" || simRes.executionTier === "guarded");
+          // B2: never more permissive than manual_review when the mint could
+          // not be checked at all for a real USD amount.
+          const detailsWithAnomaly = () => ({ trust: trustResult, simulation: simRes, ...(tokenCheckAnomaly ? { tokenCheckAnomaly } : {}) });
 
           if (isBlocked) {
             return json({
@@ -459,7 +485,24 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: "blocked",
               slippageToleranceBps: 0,
               cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.recommendedDelaySec ?? 300),
-              details: { trust: trustResult, simulation: simRes },
+              degraded: trustResult.degraded,
+              details: detailsWithAnomaly(),
+            });
+          }
+
+          if (tokenCheck === "unavailable") {
+            return json({
+              allow: false,
+              reason: `MANUAL_REVIEW: token mint check unavailable (mint metadata fetch failed) -- cannot verify ${mint} is safe for a $${copyAmountUsd} payment.`,
+              action: "manual_review",
+              tokenCheck,
+              riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+              maxSafeAmountUsd: 0,
+              executionTier: simRes.executionTier ?? "standard",
+              slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+              cooldownSec: simRes.suggestedCooldownSec ?? 60,
+              degraded: trustResult.degraded,
+              details: detailsWithAnomaly(),
             });
           }
 
@@ -475,6 +518,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: simRes.executionTier ?? "guarded",
               slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
               cooldownSec: simRes.suggestedCooldownSec ?? ((simRes.decision as any)?.recommendedDelaySec ?? 60),
+              degraded: trustResult.degraded,
               details: { trust: trustResult, simulation: simRes },
             });
           }
@@ -490,6 +534,7 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
               executionTier: simRes.executionTier ?? "standard",
               slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
               cooldownSec: simRes.suggestedCooldownSec ?? 60,
+              degraded: trustResult.degraded,
               details: { trust: trustResult, simulation: simRes },
             });
           }
@@ -506,7 +551,8 @@ export function buildServer(options: McpServerOptions = {}): McpServer {
           executionTier: simRes?.executionTier ?? "instant",
           slippageToleranceBps: simRes?.slippageToleranceBps ?? 100,
           cooldownSec: simRes?.suggestedCooldownSec ?? 0,
-          details: { trust: trustResult, simulation: simRes },
+          degraded: trustResult.degraded,
+              details: { trust: trustResult, simulation: simRes },
         });
       } catch (err) {
         return {

@@ -1,12 +1,12 @@
 import { SOL_MINT, USDC_MINT, USDT_MINT } from "./types.js";
-import { Anomaly, EnhancedTx, Freshness } from "./types.js";
+import { Anomaly, EnhancedTx, Freshness, loadConfig } from "./types.js";
 import { computeRiskScore, detectAnomalies } from "./analyzer.js";
 import { updateBaseline } from "./baseline.js";
 import { maxOf } from "./stats.js";
 import { fetchWalletHistory } from "./collector.js";
 import { fetchSwapPrices, fetchUsdPrices } from "./pricing.js";
 import { anomalyReasons, anomalySummary, buildFreshness, buildAuditTrail, type AnomalyReason, type AuditTrail } from "./explain.js";
-import { isValidBase58 } from "./config.js";
+import { isValidSolanaAddress } from "./config.js";
 import { computeDecision, type DecisionResult } from "./decision.js";
 import {
   aggregateConsensus,
@@ -186,6 +186,14 @@ export interface TrustResult {
   generatedAt: number;
   /** Median swap size (USD) over the scored baseline window, when known. */
   medianSwapAmountUsd: number | null;
+  /**
+   * Known data-quality degradations for this result (B3). Does not change
+   * verdict or riskScore -- purely informational. Currently only
+   * "PRICES_UNAVAILABLE" (the Jupiter price fetch failed or returned
+   * nothing), set independently of `opts.noPrices` (an intentional,
+   * caller-requested offline mode, not a degradation).
+   */
+  degraded?: string[];
 }
 
 /** Solana JSON-RPC call (getBalance / getTokenAccountsByOwner). */
@@ -209,7 +217,7 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
  * program-derived (PDA) accounts.
  */
 export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise<string | null> {
-  if (!isValidBase58(wallet)) throw new Error("Invalid Solana wallet address");
+  if (!isValidSolanaAddress(wallet)) throw new Error("Invalid Solana wallet address");
   const res = (await rpcCall(rpcUrl, "getAccountInfo", [wallet, { encoding: "base64" }])) as
     | { value: { owner: string } | null }
     | null;
@@ -221,12 +229,12 @@ export async function fetchAccountOwner(rpcUrl: string, wallet: string): Promise
  * Only these are counted — deliberately conservative.
  */
 export async function fetchLiquidity(rpcUrl: string, wallet: string): Promise<TrustBalances> {
-  if (!isValidBase58(wallet)) throw new Error("Invalid Solana wallet address");
+  if (!isValidSolanaAddress(wallet)) throw new Error("Invalid Solana wallet address");
   const balRes = (await rpcCall(rpcUrl, "getBalance", [wallet])) as { value: number };
   const sol = balRes.value / 1e9;
 
   async function stableBalance(mint: string): Promise<number> {
-    if (!isValidBase58(mint)) throw new Error("Invalid token mint address");
+    if (!isValidSolanaAddress(mint)) throw new Error("Invalid token mint address");
     const res = (await rpcCall(rpcUrl, "getTokenAccountsByOwner", [
       wallet,
       { mint },
@@ -298,7 +306,7 @@ export async function runTrustCheck(
   wallet: string,
   opts: TrustCheckOptions = {},
 ): Promise<TrustResult> {
-  if (!isValidBase58(wallet)) {
+  if (!isValidSolanaAddress(wallet)) {
     throw new Error(`wallet must be a Solana base58 address (32-44 characters): got "${wallet}"`);
   }
   const windowDays = opts.windowDays ?? TRUST_DEFAULTS.windowDays;
@@ -312,6 +320,9 @@ export async function runTrustCheck(
   let txCount = 0;
   let lastActivity: number | null = null;
   let medianSwapAmountUsd: number | null = null;
+  // B3: prices are unavailable (not the same as opts.noPrices, a deliberate
+  // caller choice) when fetchSwapPrices/fetchUsdPrices returned null/threw.
+  let pricesUnavailable = false;
   try {
     // Fetch two windows: the requested window (to score) plus the equal prior
     // window (to establish "normal" behavior). This is what makes the
@@ -325,11 +336,19 @@ export async function runTrustCheck(
     const stamps = txs.map((t) => t.timestamp).filter((n) => typeof n === "number");
     lastActivity = stamps.length > 0 ? maxOf(stamps) : null;
     const prices = opts.noPrices ? null : await fetchSwapPrices(txs, { wallet });
+    if (prices === null && !opts.noPrices) pricesUnavailable = true;
     const { baselineTxs, evalTxs } = selectScoring(txs, windowStart);
     const baseline = updateBaseline(wallet, null, baselineTxs, generatedAt, prices);
     txCount = evalTxs.length;
     medianSwapAmountUsd = baseline.medianSwapAmountUsd ?? null;
-    anomalies = detectAnomalies(wallet, evalTxs, baseline, undefined, prices);
+    // B5: the trust path's windowed split (selectScoring) pins
+    // baseline.lastSeenAt to the end of the PRIOR window, which sits
+    // windowDays in the past relative to "now" by construction -- judging
+    // DORMANT_ACTIVE by evalTxs's newest tx (which can be from today) makes a
+    // continuously-active wallet look freshly "reactivated" on every call.
+    // "first" measures the gap to evalTxs's earliest tx instead, which does
+    // not have this structural false-positive.
+    anomalies = detectAnomalies(wallet, evalTxs, baseline, { ...loadConfig(), dormantMeasure: "first" }, prices);
     riskScore = computeRiskScore(anomalies);
   } catch (err) {
     console.error(`history fetch failed, risk unknown: ${err instanceof Error ? err.message : String(err)}`);
@@ -350,8 +369,10 @@ export async function runTrustCheck(
     try {
       const prices = await fetchUsdPrices([SOL_MINT]);
       solPrice = prices[SOL_MINT] ?? null;
+      if (solPrice === null) pricesUnavailable = true;
     } catch {
       solPrice = null;
+      pricesUnavailable = true;
     }
   }
 
@@ -450,6 +471,7 @@ export async function runTrustCheck(
     windowDays,
     generatedAt,
     medianSwapAmountUsd,
+    ...(pricesUnavailable ? { degraded: ["PRICES_UNAVAILABLE"] } : {}),
   };
 }
 
@@ -475,7 +497,7 @@ export async function runTrustChecks(
   opts: TrustCheckOptions = {},
 ): Promise<TrustResult[]> {
   for (const w of wallets) {
-    if (!isValidBase58(w)) {
+    if (!isValidSolanaAddress(w)) {
       throw new Error(`wallet must be a Solana base58 address (32-44 characters): got "${w}"`);
     }
   }

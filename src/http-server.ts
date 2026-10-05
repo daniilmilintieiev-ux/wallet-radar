@@ -24,13 +24,13 @@ import { makeSink, type AlertSink } from "./alerts.js";
 import type { MintRiskMap } from "./mint.js";
 import { homedir } from "node:os";
 import { timingSafeEqual } from "node:crypto";
-import type { EnhancedTx } from "./types.js";
+import type { EnhancedTx, Anomaly } from "./types.js";
 import { commitScan, type ZKOracleClient } from "./oracle/index.js";
 import { buildEnvHookBridge } from "./hook/index.js";
 import { computeVerdict } from "./htmlreport.js";
 import { handleDashboardHttpRequest } from "./dashboard.js";
 import { computeEconomics, recordHeliusCost } from "./economics.js";
-import { isValidBase58, validateConfig, corsHeaders } from "./config.js";
+import { isValidSolanaAddress, validateConfig, corsHeaders } from "./config.js";
 import { buildTrustProof } from "./trust-proof.js";
 import { handleBlinkHttpRequest } from "./blink/index.js";
 
@@ -165,7 +165,7 @@ async function readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promis
 }
 
 function isBase58Address(v: unknown): v is string {
-  return typeof v === "string" && isValidBase58(v);
+  return typeof v === "string" && isValidSolanaAddress(v);
 }
 
 async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
@@ -201,6 +201,7 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
     summary: anomalySummary(anomalies),
     digest: digestAnomalies(anomalies),
     freshness: buildFreshness(lastActivity, nowSec, windowStart, lastActivity),
+    ...(prices === null ? { degraded: ["PRICES_UNAVAILABLE"] } : {}),
   };
 
   if (ctx.store) {
@@ -459,6 +460,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
       executionTier: "blocked",
+      degraded: trustResult.degraded,
       details: { trust: trustResult },
     };
   }
@@ -470,25 +472,41 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       tokenCheck: "skipped_base_verdict",
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
+      degraded: trustResult.degraded,
       details: { trust: trustResult },
     };
   }
 
   const hasMint = Boolean(mint && isBase58Address(mint));
   const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
-  const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
+  let tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" | "unavailable" = !hasMint
     ? "skipped_no_mint"
     : !hasAmount
     ? "skipped_no_amount"
     : "applied";
+  let tokenCheckAnomaly: Anomaly | null = null;
 
   let simRes: any;
   if (hasAmount) {
     let mintRisk = null;
     if (hasMint) {
+      const fetchMintMetadataFn = ctx.fetchMintMetadata ?? fetchMintMetadata;
       try {
-        mintRisk = await fetchMintMetadata(mint!, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
-      } catch {}
+        mintRisk = await fetchMintMetadataFn(mint!, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
+        if (mintRisk === null) {
+          throw new Error("mint metadata unavailable (DAS and RPC fallback both failed, or no RPC endpoint configured)");
+        }
+      } catch (err) {
+        tokenCheck = "unavailable";
+        tokenCheckAnomaly = {
+          type: "TOKEN_CHECK_UNAVAILABLE",
+          wallet: targetWallet as string,
+          severity: "low",
+          timestamp: Math.floor(Date.now() / 1000),
+          evidence: { mint, error: err instanceof Error ? err.message : String(err) },
+          text: `Token mint check for ${mint} was unavailable: ${err instanceof Error ? err.message : String(err)}.`,
+        };
+      }
     }
     simRes = simulatePayment({
       wallet: targetWallet as string,
@@ -508,6 +526,11 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
     const simAction = (simRes.decision as any)?.action ?? (simRes.decision as any)?.verdict;
     const isBlocked = simAction === "block" || simRes.executionTier === "blocked" || (simRes.wouldTrigger && simRes.wouldTrigger.includes("TOXIC_MINT"));
     const isThrottled = !isBlocked && (simAction === "throttle" || simRes.executionTier === "guarded");
+    // B2: tokenCheck === "unavailable" means we could not verify the mint at
+    // all, for a payment that has a real USD amount -- never let the verdict
+    // be more permissive than manual_review in that case (block stays block;
+    // throttle/allow get downgraded).
+    const details = () => ({ trust: trustResult, simulation: simRes, ...(tokenCheckAnomaly ? { tokenCheckAnomaly } : {}) });
 
     if (isBlocked) {
       return {
@@ -520,7 +543,24 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: "blocked",
         slippageToleranceBps: 0,
         cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.cooldownMs ? Math.round(simRes.decision.cooldownMs / 1000) : 300),
-        details: { trust: trustResult, simulation: simRes },
+        degraded: trustResult.degraded,
+        details: details(),
+      };
+    }
+
+    if (tokenCheck === "unavailable") {
+      return {
+        allow: false,
+        reason: `MANUAL_REVIEW: token mint check unavailable (mint metadata fetch failed) -- cannot verify ${mint} is safe for a $${copyAmountUsd} payment.`,
+        action: "manual_review",
+        tokenCheck,
+        riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
+        maxSafeAmountUsd: 0,
+        executionTier: simRes.executionTier ?? "standard",
+        slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
+        cooldownSec: simRes.suggestedCooldownSec ?? 60,
+        degraded: trustResult.degraded,
+        details: details(),
       };
     }
 
@@ -536,7 +576,8 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: simRes.executionTier ?? "guarded",
         slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
         cooldownSec: simRes.suggestedCooldownSec ?? (simRes.decision?.cooldownMs ? Math.round(simRes.decision.cooldownMs / 1000) : 60),
-        details: { trust: trustResult, simulation: simRes },
+        degraded: trustResult.degraded,
+        details: details(),
       };
     }
 
@@ -551,7 +592,8 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         executionTier: simRes.executionTier ?? "standard",
         slippageToleranceBps: simRes.slippageToleranceBps ?? 50,
         cooldownSec: simRes.suggestedCooldownSec ?? 60,
-        details: { trust: trustResult, simulation: simRes },
+        degraded: trustResult.degraded,
+        details: details(),
       };
     }
   }
@@ -567,7 +609,8 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
     executionTier: simRes?.executionTier ?? "instant",
     slippageToleranceBps: simRes?.slippageToleranceBps ?? 100,
     cooldownSec: simRes?.suggestedCooldownSec ?? 0,
-    details: { trust: trustResult, simulation: simRes },
+    degraded: trustResult.degraded,
+    details: { trust: trustResult, simulation: simRes, ...(tokenCheckAnomaly ? { tokenCheckAnomaly } : {}) },
   };
 }
 
@@ -844,6 +887,8 @@ export interface RequestContext {
   fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
   fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
   fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  /** Override for the single-mint lookup /gate-copy uses (testing hook; defaults to mint.ts's fetchMintMetadata). */
+  fetchMintMetadata?: (mint: string, opts: { apiKey?: string; rpcUrl?: string; store?: Store }) => Promise<import("./mint.js").MintRiskInfo | null>;
   /**
    * Audit 2.3: oracle→hook bridge — publishes a fresh scan result to the
    * destination wallet's on-chain hook scan-record PDA (best-effort; a
@@ -1275,6 +1320,8 @@ export interface ServerOptions {
   fetchPrices?: (txs: EnhancedTx[]) => Promise<Record<string, number> | null>;
   /** Injectable mint-risk source for the loop/poll (tests). */
   fetchMintRisk?: (txs: EnhancedTx[]) => Promise<MintRiskMap>;
+  /** Injectable single-mint lookup for /gate-copy (tests). */
+  fetchMintMetadata?: (mint: string, opts: { apiKey?: string; rpcUrl?: string; store?: Store }) => Promise<import("./mint.js").MintRiskInfo | null>;
   /** Optional Solana RPC URL for on-chain queries */
   rpcUrl?: string;
   /** Injectable ZK oracle client */
@@ -1302,11 +1349,10 @@ export interface ServerOptions {
 export function createServer(options: ServerOptions = {}): http.Server {
   const limit = options.rateLimitPerMin ?? Number(process.env.RADAR_RATE_LIMIT_PER_MIN ?? 120);
   const rateLimiter = limit > 0 ? createRateLimiter(limit) : null;
-  const defaultLiveLimit = Number(process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN ?? 30);
-  const liveLimit = options.liveRateLimitPerMin ??
-    (options.rateLimitPerMin !== undefined
-      ? (options.rateLimitPerMin === 0 ? 0 : Math.max(defaultLiveLimit, options.rateLimitPerMin))
-      : defaultLiveLimit);
+  // Independent of `rateLimitPerMin`/`limit` above: the live-Helius-route
+  // limit is sourced only from liveRateLimitPerMin, else
+  // RADAR_LIVE_RATE_LIMIT_PER_MIN, else the 30 default (B0b).
+  const liveLimit = options.liveRateLimitPerMin ?? Number(process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN ?? 30);
   const liveRateLimiter = liveLimit > 0 ? createRateLimiter(liveLimit) : null;
 
   const ctx: RequestContext = {
@@ -1319,6 +1365,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
     fetchTxs: options.fetchTxs,
     fetchPrices: options.fetchPrices,
     fetchMintRisk: options.fetchMintRisk,
+    fetchMintMetadata: options.fetchMintMetadata,
     hookBridge: options.hookBridge,
     authHeavy: options.authHeavy,
     protectReads: options.protectReads,
