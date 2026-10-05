@@ -456,11 +456,7 @@ responses, user input) through those import sites:
 
 - Source: Stage 11E/17B verification & Stage 15D issue C4.
 - `GET /economics` displays settled payment totals from `settled_payments`. Historical payments on record (e.g. 0.005 USDC) reflect operator test/pipeline confirmation transactions from the operator's own demo wallet (`3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh`), rather than external commercial customer revenue.
-- Resolved in C1/C2:
-  - Payment settlement tracking explicitly links signature to endpoint, payer, recipient, and target wallet.
-  - Strict replay prevention and idempotent retry mechanisms prevent repeated or failed runs from creating phantom revenue entries.
-  - Clarified documentation distinguishing synthetic verification test transactions from production protocol fees.
-- **Status:** fixed in branch fixes-c (commit f888112), not deployed. Verified in test suite (`test/x402.test.ts`, `test/http-server.test.ts`).
+- Status: documented, not a code change. /economics shows settled payments; the payments on record come from the operator's own wallet and are not external revenue.
 
 ## Dashboard redesigned in branch dashboard, not deployed; reads only existing fields; recorded replay is a historical window
 
