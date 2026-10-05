@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/lockup-horizontal.svg" width="360" alt="Wallet Radar"></p>
+
 # Wallet Radar: Autonomous Pre-Trade Firewall for Solana AI Agents
 
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
