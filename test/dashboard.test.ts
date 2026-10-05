@@ -77,11 +77,11 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     });
 
     assert.ok(html.includes("Wallet Radar"));
-    assert.ok(html.includes("Inspect target wallet ledger"));
-    assert.ok(html.includes("ZK scan ledger"));
-    assert.ok(html.includes("~400x cost"));
     assert.ok(html.includes("wallet-input"));
     assert.ok(html.includes("Targ")); // watchlist chip short-addr
+    assert.ok(html.includes("No wallet selected."));
+    assert.ok(html.includes("Open /dashboard?wallet=<address> to read its scan history."));
+    assert.ok(html.includes("View recorded replay"));
   });
 
   test("renderDashboardHtml: renders empty state when wallet has no scan records", () => {
@@ -91,9 +91,20 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       generatedAt: 1726300500,
     });
 
-    assert.ok(html.includes("No On-Chain Scan Attestations Found"));
+    assert.ok(html.includes("No scan records for this wallet."));
+    assert.ok(html.includes("Run a scan, or open /dashboard?demo=replay to see a recorded example."));
+    assert.ok(!html.includes("No wallet selected."));
     assert.ok(html.includes(testWallet));
-    assert.ok(html.includes("radar scan"));
+  });
+
+  test("renderDashboardHtml: renders invalid address error when wallet format is invalid", () => {
+    const html = renderDashboardHtml({
+      wallet: "invalid-wallet-123",
+      records: [],
+    });
+
+    assert.ok(html.includes("This does not look like a Solana address (32 bytes, base58)."));
+    assert.ok(!html.includes("No wallet selected."));
   });
 
   test("renderDashboardHtml: renders hero verdict and timeline table for populated records", () => {
@@ -113,21 +124,16 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     assert.ok(html.includes("HIGH RISK")); // ledger verdict
     assert.ok(html.includes("DORMANT_ACTIVE"));
     assert.ok(html.includes("LARGE_SWAP"));
-    assert.ok(html.includes("CompAddr1111")); // compressed PDA preview
-    assert.ok(html.includes("300010000")); // slot
-    assert.ok(html.includes("4uQeVj5tqViQh7yG")); // onchain sig preview
 
-    // Check scan-ledger table
-    assert.ok(html.includes("Scan ledger"));
-    assert.ok(html.includes("2 recorded"));
-    assert.ok(html.includes("SAFE"));
-    assert.ok(html.includes("20"));
+    // Check decision layers
+    assert.ok(html.includes("Decision in three layers"));
+    assert.ok(html.includes("Base verdict"));
 
     // Check watchlist chip active state
-    assert.ok(html.includes('class="chip on"'));
+    assert.ok(html.includes('class="chip mono active on"'));
   });
 
-  test("renderDashboardHtml: renders defense stance, enforcement, and audit trail", () => {
+  test("renderDashboardHtml: renders defense stance, enforcement, and 3 layers", () => {
     const html = renderDashboardHtml({
       wallet: testWallet,
       records: [mockRecords[0]],
@@ -146,22 +152,10 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       },
     });
 
-    // Defense state big readout + ladder
-    assert.ok(html.includes(">GATED<"));
-    assert.ok(html.includes("Active defense state"));
+    // Defense state and enforcement in 3 layers
+    assert.ok(html.includes("Decision in three layers"));
     assert.ok(html.includes("gated"));
-
-    // Enforcement implied by the stance
-    assert.ok(html.includes("THROTTLE"));
-    assert.ok(html.includes("Gating"));
-
-    // Audit trail
-    assert.ok(html.includes("Defense audit trail"));
-    assert.ok(html.includes("alerting"));
-    assert.ok(html.includes("escalate"));
-
-    // Defense action count in readout
-    assert.ok(html.includes("defense actions"));
+    assert.ok(html.includes("throttle"));
   });
 
   test("renderDashboardHtml: deterministic output for identical options", () => {
@@ -198,7 +192,6 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
 
     const html = await fetchAndRenderDashboard(testWallet, { client: oracleClient });
     assert.ok(html.includes(testWallet));
-    assert.ok(html.includes("Scan ledger"));
     assert.ok(html.includes("85"));
   });
 
@@ -233,6 +226,34 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     assert.equal(headers["Content-Type"], "text/html; charset=utf-8");
     assert.ok(body.includes(testWallet));
     assert.ok(body.includes("85"));
+  });
+
+  test("handleDashboardHttpRequest: GET /dashboard?demo=replay serves recorded replay", async () => {
+    const req = {
+      method: "GET",
+      url: `/dashboard?demo=replay`,
+      headers: { host: "127.0.0.1:8080" },
+    } as unknown as http.IncomingMessage;
+
+    let statusCode = 0;
+    let body = "";
+
+    const res = {
+      writeHead(code: number) {
+        statusCode = code;
+        return this;
+      },
+      end(chunk?: string | Buffer) {
+        if (chunk) body = chunk.toString();
+      },
+    } as unknown as http.ServerResponse;
+
+    const handled = await handleDashboardHttpRequest(req, res);
+    assert.equal(handled, true);
+    assert.equal(statusCode, 200);
+    assert.ok(body.includes("8XeK5mZSaLCyE9zgPmWJUNcMAofihjUZYdXHATeYXU2j"));
+    assert.ok(body.includes("RECORDED REPLAY"));
+    assert.ok(body.includes("historical replay, not a confirmed incident"));
   });
 
   test("handleDashboardHttpRequest: GET /api/ledger returns JSON scan records", async () => {
@@ -270,7 +291,6 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
   });
 
   test("handleDashboardHttpRequest: error handling for missing wallet or wrong methods", async () => {
-    // 1. /api/ledger without wallet
     const reqMissing = {
       method: "GET",
       url: "/api/ledger",
@@ -289,7 +309,6 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     await handleDashboardHttpRequest(reqMissing, resMissing);
     assert.equal(codeMissing, 400);
 
-    // 2. POST /dashboard
     const reqPost = {
       method: "POST",
       url: "/dashboard",
@@ -308,7 +327,6 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     await handleDashboardHttpRequest(reqPost, resPost);
     assert.equal(codePost, 405);
 
-    // 3. Unhandled path
     const reqOther = {
       method: "GET",
       url: "/other",
@@ -338,7 +356,7 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.ok(dashRes.headers.get("content-type")?.includes("text/html"));
       const dashHtml = await dashRes.text();
       assert.ok(dashHtml.includes(testWallet));
-      assert.ok(dashHtml.includes("Scan ledger"));
+      assert.ok(dashHtml.includes("85"));
 
       // 2. GET /api/ledger
       const ledgerRes = await fetch(`http://127.0.0.1:${port}/api/ledger?wallet=${testWallet}`);
@@ -395,7 +413,10 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
     }
   });
 
-  const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const testFileDir = path.dirname(fileURLToPath(import.meta.url));
+  const rootDir = fs.existsSync(path.join(testFileDir, "../package.json"))
+    ? path.resolve(testFileDir, "..")
+    : path.resolve(testFileDir, "../..");
   const cliScript = path.join(rootDir, "dist/src/cli.js");
 
   function runCli(args: string[], env: Record<string, string> = {}): Promise<{ stdout: string; stderr: string; code: number }> {
@@ -433,7 +454,7 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.equal(res.code, 0);
       assert.ok(fs.existsSync(outFile));
       const htmlContent = fs.readFileSync(outFile, "utf-8");
-      assert.ok(htmlContent.includes("Wallet Radar"));
+      assert.ok(htmlContent.includes("WALLET RADAR"));
       assert.ok(htmlContent.includes(testWallet));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -448,10 +469,378 @@ describe("Web Dashboard & ZK Scan Ledger (src/dashboard.ts)", () => {
       assert.equal(res.code, 0);
       assert.ok(fs.existsSync(outFile));
       const htmlContent = fs.readFileSync(outFile, "utf-8");
-      assert.ok(htmlContent.includes("Wallet Radar"));
-      assert.ok(htmlContent.includes("ZK scan ledger"));
+      assert.ok(htmlContent.includes("WALLET RADAR"));
+      assert.ok(htmlContent.includes("No wallet selected."));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  // (a) External links check
+  test("(a) HTML contains no external links to fonts or scripts (only explorer, GitHub, docs)", () => {
+    const html = renderDashboardHtml({
+      wallet: testWallet,
+      records: mockRecords,
+    });
+    // Check no external font/script links
+    assert.ok(!html.includes("<link rel=\"stylesheet\" href=\"http"));
+    assert.ok(!html.includes("<script src=\"http"));
+
+    // Find all https:// URLs
+    const urls = html.match(/https:\/\/[^"'\s<>]+/g) || [];
+    for (const u of urls) {
+      const isAllowed =
+        u.startsWith("https://explorer.solana.com/") ||
+        u.startsWith("https://github.com/") ||
+        u.includes("/docs/");
+      assert.ok(isAllowed, `URL not in allowed list (explorer, github, docs): ${u}`);
+    }
+  });
+
+  // (b) Honesty check: no promotional words (accuracy, catches, protected)
+  test("(b) HTML contains no promotional words: catches, protected, or accuracy claims", () => {
+    const html = renderDashboardHtml({
+      wallet: testWallet,
+      records: mockRecords,
+    });
+    assert.ok(!html.toLowerCase().includes("catches"), "HTML should not contain 'catches'");
+    assert.ok(!html.toLowerCase().includes("protected"), "HTML should not contain 'protected'");
+    // Ensure 'accuracy' is only ever present in the disclaimer 'not accuracy claims'
+    const withoutDisclaimer = html.replace(/not accuracy claims/gi, "");
+    assert.ok(!withoutDisclaimer.toLowerCase().includes("accuracy"), "HTML should not make accuracy claims");
+  });
+
+  // (c) Color tokens, zero border-radius, no box-shadow, no gradient
+  // (c) Color tokens, zero border-radius except 50%, no box-shadow, text-shadow only on hero number
+  test("(c) All required design color tokens present, no box-shadow, text-shadow only on hero, border-radius only 0 or 50%", () => {
+    const html = renderDashboardHtml({
+      wallet: testWallet,
+      records: mockRecords,
+    });
+    // Required tokens from w2_update.html palette
+    const requiredTokens = [
+      "--bg",
+      "--panel",
+      "--ink",
+      "--ink2",
+      "--ink3",
+      "--accent",
+      "--hair",
+      "--ok",
+      "--bad",
+      "#0a0a0b",
+      "#101013",
+      "#f1f1ee",
+      "#9c9c97",
+      "#63635f",
+      "#ffb000",
+      "#1f1f23",
+      "#3fb950",
+      "#f85149",
+      "rgba(255, 176, 0, .06)",
+      "rgba(255, 176, 0, .07)",
+    ];
+    for (const tok of requiredTokens) {
+      assert.ok(html.includes(tok), `Required token missing: ${tok}`);
+    }
+
+    // No box-shadow anywhere
+    assert.ok(!/box-shadow/i.test(html), "HTML must not contain box-shadow");
+
+    // Text-shadow only on hero risk number
+    const textShadowMatches = html.match(/text-shadow\s*:[^;]+;/gi) || [];
+    assert.equal(textShadowMatches.length, 1, "text-shadow should appear only on hero risk number");
+    assert.ok(textShadowMatches[0].includes("rgba(255, 176, 0, .25)"));
+
+    // No border-radius except 0, 0px, 0%, or 50%
+    const radiusMatches = html.match(/border-radius\s*:\s*([^;]+)/gi) || [];
+    for (const rm of radiusMatches) {
+      const val = rm.split(":")[1].trim();
+      assert.ok(/^0(px|%)?$|^50%$/.test(val), `border-radius must be 0 or 50%, got: ${rm}`);
+    }
+  });
+
+  // (d) Empty state contains the three specified lines
+  test("(d) Empty state contains the 3 exact specified lines", () => {
+    const html = renderDashboardHtml({});
+    assert.ok(html.includes("No wallet selected."));
+    assert.ok(html.includes("Open /dashboard?wallet=<address> to read its scan history."));
+    assert.ok(html.includes("View recorded replay"));
+  });
+
+  // (e) Recorded replay has note "historical replay, not a confirmed incident"
+  test("(e) Recorded replay has note 'historical replay, not a confirmed incident'", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes("historical replay, not a confirmed incident"));
+    assert.ok(html.includes("Recorded replay, historical window"));
+  });
+
+  // (f) Independent test block with null result does not display result numbers
+  test("(f) Independent test block with null result does not display any result numbers", () => {
+    const html = renderDashboardHtml({ wallet: testWallet, records: mockRecords });
+    assert.ok(html.includes("Result is published as computed, including 'insufficient data'."));
+    assert.ok(!html.includes("Result: 100"));
+    assert.ok(!html.includes("Result: 9"));
+    assert.ok(!html.includes("Score: 100"));
+  });
+
+  // (g) No '>' or '<' in values of 3 layers
+  test("(g) No '>' or '<' in rendered 3 layers values", () => {
+    const html = renderDashboardHtml({
+      wallet: testWallet,
+      records: mockRecords,
+      defense: {
+        state: "gated",
+        riskAt: 55,
+        setAt: 1726299000,
+        quietStreak: 0,
+        actions: 1,
+        enforcement: { verdict: "throttle", limitUsd: null, gating: true },
+        trail: [],
+      },
+      baseVerdict: "hold",
+    });
+    const layerVals = html.match(/<div class="layer-val[^"]*">([^<]+)<\/div>/g) || [];
+    assert.ok(layerVals.length >= 3);
+    for (const lv of layerVals) {
+      assert.ok(!lv.includes("&gt;"), `Layer value must not contain &gt;: ${lv}`);
+      assert.ok(!lv.includes("&lt;"), `Layer value must not contain &lt;: ${lv}`);
+    }
+  });
+
+  // (h) Mono font class used only for addresses, hashes, signatures, timestamps, and logs
+  test("(h) mono font class used only for addresses, hashes, signatures, timestamps, and logs", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(!html.includes('class="top-bar-title mono"'));
+    assert.ok(!html.includes('class="section-header mono"'));
+    assert.ok(!html.includes('class="radar-caption mono"'));
+    assert.ok(!html.includes('class="risk-verdict mono"'));
+  });
+
+  // (i) Replay Base/Agent/Defense are 'n/a (not in replay data)' and Liquidity tile absent
+  test("(i) For replay, Base/Agent/Defense are 'n/a (not in replay data)' and Liquidity tile is absent without data", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes("n/a (not in replay data)"));
+    assert.ok(!html.includes("<div class=\"metric-box-lbl\">Liquidity</div>"));
+    assert.ok(html.includes("Median swap"));
+    assert.ok(html.includes("$844.10"));
+  });
+
+  // (j) Static preview contains 'n/a (static)'
+  test("(j) Static preview contains 'n/a (static)' in service status", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes("n/a (static)"));
+  });
+
+  // (k) Number of radar dots equals number of anomalies in replay data
+  test("(k) Number of radar dots equals the number of anomalies in replay data", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    const dots = html.match(/class="[^"]*\bradar-dot\b/g) || [];
+    assert.equal(dots.length, 8, "Expected 8 radar dots for 8 anomalies in replay");
+  });
+
+  // (l) For two anomalies with identical timestamp, their angles differ
+  test("(l) For two anomalies with identical timestamp, radar angles differ", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    // Find all animation-delay values on radar-dot elements
+    const delays = (html.match(/class="radar-dot[^"]*"[^>]*style="animation-delay:\s*([0-9.]+)s/g) || []).map((m) => {
+      const match = m.match(/animation-delay:\s*([0-9.]+)s/);
+      return match ? parseFloat(match[1]) : 0;
+    });
+    assert.ok(delays.length >= 2, "Expected at least 2 radar dots with animation delays");
+    // Anomalies 0 and 1 have the exact same timestamp (1788163072)
+    assert.notEqual(delays[0], delays[1], "Delays (and angles) for identical timestamps must differ");
+    assert.ok(Math.abs(delays[0] - delays[1]) > 0.005, "Difference between delays must reflect degree offset");
+  });
+
+  // (m) 16D: For replay-json in each anomaly row, displayed text equals anomaly.text
+  test("(m) 16D: For replay-json in each anomaly row, displayed text equals anomaly.text", () => {
+    const replayRaw = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "docs/dashboard/replay-8XeK5m.json"), "utf8"));
+    const html = renderDashboardHtml({ demo: "replay" });
+
+    // Extract all anomaly-desc contents from HTML
+    const descMatches = Array.from(html.matchAll(/<div class="anomaly-desc">([\s\S]*?)<\/div>/g)).map((m) => m[1].trim());
+    assert.equal(descMatches.length, replayRaw.anomalies.length, "Expected matching count of anomaly-desc blocks");
+
+    for (let i = 0; i < replayRaw.anomalies.length; i++) {
+      const expectedText = replayRaw.anomalies[i].text;
+      const strippedText = descMatches[i].replace(/<[^>]+>/g, "");
+      assert.equal(strippedText, expectedText, `Row ${i} description must exactly equal anomaly.text`);
+      assert.ok(html.includes(expectedText), `HTML must contain raw anomaly.text for row ${i}`);
+    }
+  });
+
+  // (n) 16D: Anomaly type is displayed with spaces instead of underscores, title has original
+  test("(n) 16D: Anomaly type is displayed with spaces instead of underscores, title has original", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    const typeMatches = Array.from(html.matchAll(/<div class="anomaly-type" title="([^"]+)">([^<]+)<\/div>/g));
+    assert.ok(typeMatches.length > 0);
+
+    for (const match of typeMatches) {
+      const original = match[1];
+      const displayed = match[2];
+      assert.equal(displayed, original.replace(/_/g, " "), "Displayed type must replace underscores with spaces");
+      assert.ok(!displayed.includes("_"), "Displayed type must not contain underscores");
+    }
+  });
+
+  // (o) 16D: Radar rings and crosshairs have stroke var(--ink3), ring labels 12px var(--ink2)
+  test("(o) 16D: Radar rings and crosshairs have stroke var(--ink3), ring labels 12px var(--ink2)", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes('<line x1="320" y1="20" x2="320" y2="620" stroke="var(--ink3)" stroke-width="1" />'));
+    assert.ok(html.includes('<circle cx="320" cy="320" r="85" fill="none" stroke="var(--ink3)" stroke-width="1" />'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">score per anomaly</text>'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">5</text>'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">15</text>'));
+    assert.ok(html.includes('fill="var(--ink2)" font-size="12" font-family="var(--display)">30</text>'));
+  });
+
+  // (p) 16D: Radar dot weights: low=4, med=6, high=9 with outer ring 13
+  test("(p) 16D: Radar dot weights: low r=4, med r=6, high r=9 with outer ring r=13", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    // Low: r="4" fill="var(--ink2)"
+    assert.ok(html.includes('r="4" fill="var(--ink2)" class="radar-dot radar-dot-low"'));
+    // Medium: r="6" fill="var(--accent)"
+    assert.ok(html.includes('r="6" fill="var(--accent)" class="radar-dot radar-dot-med"'));
+    // High: r="9" fill="var(--accent)" and r="13" fill="none" stroke="var(--accent)"
+    assert.ok(html.includes('r="9" fill="var(--accent)"'));
+    assert.ok(html.includes('r="13" fill="none" stroke="var(--accent)" stroke-width="1"'));
+  });
+
+  // (q) 16D: Cluster label for identical timestamps
+  test("(q) 16D: Cluster label appears for identical timestamps ('7 signals, 2026-08-31 07:57 UTC')", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes('class="radar-cluster-label"'));
+    assert.ok(html.includes('7 signals, 2026-08-31 07:57 UTC'));
+  });
+
+  // (r) 16D: Risk scale zones only sentence case without duplicate or mixed case
+  test("(r) 16D: Risk scale zones only sentence case without duplicate or mixed case", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes(">armed 0-29</div>"));
+    assert.ok(html.includes(">alerting 30-49</div>"));
+    assert.ok(html.includes(">gated 50-74</div>"));
+    assert.ok(html.includes(">blocked 75-100</div>"));
+
+    // Verify visible text does not have "Armed", "ALERTING", "Alerting", etc.
+    const segmentTextMatches = Array.from(html.matchAll(/<div class="scale-segment[^"]*"[^>]*>([\s\S]*?)<\/div>/g)).map((m) => m[1]);
+    for (const text of segmentTextMatches) {
+      assert.ok(!text.includes("Armed"), `Scale segment must not contain 'Armed': ${text}`);
+      assert.ok(!text.includes("ALERTING"), `Scale segment must not contain 'ALERTING': ${text}`);
+      assert.ok(!text.includes("Alerting"), `Scale segment must not contain 'Alerting': ${text}`);
+      assert.ok(!text.includes("GATED"), `Scale segment must not contain 'GATED': ${text}`);
+      assert.ok(!text.includes("BLOCKED"), `Scale segment must not contain 'BLOCKED': ${text}`);
+      assert.ok(!text.includes("/"), `Scale segment must not duplicate with '/': ${text}`);
+    }
+  });
+
+  // (s) 16D: Subtitle under verdict word: "scan verdict (recorded replay)"
+  test("(s) 16D: Subtitle under verdict word: 'scan verdict (recorded replay)'", () => {
+    const htmlReplay = renderDashboardHtml({ demo: "replay" });
+    assert.ok(htmlReplay.includes('<div class="verdict-sub">scan verdict (recorded replay)</div>'));
+
+    const htmlLive = renderDashboardHtml({ wallet: testWallet, records: mockRecords });
+    assert.ok(htmlLive.includes('<div class="verdict-sub">scan verdict</div>'));
+  });
+
+  // (t) 16E: Radar cluster anomalies separated by >= 6 deg between neighbors, max offset <= 25 deg
+  test("(t) 16E: Radar cluster anomalies separated by >= 6 deg between neighbors, max offset <= 25 deg", () => {
+    const replayRaw = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "docs/dashboard/replay-8XeK5m.json"), "utf8"));
+    const html = renderDashboardHtml({ demo: "replay" });
+
+    // Number of dots equals number of anomalies
+    const dots = html.match(/class="[^"]*\bradar-dot\b/g) || [];
+    assert.equal(dots.length, replayRaw.anomalies.length, "Dot count must equal anomaly count");
+
+    // All low-weight dots have radius 4px
+    const lowDots = html.match(/<circle[^>]*class="[^"]*\bradar-dot-low\b[^"]*"[^>]*>/g) || [];
+    assert.ok(lowDots.length > 0);
+    for (const d of lowDots) {
+      assert.ok(d.includes('r="4"'), `Low weight dot must have radius 4px: ${d}`);
+    }
+
+    // Extract angles for cluster with timestamp 1788163072
+    // Angle in degree = (delay / 2.4) * 360
+    const clusterIndices = replayRaw.anomalies
+      .map((a: any, idx: number) => ({ idx, timestamp: a.timestamp }))
+      .filter((item: any) => item.timestamp === 1788163072)
+      .map((item: any) => item.idx);
+
+    const delays = Array.from(html.matchAll(/class="[^"]*radar-dot[^"]*"[^>]*data-anomaly-id="anomaly-(\d+)"[^>]*style="animation-delay:\s*([0-9.]+)s/g))
+      .map((m) => ({ idx: parseInt(m[1], 10), delay: parseFloat(m[2]) }));
+
+    const clusterDelays = delays.filter((d) => clusterIndices.includes(d.idx)).sort((a, b) => a.delay - b.delay);
+    assert.equal(clusterDelays.length, 7, "Cluster must contain 7 anomalies");
+
+    const angles = clusterDelays.map((d) => (d.delay / 2.4) * 360);
+    const centerAngle = (angles[0] + angles[angles.length - 1]) / 2;
+
+    for (let i = 0; i < angles.length - 1; i++) {
+      const diff = angles[i + 1] - angles[i];
+      assert.ok(diff >= 5.99, `Adjacent angle diff must be >= 6 deg (got ${diff.toFixed(2)})`);
+    }
+
+    for (const angle of angles) {
+      assert.ok(Math.abs(angle - centerAngle) <= 25.01, `Angle offset must be <= 25 deg from center (got ${Math.abs(angle - centerAngle).toFixed(2)})`);
+    }
+  });
+
+  // (u) 16E: Addresses, programs, and identifiers formatted in monospace font
+  test("(u) 16E: Addresses, programs, and identifiers formatted in monospace font", () => {
+    const html = renderDashboardHtml({ demo: "replay" });
+    assert.ok(html.includes('<span class="mono">OKX_DEX_ROUTER</span>'));
+    assert.ok(html.includes('<span class="mono">proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u</span>'));
+    assert.ok(html.includes('<span class="mono">6qoHtd3NpwjVB76Z5bLfbXc2FYuuuytmThhH6ouZQHUJ</span>'));
+  });
+
+  // (v) 16F: Three wallet empty/invalid states: no wallet, valid wallet without records, invalid address
+  test("(v) 16F: Three wallet empty/invalid states: no wallet, valid wallet without records, invalid address", () => {
+    // 1. No wallet specified
+    const htmlNone = renderDashboardHtml({});
+    assert.ok(htmlNone.includes("No wallet selected."));
+    assert.ok(htmlNone.includes("Open /dashboard?wallet=<address> to read its scan history."));
+    assert.ok(!htmlNone.includes("No scan records for this wallet."));
+
+    // 2. Valid wallet without records
+    const htmlEmpty = renderDashboardHtml({ wallet: "4Nd1mBQtrMJVYVfKf2PJy9NZPdUZKnZiHgZCMZFgu5TD", records: [] });
+    assert.ok(htmlEmpty.includes("No scan records for this wallet."));
+    assert.ok(htmlEmpty.includes("Run a scan, or open /dashboard?demo=replay to see a recorded example."));
+    assert.ok(!htmlEmpty.includes("No wallet selected."));
+
+    // 3. Invalid wallet address
+    const htmlInvalid = renderDashboardHtml({ wallet: "not-a-valid-solana-addr", records: [] });
+    assert.ok(htmlInvalid.includes("This does not look like a Solana address (32 bytes, base58)."));
+    assert.ok(!htmlInvalid.includes("No wallet selected."));
+  });
+
+  test("isValidSolanaAddress: 3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh shows invalid address state, 3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh shows 'No scan records'", () => {
+    // 31-byte typo address (43 chars, passes regex isValidBase58 but fails isValidSolanaAddress)
+    const typo = "3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh";
+    const htmlTypo = renderDashboardHtml({ wallet: typo, records: [] });
+    assert.ok(
+      htmlTypo.includes("This does not look like a Solana address (32 bytes, base58)."),
+      "Typo address must show invalid address message",
+    );
+    assert.ok(
+      !htmlTypo.includes("No scan records for this wallet."),
+      "Typo address must not show 'No scan records'",
+    );
+
+    // Real 32-byte address (44 chars, passes isValidSolanaAddress)
+    const real = "3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh";
+    const htmlReal = renderDashboardHtml({ wallet: real, records: [] });
+    assert.ok(
+      htmlReal.includes("No scan records for this wallet."),
+      "Real address must show 'No scan records for this wallet.'",
+    );
+    assert.ok(
+      htmlReal.includes("Run a scan, or open /dashboard?demo=replay to see a recorded example."),
+      "Real address must include guidance message",
+    );
+    assert.ok(
+      !htmlReal.includes("This does not look like a Solana address (32 bytes, base58)."),
+      "Real address must not show invalid address message",
+    );
+  });
 });
+

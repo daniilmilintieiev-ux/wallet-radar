@@ -462,3 +462,13 @@ responses, user input) through those import sites:
   - Clarified documentation distinguishing synthetic verification test transactions from production protocol fees.
 - **Status:** fixed in branch fixes-c (commit f888112), not deployed. Verified in test suite (`test/x402.test.ts`, `test/http-server.test.ts`).
 
+## Dashboard redesigned in branch dashboard, not deployed; reads only existing fields; recorded replay is a historical window
+
+- Source: stage 16A/16C dashboard redesign.
+- Branch `dashboard` completely overhauls the HTML rendered by `GET /dashboard` (`src/dashboard.ts`, `src/dashboard-radar.ts`, `src/dashboard-fonts.ts`) into a high-contrast radar visualization using embedded Big Shoulders Display and JetBrains Mono fonts.
+- The branch is isolated and not merged into `release` or `main` (held until after 2026-10-06 preregistration freeze concludes). Not deployed to production or Cloudflare.
+- The dashboard strictly reads existing fields from the data model (no speculative or synthetic fields):
+  - In live records without multi-layered consensus or liquidity data, missing fields are omitted or indicated gracefully without synthetic mocks. Base/Agent/Defense values are never calculated by the dashboard from risk scores.
+  - Recorded replay (`docs/dashboard/replay-8XeK5m.json`) is explicitly presented as a historical window (`recordedAtUtc: 2026-10-01T20:29:39Z`), annotated with "historical replay, not a confirmed incident", and not represented as live telemetry.
+  - Independent test status (`docs/dashboard/test-status.json`) displays `result: null` during collection without previewing or fabricating score numbers.
+- **Status:** implemented in branch `dashboard`, awaiting deployment post-freeze.
