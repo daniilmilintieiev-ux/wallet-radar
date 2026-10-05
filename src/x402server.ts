@@ -125,6 +125,54 @@ export interface PaymentVerificationResult {
   amount?: number;
   payer?: string;
   recipient?: string;
+  blockTime?: number;
+}
+
+export function validateAnalyzeTxs(txs: unknown): { valid: boolean; error?: string } {
+  let list: unknown = txs;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return { valid: false, error: "body.txs must be a JSON array of transaction objects" };
+    }
+  }
+  if (!Array.isArray(list)) {
+    return { valid: false, error: "body.txs must be an array of transactions (or a JSON string encoding one)" };
+  }
+  if (list.length > 1000) {
+    return { valid: false, error: "body.txs: at most 1000 transactions allowed" };
+  }
+  for (let i = 0; i < list.length; i++) {
+    const item: any = list[i];
+    const isEnhanced =
+      item !== null &&
+      typeof item === "object" &&
+      typeof item.signature === "string" &&
+      item.signature.trim().length > 0 &&
+      typeof item.timestamp === "number" &&
+      Number.isFinite(item.timestamp);
+
+    if (!isEnhanced) {
+      const isRawRpc =
+        item !== null &&
+        typeof item === "object" &&
+        ("blockTime" in item || "transaction" in item);
+      const hint = isRawRpc ? "; got raw RPC format?" : "";
+      return {
+        valid: false,
+        error: `txs[${i}] must be a Helius Enhanced transaction object with signature (string) and timestamp (number)${hint}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+export function isInputError(err: any): boolean {
+  if (!err) return false;
+  if (err.status === 400 || err.statusCode === 400) return true;
+  if (err.name === "ValidationError" || err.name === "InputError") return true;
+  return false;
 }
 
 export type PaymentVerifier = (
@@ -189,34 +237,76 @@ export async function verifySolanaPaymentRpc(
   requirement: PaymentRequirement,
   rpcUrl: string = getRpcUrl(),
 ): Promise<PaymentVerificationResult> {
+  const rawCommitment = process.env.RADAR_X402_COMMITMENT?.trim();
+  let commitment: "confirmed" | "finalized" = "confirmed";
+  if (rawCommitment) {
+    if (rawCommitment === "confirmed" || rawCommitment === "finalized") {
+      commitment = rawCommitment;
+    } else {
+      console.warn(`[x402] Invalid RADAR_X402_COMMITMENT "${rawCommitment}", ignoring; falling back to "confirmed"`);
+    }
+  }
+
   try {
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "x402-verify",
-        method: "getTransaction",
-        params: [
-          proof.signature,
-          {
-            encoding: "jsonParsed",
-            maxSupportedTransactionVersion: 0,
-          },
-        ],
-      }),
-      signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      return { valid: false, error: `RPC HTTP error ${res.status}: ${res.statusText}` };
+    const fetchTx = async () => {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "x402-verify",
+          method: "getTransaction",
+          params: [
+            proof.signature,
+            {
+              encoding: "jsonParsed",
+              commitment,
+              maxSupportedTransactionVersion: 0,
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        return { ok: false as const, error: `RPC HTTP error ${res.status}: ${res.statusText}`, tx: null };
+      }
+      const json = (await res.json()) as any;
+      if (json.error) {
+        return { ok: false as const, error: `RPC error: ${json.error.message || JSON.stringify(json.error)}`, tx: null };
+      }
+      return { ok: true as const, error: null, tx: json.result };
+    };
+
+    let fetchResult = await fetchTx();
+    if (!fetchResult.ok) {
+      return { valid: false, error: fetchResult.error! };
     }
-    const json = (await res.json()) as any;
-    if (json.error) {
-      return { valid: false, error: `RPC error: ${json.error.message || JSON.stringify(json.error)}` };
-    }
-    const tx = json.result;
+    let tx = fetchResult.tx;
     if (!tx) {
-      return { valid: false, error: "Transaction not found on-chain" };
+      const isBase58Sig = /^[1-9A-HJ-NP-Za-km-z]{86,90}$/.test(proof.signature?.trim() || "");
+      if (!isBase58Sig) {
+        return {
+          valid: false,
+          error: "Transaction not found on-chain",
+        };
+      }
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        fetchResult = await fetchTx();
+        if (!fetchResult.ok) {
+          return { valid: false, error: fetchResult.error! };
+        }
+        if (fetchResult.tx) {
+          tx = fetchResult.tx;
+          break;
+        }
+      }
+      if (!tx) {
+        return {
+          valid: false,
+          error: "Transaction not found on-chain (retry in a few seconds if you just paid)",
+        };
+      }
     }
     if (tx.meta?.err) {
       return { valid: false, error: "Transaction failed on-chain" };
@@ -488,6 +578,7 @@ export async function verifySolanaPaymentRpc(
       amount: transferred,
       payer: proof.payer,
       recipient: requirement.recipient,
+      blockTime: tx.blockTime,
     };
   } catch (err) {
     const rawMsg = err instanceof Error ? err.message : String(err);
@@ -580,9 +671,41 @@ export function sanitizeVerificationError(raw?: string): string {
   if (!raw) return "";
   let s = String(raw);
   s = s.replace(/https?:\/\/[^\s"')]+/gi, "[REDACTED_URL]");
+  s = s.replace(/https?/gi, "[REDACTED]");
   s = s.replace(/api[_-]?key=[^\s&"']+/gi, "[REDACTED_KEY]");
   s = s.replace(/api[_-]?key/gi, "[REDACTED]");
   return s;
+}
+
+export function sanitizePaymentVerifiedText(text: string): string {
+  if (!text) return "";
+  let s = String(text);
+  s = s.replace(/https?:\/\/[^\s"')]+/gi, "[REDACTED]");
+  s = s.replace(/https?/gi, "[REDACTED]");
+  s = s.replace(/api[_-]?key=[^\s&"']+/gi, "[REDACTED]");
+  s = s.replace(/api[_-]?key/gi, "[REDACTED]");
+  return s;
+}
+
+export function sendPaymentVerifiedResponse(
+  res: http.ServerResponse,
+  statusCode: number,
+  errorMsg: string,
+  secondsLeft: number,
+): void {
+  const sanitizedError = sanitizePaymentVerifiedText(errorMsg);
+  const rawHint = `retry with the same signature within ${secondsLeft}s`;
+  const sanitizedHint = sanitizePaymentVerifiedText(rawHint);
+  let jsonStr = JSON.stringify({
+    error: sanitizedError,
+    paymentVerified: true,
+    hint: sanitizedHint,
+  });
+  if (/api[_-]?key/i.test(jsonStr) || /https?/i.test(jsonStr)) {
+    jsonStr = jsonStr.replace(/https?/gi, "[REDACTED]").replace(/api[_-]?key/gi, "[REDACTED]");
+  }
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(jsonStr);
 }
 
 export function send402(
@@ -741,17 +864,25 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
   const defaultAnalyzeHandler = async (wallet: string, txs: EnhancedTx[] | string) => {
     let parsed: EnhancedTx[];
     if (typeof txs === "string") {
-      parsed = JSON.parse(txs);
+      try {
+        parsed = JSON.parse(txs);
+      } catch {
+        const err: any = new Error("Invalid txs: expected a JSON array of transaction objects");
+        err.status = 400;
+        throw err;
+      }
     } else if (Array.isArray(txs)) {
       parsed = txs;
     } else {
-      throw new Error("Invalid txs: expected a JSON array of transaction objects");
+      const err: any = new Error("Invalid txs: expected a JSON array of transaction objects");
+      err.status = 400;
+      throw err;
     }
-    for (let i = 0; i < parsed.length; i++) {
-      const res = ENHANCED_TX_SCHEMA.safeParse(parsed[i]);
-      if (!res.success) {
-        throw new Error(`Invalid txs[${i}]: expected transaction object with signature (string) and timestamp (number)`);
-      }
+    const valRes = validateAnalyzeTxs(parsed);
+    if (!valRes.valid) {
+      const err: any = new Error(valRes.error);
+      err.status = 400;
+      throw err;
     }
     const storedBaseline = isValidBase58(wallet) ? store.getBaseline(wallet) : null;
     const scoringBaseline = resolveScoringBaseline(wallet, storedBaseline, parsed);
@@ -996,6 +1127,16 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
         }
         const activeRecipient = recipient ?? "";
 
+        // C2: Format of txs is checked BEFORE payment check and before returning 402
+        if (pathname === "/analyze" && body && body.txs !== undefined) {
+          const valRes = validateAnalyzeTxs(body.txs);
+          if (!valRes.valid) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: valRes.error }));
+            return;
+          }
+        }
+
         // 1. Extract payment proof
         const proof = extractPaymentProof(req, body);
         if (!proof) {
@@ -1043,30 +1184,62 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
             return;
           }
 
+          const getSecondsLeft = () => {
+            const maxAge = options.maxAgeSec ?? 300;
+            let age = 0;
+            if (proof.timestamp) {
+              age = Math.floor(Date.now() / 1000) - proof.timestamp;
+            } else if ((verResult as any)?.blockTime) {
+              age = Math.floor(Date.now() / 1000) - (verResult as any).blockTime;
+            }
+            return Math.max(0, maxAge - age);
+          };
+
           // 3.5. Validate endpoint params BEFORE settling, so a validly-paid
           // request that is missing its parameters 400s without marking the
           // signature settled
           if (pathname === "/scan") {
             if (typeof body?.wallet !== "string" || !isValidSolanaAddress(body.wallet)) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "body.wallet must be a Solana base58 address" }));
+              const secondsLeft = getSecondsLeft();
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                "body.wallet must be a Solana base58 address",
+                secondsLeft,
+              );
               return;
             }
           } else if (pathname === "/analyze") {
             const wallet = body?.wallet;
             if (!wallet || typeof wallet !== "string" || wallet.length > 64) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+              const secondsLeft = getSecondsLeft();
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                "Missing required parameters: wallet and txs",
+                secondsLeft,
+              );
               return;
             }
             if (!body?.txs || (!Array.isArray(body.txs) && typeof body.txs !== "string")) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Missing required parameters: wallet and txs" }));
+              const secondsLeft = getSecondsLeft();
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                "Missing required parameters: wallet and txs",
+                secondsLeft,
+              );
               return;
             }
-            if (Array.isArray(body.txs) && body.txs.length > 1000) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "body.txs: at most 1000 transactions allowed" }));
+            const valRes = validateAnalyzeTxs(body.txs);
+            if (!valRes.valid) {
+              const secondsLeft = getSecondsLeft();
+              sendPaymentVerifiedResponse(
+                res,
+                400,
+                valRes.error || "Invalid txs format",
+                secondsLeft,
+              );
               return;
             }
           }
@@ -1081,7 +1254,17 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           // (e.g. upstream RPC outage -> 500) can be retried with the same
           // on-chain payment instead of burning the user's funds (audit 1.4).
           if (pathname === "/scan") {
-            const rawScanRes = (await scanHandler(body.wallet as string)) as Record<string, any>;
+            let rawScanRes: Record<string, any>;
+            try {
+              rawScanRes = (await scanHandler(body.wallet as string)) as Record<string, any>;
+            } catch (handlerErr: any) {
+              const secondsLeft = getSecondsLeft();
+              const isInput = isInputError(handlerErr);
+              const status = isInput ? 400 : 500;
+              const errorMsg = isInput ? (handlerErr?.message || "Bad Request") : "Internal server error";
+              sendPaymentVerifiedResponse(res, status, errorMsg, secondsLeft);
+              return;
+            }
             recordHeliusCost(store, "/scan");
             const scanRes = typeof rawScanRes === "object" && rawScanRes !== null ? { ...rawScanRes } : rawScanRes;
 
@@ -1205,7 +1388,17 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           }
 
           if (pathname === "/analyze") {
-            const analyzeRes = await analyzeHandler(body.wallet as string, body.txs as EnhancedTx[] | string);
+            let analyzeRes: unknown;
+            try {
+              analyzeRes = await analyzeHandler(body.wallet as string, body.txs as EnhancedTx[] | string);
+            } catch (handlerErr: any) {
+              const secondsLeft = getSecondsLeft();
+              const isInput = isInputError(handlerErr);
+              const status = isInput ? 400 : 500;
+              const errorMsg = isInput ? (handlerErr?.message || "Bad Request") : "Internal server error";
+              sendPaymentVerifiedResponse(res, status, errorMsg, secondsLeft);
+              return;
+            }
             const settled = store.recordSettledPayment({
               signature: proof.signature,
               payer: proof.payer,

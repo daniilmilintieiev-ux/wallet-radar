@@ -3,7 +3,7 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } f
 import { createAssociatedTokenAccountIdempotentInstruction } from "@solana/spl-token";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "../oracle/index.js";
 import { USDC_MINT } from "../types.js";
-import { signPaymentProof } from "../x402server.js";
+import { signPaymentProof, validateAnalyzeTxs } from "../x402server.js";
 import type { TrustProofBundle } from "../trust-proof.js";
 
 export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -116,6 +116,10 @@ export interface RadarClientConfig {
   paymentSigner?: PaymentSignerFn;
   /** When true, falls back to offline signed proof if RPC payment fails. Default is false (rethrows real RPC errors). */
   offlineFallback?: boolean;
+  /** Desired commitment level for payment confirmation ("confirmed" or "finalized", default "confirmed") */
+  commitment?: "confirmed" | "finalized";
+  /** Pause between 402 retries in milliseconds (default 2000) */
+  retryDelayMs?: number;
 }
 
 export interface RadarClientScanResult {
@@ -269,9 +273,13 @@ export class RadarClient {
   readonly oracleClient?: ZKOracleClient;
   readonly paymentSigner?: PaymentSignerFn;
   readonly offlineFallback: boolean;
+  readonly commitment: "confirmed" | "finalized";
+  readonly retryDelayMs: number;
 
   constructor(config: RadarClientConfig = {}) {
     this.offlineFallback = config.offlineFallback ?? false;
+    this.commitment = config.commitment ?? "confirmed";
+    this.retryDelayMs = config.retryDelayMs ?? 2000;
     const rawUrl = config.baseUrl || process.env.RADAR_API_URL || "http://127.0.0.1:4020";
     this.baseUrl = rawUrl.replace(/\/+$/, "");
     if (!this.baseUrl.startsWith("http://") && !this.baseUrl.startsWith("https://")) {
@@ -417,6 +425,35 @@ export class RadarClient {
                 "confirmed",
               );
             }
+
+            // C1: wait up to 20 seconds for getSignatureStatuses to show confirmation at desired commitment
+            if (typeof (this.connection as any).getSignatureStatuses === "function") {
+              const startWait = Date.now();
+              const desired = this.commitment;
+              while (Date.now() - startWait < 20_000) {
+                try {
+                  const statusRes = await (this.connection as any).getSignatureStatuses([sig], {
+                    searchTransactionHistory: true,
+                  });
+                  const st = statusRes?.value?.[0];
+                  if (st) {
+                    if (st.err) {
+                      throw new Error(`Payment transaction failed on-chain: ${JSON.stringify(st.err)}`);
+                    }
+                    const conf = st.confirmationStatus;
+                    if (desired === "finalized") {
+                      if (conf === "finalized") break;
+                    } else {
+                      if (conf === "confirmed" || conf === "finalized") break;
+                    }
+                  }
+                } catch (e: any) {
+                  if (e.message?.startsWith("Payment transaction failed")) throw e;
+                }
+                await new Promise((r) => setTimeout(r, 500));
+              }
+            }
+
             return {
               signature: sig,
               payer: payerAddress,
@@ -528,6 +565,29 @@ export class RadarClient {
         headers,
         body: payload,
       });
+
+      if (res.status === 402) {
+        let errBody = "";
+        try {
+          errBody = typeof (res as any).clone === "function" ? await (res as any).clone().text() : await res.text();
+        } catch {}
+        if (/not found/i.test(errBody)) {
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            await new Promise((r) => setTimeout(r, this.retryDelayMs));
+            res = await this.fetchFn(endpointUrl, {
+              method: "POST",
+              headers,
+              body: payload,
+            });
+            if (res.status !== 402) break;
+            let retryErr = "";
+            try {
+              retryErr = typeof (res as any).clone === "function" ? await (res as any).clone().text() : await res.text();
+            } catch {}
+            if (!/not found/i.test(retryErr)) break;
+          }
+        }
+      }
     }
 
     if (!res.ok) {
@@ -584,6 +644,12 @@ export class RadarClient {
       throw new Error("Target wallet address is required for analyze");
     }
 
+    // C3: Validate txs format before attempting payment
+    const valRes = validateAnalyzeTxs(txs ?? []);
+    if (!valRes.valid) {
+      throw new Error(valRes.error);
+    }
+
     const endpointUrl = `${this.baseUrl}/analyze`;
     const payload = JSON.stringify({ wallet, txs: txs ?? [] });
 
@@ -636,6 +702,29 @@ export class RadarClient {
         headers,
         body: payload,
       });
+
+      if (res.status === 402) {
+        let errBody = "";
+        try {
+          errBody = typeof (res as any).clone === "function" ? await (res as any).clone().text() : await res.text();
+        } catch {}
+        if (/not found/i.test(errBody)) {
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            await new Promise((r) => setTimeout(r, this.retryDelayMs));
+            res = await this.fetchFn(endpointUrl, {
+              method: "POST",
+              headers,
+              body: payload,
+            });
+            if (res.status !== 402) break;
+            let retryErr = "";
+            try {
+              retryErr = typeof (res as any).clone === "function" ? await (res as any).clone().text() : await res.text();
+            } catch {}
+            if (!/not found/i.test(retryErr)) break;
+          }
+        }
+      }
     }
 
     if (!res.ok) {

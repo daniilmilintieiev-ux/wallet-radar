@@ -852,4 +852,110 @@ describe("Agent SDK v1 (src/sdk)", () => {
     assert.equal(verdict.slippageToleranceBps, 50);
     assert.match(verdict.reason, /THROTTLED/i);
   });
+
+  test("C1: SDK with stub-server answering 402 'not found' twice and then 200 succeeds", async () => {
+    let attempts = 0;
+    const mockFetch: typeof fetch = async (input, init) => {
+      attempts++;
+      if (attempts === 1) {
+        // Initial request without payment -> 402 challenge
+        return new Response(
+          JSON.stringify({
+            error: "Payment Required",
+            message: "Payment of 0.005 USDC required for /scan",
+            x402: {
+              version: "1.0",
+              network: "solana",
+              token: "USDC",
+              recipient: "Recipient1111111111111111111111111111111111",
+              amount: 0.005,
+            },
+          }),
+          { status: 402, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (attempts === 2 || attempts === 3) {
+        // First and second attempts with payment: 402 "not found"
+        return new Response(
+          JSON.stringify({
+            error: "Payment Required",
+            detail: "Transaction not found on-chain (retry in a few seconds if you just paid)",
+            message: "Payment error for /scan: Transaction not found on-chain (retry in a few seconds if you just paid)",
+          }),
+          { status: 402, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      // Third attempt with payment (total attempt 4): 200 OK
+      return new Response(
+        JSON.stringify({
+          wallet: targetWallet,
+          riskScore: 10,
+          verdict: "SAFE",
+          anomalies: [],
+          onchainLedgerSig: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const client = createRadarClient({
+      fetchFn: mockFetch,
+      paymentSigner: () => ({ signature: "mock_sig_c1", payer: "mock_payer_c1" }),
+      retryDelayMs: 50, // fast in test
+    });
+
+    const result = await client.scan(targetWallet);
+    assert.equal(result.riskScore, 10);
+    assert.equal(result.verdict, "SAFE");
+    assert.equal(attempts, 4, `Expected 4 total fetch calls (1 challenge + 2 retries on 402 not-found + 1 success), got ${attempts}`);
+  });
+
+  test("C3: sdk.analyze validates txs format before payment and throws without sending transaction", async () => {
+    let connectionCalled = false;
+    let paymentSignerCalled = false;
+    const stubConnection = {
+      getLatestBlockhash: async () => {
+        connectionCalled = true;
+        return { blockhash: "mock_blockhash", lastValidBlockHeight: 100 };
+      },
+      sendRawTransaction: async () => {
+        connectionCalled = true;
+        return "mock_tx_sig";
+      },
+      confirmTransaction: async () => {
+        connectionCalled = true;
+        return { value: { err: null } };
+      },
+    } as any;
+
+    const client = createRadarClient({
+      rpc: stubConnection,
+      x402Payer: Keypair.generate(),
+      paymentSigner: () => {
+        paymentSignerCalled = true;
+        return { signature: "sig", payer: "payer" };
+      },
+    });
+
+    const rawRpcTxs = [
+      {
+        blockTime: 1700000000,
+        transaction: { signatures: ["raw_sig_1"] },
+      },
+    ];
+
+    await assert.rejects(
+      async () => {
+        await client.analyze(targetWallet, rawRpcTxs);
+      },
+      {
+        message: /txs\[0\] must be a Helius Enhanced transaction object with signature \(string\) and timestamp \(number\); got raw RPC format\?/i,
+      },
+    );
+
+    assert.equal(connectionCalled, false, "Stub connection must not be called when txs format is invalid");
+    assert.equal(paymentSignerCalled, false, "Payment signer must not be called when txs format is invalid");
+  });
 });
+
+
