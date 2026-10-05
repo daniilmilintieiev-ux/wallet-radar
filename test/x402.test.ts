@@ -1602,3 +1602,148 @@ test("audit revision 11 WR-CRIT-01: verifySolanaPaymentRpc rejects transactions 
   }
 });
 
+test("A2: payment verification error message strips URL and api-key", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
+
+  const originalConsoleError = console.error;
+  let loggedErrors: string[] = [];
+  console.error = (...args: any[]) => {
+    loggedErrors.push(args.map(a => String(a)).join(" "));
+  };
+
+  const server = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async () => {
+      throw new Error("RPC request failed: https://x.test/?api-key=SECRETVALUE");
+    },
+  });
+  const { port, close } = await startServer(server);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": "sig_leak_test",
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: "11111111111111111111111111111111" }),
+    });
+
+    assert.equal(res.status, 402);
+    const text = await res.text();
+
+    assert.equal(text.includes("SECRETVALUE"), false, "Response body must not contain SECRETVALUE");
+    assert.equal(text.includes("api-key"), false, "Response body must not contain 'api-key'");
+
+    const logs = loggedErrors.join("\n");
+    assert.equal(logs.includes("SECRETVALUE"), false, "console.error must not contain SECRETVALUE");
+    assert.equal(logs.includes("api-key"), false, "console.error must not contain 'api-key'");
+  } finally {
+    console.error = originalConsoleError;
+    await close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("A3: concurrent / duplicate settlement returns 409 Conflict with 'payment signature already used'", async () => {
+  const { store, dir } = tmpDb();
+  const recipient = "RecipientWappet111111111111111111111111111";
+  const payer = "PayerWappet1111111111111111111111111111111";
+
+  // Case 1: Mock store returning false for recordSettledPayment
+  const mockStore = Object.create(store);
+  mockStore.recordSettledPayment = () => false;
+
+  const serverMock = createX402Server({
+    store: mockStore,
+    recipient,
+    paymentVerifier: async (proof) => ({ valid: true, amount: 0.005, payer: proof.payer }),
+    scanHandler: async () => ({ riskScore: 10, anomalies: [] } as any),
+  });
+  const { port: portMock, close: closeMock } = await startServer(serverMock);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${portMock}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Signature": "sig_race_mock_1",
+        "X-Payment-Payer": payer,
+      },
+      body: JSON.stringify({ wallet: "DemoWappet11111111111111111111111111111111" }),
+    });
+
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as any;
+    assert.match(body.message || body.error, /payment signature already used/i);
+  } finally {
+    await closeMock();
+  }
+
+  // Case 2: Parallel requests across two server instances sharing the real store
+  const serverA = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async (proof) => {
+      await new Promise((r) => setTimeout(r, 25));
+      return { valid: true, amount: 0.005, payer: proof.payer };
+    },
+    scanHandler: async () => ({ riskScore: 10, anomalies: [] } as any),
+  });
+  const serverB = createX402Server({
+    store,
+    recipient,
+    paymentVerifier: async (proof) => {
+      await new Promise((r) => setTimeout(r, 25));
+      return { valid: true, amount: 0.005, payer: proof.payer };
+    },
+    scanHandler: async () => ({ riskScore: 10, anomalies: [] } as any),
+  });
+
+  const { port: portA, close: closeA } = await startServer(serverA);
+  const { port: portB, close: closeB } = await startServer(serverB);
+
+  try {
+    const sharedSig = "sig_parallel_race_test_123";
+    const [resA, resB] = await Promise.all([
+      fetch(`http://127.0.0.1:${portA}/scan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Payment-Signature": sharedSig,
+          "X-Payment-Payer": payer,
+        },
+        body: JSON.stringify({ wallet: "DemoWappet11111111111111111111111111111111" }),
+      }),
+      fetch(`http://127.0.0.1:${portB}/scan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Payment-Signature": sharedSig,
+          "X-Payment-Payer": payer,
+        },
+        body: JSON.stringify({ wallet: "DemoWappet11111111111111111111111111111111" }),
+      }),
+    ]);
+
+    const statuses = [resA.status, resB.status].sort();
+    assert.deepEqual(statuses, [200, 409], "Exactly one request must succeed with 200, and the other must be rejected with 409");
+
+    const errRes = resA.status === 409 ? resA : resB;
+    const errBody = (await errRes.json()) as any;
+    assert.match(errBody.message || errBody.error, /payment signature already used/i);
+  } finally {
+    await closeA();
+    await closeB();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+

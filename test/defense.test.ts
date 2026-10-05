@@ -60,13 +60,21 @@ describe("defense state machine (pure)", () => {
   });
 
   test("escalates to gated at risk >= gated threshold", () => {
-    const a = computeDefenseAction({ riskScore: DEFENSE_THRESHOLDS.gated, hasHighSeverity: false, active: true, current: null, quietStreak: 0, nowSec: NOW });
+    const a = computeDefenseAction({ riskScore: 50, hasHighSeverity: false, active: true, current: null, quietStreak: 0, nowSec: NOW });
     assert.equal(a.state, "gated");
   });
 
   test("escalates to blocked at risk >= blocked threshold", () => {
-    const a = computeDefenseAction({ riskScore: DEFENSE_THRESHOLDS.blocked, hasHighSeverity: false, active: true, current: null, quietStreak: 0, nowSec: NOW });
+    const a = computeDefenseAction({ riskScore: 75, hasHighSeverity: false, active: true, current: null, quietStreak: 0, nowSec: NOW });
     assert.equal(a.state, "blocked");
+  });
+
+  test("A9(a): DEFENSE_THRESHOLDS.blocked boundary (74 escalates to gated, 75 escalates to blocked)", () => {
+    const a74 = computeDefenseAction({ riskScore: 74, hasHighSeverity: false, active: true, current: null, quietStreak: 0, nowSec: NOW });
+    assert.equal(a74.state, "gated", "riskScore 74 must escalate to gated, not blocked");
+
+    const a75 = computeDefenseAction({ riskScore: 75, hasHighSeverity: false, active: true, current: null, quietStreak: 0, nowSec: NOW });
+    assert.equal(a75.state, "blocked", "riskScore 75 must escalate to blocked");
   });
 
   test("escalates to blocked on any high-severity anomaly regardless of risk", () => {

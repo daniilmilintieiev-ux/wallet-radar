@@ -1273,4 +1273,435 @@ test("http-server: createRateLimiter protects blocked IPs from eviction by spoof
   assert.equal(recheckAbusive.ok, false);
 });
 
+test("A1: /gate-copy isHeavy auth, RADAR_PROTECT_READS, and RADAR_LIVE_RATE_LIMIT_PER_MIN", async () => {
+  const { store, dir } = tmpStore();
+  const prevToken = process.env.RADAR_API_TOKEN;
+  const prevHeavy = process.env.RADAR_AUTH_HEAVY;
+  const prevReads = process.env.RADAR_PROTECT_READS;
+  const prevLiveLimit = process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN;
+
+  try {
+    process.env.RADAR_API_TOKEN = "secret-token-123";
+    process.env.RADAR_AUTH_HEAVY = "1";
+    process.env.RADAR_PROTECT_READS = "1";
+    delete process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN; // defaults to 30
+
+    const r = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 100 });
+    try {
+      // 1. /gate-copy without token gets 401
+      const resGateUnauth = await fetch(`${r.base}/gate-copy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+      });
+      assert.equal(resGateUnauth.status, 401, "/gate-copy without auth must return 401 when RADAR_AUTH_HEAVY=1");
+
+      // 2. /gate-copy with token is authorized (not 401)
+      const resGateAuth = await fetch(`${r.base}/gate-copy`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer secret-token-123",
+        },
+        body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+      });
+      assert.notEqual(resGateAuth.status, 401, "/gate-copy with auth must not be 401");
+
+      // 3. GET /watch, /alerts, /defense, /poll without token get 401 under RADAR_PROTECT_READS=1
+      for (const p of ["/watch", "/alerts", "/defense", "/poll"]) {
+        const resReadUnauth = await fetch(`${r.base}${p}`);
+        assert.equal(resReadUnauth.status, 401, `GET ${p} without auth must return 401 when RADAR_PROTECT_READS=1`);
+
+        const resReadAuth = await fetch(`${r.base}${p}`, {
+          headers: { "Authorization": "Bearer secret-token-123" },
+        });
+        assert.notEqual(resReadAuth.status, 401, `GET ${p} with auth must not be 401`);
+      }
+
+    } finally {
+      await r.close();
+    }
+
+    // 4. Rate limiting on live Helius routes (RADAR_LIVE_RATE_LIMIT_PER_MIN = 30 default)
+    // Exactly 30 requests should succeed (not 429), 31st must receive 429
+    const rLimit = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 100, liveRateLimitPerMin: 30 });
+    try {
+      let got429 = false;
+      for (let i = 1; i <= 31; i++) {
+        const res = await fetch(`${rLimit.base}/gate-copy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer secret-token-123",
+          },
+          body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+        });
+        if (i <= 30) {
+          assert.notEqual(res.status, 429, `Request ${i} should not be 429`);
+        } else {
+          assert.equal(res.status, 429, `31st request must receive 429`);
+          got429 = true;
+        }
+      }
+      assert.equal(got429, true, "31st request should trigger 429");
+    } finally {
+      await rLimit.close();
+    }
+
+    // 5. Without token, behavior is unchanged (no 401)
+    delete process.env.RADAR_API_TOKEN;
+    delete process.env.RADAR_AUTH_HEAVY;
+    delete process.env.RADAR_PROTECT_READS;
+    const rNoToken = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+    try {
+      const res = await fetch(`${rNoToken.base}/gate-copy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetWallet: "11111111111111111111111111111111" }),
+      });
+      assert.notEqual(res.status, 401, "Without token, /gate-copy must not return 401");
+    } finally {
+      await rNoToken.close();
+    }
+  } finally {
+    store.close();
+    cleanup(dir);
+    if (prevToken !== undefined) process.env.RADAR_API_TOKEN = prevToken; else delete process.env.RADAR_API_TOKEN;
+    if (prevHeavy !== undefined) process.env.RADAR_AUTH_HEAVY = prevHeavy; else delete process.env.RADAR_AUTH_HEAVY;
+    if (prevReads !== undefined) process.env.RADAR_PROTECT_READS = prevReads; else delete process.env.RADAR_PROTECT_READS;
+    if (prevLiveLimit !== undefined) process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN = prevLiveLimit; else delete process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN;
+  }
+});
+
+test("A4: A2A card and getVersion resolve version dynamically from package.json", async () => {
+  const r = await startTestServer();
+  try {
+    const pkgPath = path.resolve(process.cwd(), "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    const expectedVersion = pkg.version;
+
+    const resA2A = await fetch(`${r.base}/.well-known/agent.json`);
+    assert.equal(resA2A.status, 200);
+    const card = (await resA2A.json()) as any;
+    assert.equal(card.version, expectedVersion, `A2A card version (${card.version}) must match package.json version (${expectedVersion}) and not be hardcoded 0.3.0`);
+    assert.notEqual(card.version, "0.3.0");
+
+    const mcpVersion = getVersion();
+    assert.equal(mcpVersion, expectedVersion, `MCP getVersion() (${mcpVersion}) must match package.json version (${expectedVersion})`);
+  } finally {
+    await r.close();
+  }
+});
+
+test("A5: error messages and method hints for /watch, /unwatch, /poll, /defense/:wallet/clear", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  try {
+    // 1. GET /unwatch -> 405 Method Not Allowed with allowed methods and hint
+    const resGetUnwatch = await fetch(`${r.base}/unwatch`);
+    assert.equal(resGetUnwatch.status, 405);
+    const bodyGetUnwatch = (await resGetUnwatch.json()) as any;
+    const textGetUnwatch = JSON.stringify(bodyGetUnwatch);
+    assert.ok(textGetUnwatch.includes("POST"), "Allowed methods must include POST");
+    assert.ok(textGetUnwatch.includes("use POST /unwatch to remove a wallet"), "Must include hint 'use POST /unwatch to remove a wallet'");
+
+    // 2. DELETE /unwatch -> 405 Method Not Allowed with hint
+    const resDelUnwatch = await fetch(`${r.base}/unwatch`, { method: "DELETE" });
+    assert.equal(resDelUnwatch.status, 405);
+    const bodyDelUnwatch = (await resDelUnwatch.json()) as any;
+    assert.ok(JSON.stringify(bodyDelUnwatch).includes("use POST /unwatch to remove a wallet"));
+
+    // 3. GET /poll -> 405 Method Not Allowed with hint
+    const resGetPoll = await fetch(`${r.base}/poll`);
+    assert.equal(resGetPoll.status, 405);
+    const bodyGetPoll = (await resGetPoll.json()) as any;
+    assert.ok(JSON.stringify(bodyGetPoll).includes("POST"));
+
+    // 4. GET /defense/:wallet/clear -> 405 Method Not Allowed with hint
+    const resGetClear = await fetch(`${r.base}/defense/11111111111111111111111111111111/clear`);
+    assert.equal(resGetClear.status, 405);
+    const bodyGetClear = (await resGetClear.json()) as any;
+    assert.ok(JSON.stringify(bodyGetClear).includes("POST"));
+
+    // 5. DELETE /watch -> 405 Method Not Allowed with hint
+    const resDelWatch = await fetch(`${r.base}/watch`, { method: "DELETE" });
+    assert.equal(resDelWatch.status, 405);
+    const bodyDelWatch = (await resDelWatch.json()) as any;
+    const textDelWatch = JSON.stringify(bodyDelWatch);
+    assert.ok(textDelWatch.includes("GET") && textDelWatch.includes("POST"), "Allowed methods must include GET, POST");
+    assert.ok(textDelWatch.includes("use POST /unwatch to remove a wallet"), "Must include hint 'use POST /unwatch to remove a wallet'");
+
+    // 6. Malformed body on POST /watch -> 400 with expected shape
+    const resBadWatch = await fetch(`${r.base}/watch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wrong: 123 }),
+    });
+    assert.equal(resBadWatch.status, 400);
+    const bodyBadWatch = (await resBadWatch.json()) as any;
+    const textBadWatch = JSON.stringify(bodyBadWatch);
+    assert.ok(
+      textBadWatch.includes('{"wallet":"<base58>","name":"optional"}') ||
+      (bodyBadWatch.expected && bodyBadWatch.expected.wallet === "<base58>"),
+      `Expected shape {"wallet":"<base58>","name":"optional"} in 400 response: ${textBadWatch}`
+    );
+
+    // 7. 404 on /defense/:wallet/clear -> clearly state not escalated
+    const res404Clear = await fetch(`${r.base}/defense/11111111111111111111111111111111/clear`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(res404Clear.status, 404);
+    const body404Clear = (await res404Clear.json()) as any;
+    assert.ok(
+      body404Clear.error.includes("not been escalated") || body404Clear.error.includes("не эскалировано"),
+      `404 response must mention not escalated: ${JSON.stringify(body404Clear)}`
+    );
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("A6(a)+(b): trust, batch, and gate-copy descriptions document token mint check scope", async () => {
+  const r = await startTestServer();
+  try {
+    const res = await fetch(`${r.base}/`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    const endpoints = body.endpoints as Array<{ path: string; description: string }>;
+
+    const trustEp = endpoints.find((e) => e.path === "/trust");
+    assert.ok(trustEp, "Endpoint /trust must exist");
+    assert.ok(
+      trustEp.description.includes("Does not check the token mint; use radar_gate_copy for token checks."),
+      "/trust description must state it does not check token mint"
+    );
+
+    const batchEp = endpoints.find((e) => e.path === "/batch");
+    assert.ok(batchEp, "Endpoint /batch must exist");
+    assert.ok(
+      batchEp.description.includes("Does not check the token mint; use radar_gate_copy for token checks."),
+      "/batch description must state it does not check token mint"
+    );
+
+    const gateCopyEp = endpoints.find((e) => e.path === "/gate-copy");
+    assert.ok(gateCopyEp, "Endpoint /gate-copy must exist");
+    assert.ok(
+      gateCopyEp.description.includes("When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution."),
+      "/gate-copy description must match PROPOSED-DESCRIPTIONS.md"
+    );
+
+    // Also check src/mcp.ts
+    const mcpSource = fs.readFileSync(path.resolve(process.cwd(), "src/mcp.ts"), "utf8");
+    assert.ok(
+      mcpSource.includes("Does not check the token mint; use radar_gate_copy for token checks."),
+      "mcp.ts must document token check scope in trust/batch"
+    );
+    assert.ok(
+      mcpSource.includes("When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution."),
+      "mcp.ts must document token check scope in radar_gate_copy"
+    );
+  } finally {
+    await r.close();
+  }
+});
+
+test("A7: POST /trust and /batch reject invalid base58 and length bounds with 400", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  try {
+    const invalidAddresses = [
+      "1".repeat(31), // length 31 (under)
+      "1".repeat(45), // length 45 (over)
+      "0" + "1".repeat(31), // '0' is not base58
+      "O" + "1".repeat(31), // 'O' is not base58
+      "I" + "1".repeat(31), // 'I' is not base58
+      "l" + "1".repeat(31), // 'l' is not base58
+    ];
+
+    for (const badAddr of invalidAddresses) {
+      const resTrust = await fetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: badAddr }),
+      });
+      assert.equal(resTrust.status, 400, `POST /trust with '${badAddr}' must return 400`);
+
+      const resBatch = await fetch(`${r.base}/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallets: [badAddr] }),
+      });
+      assert.equal(resBatch.status, 400, `POST /batch with '${badAddr}' must return 400`);
+    }
+
+    // Valid 32- and 44-character addresses without history: 200 unknown
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.startsWith("http://127.0.0.1")) {
+          return originalFetch(url, init);
+        }
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      };
+
+      const valid32 = "1".repeat(32);
+      const res32 = await originalFetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: valid32 }),
+      });
+      assert.equal(res32.status, 200);
+      const data32 = (await res32.json()) as any;
+      assert.equal(data32.verdict, "unknown");
+
+      const valid44 = "1".repeat(44);
+      const res44 = await originalFetch(`${r.base}/trust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: valid44 }),
+      });
+      assert.equal(res44.status, 200);
+      const data44 = (await res44.json()) as any;
+      assert.equal(data44.verdict, "unknown");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+test("A8: /gate-copy returns tokenCheck ('applied', 'skipped_no_mint', 'skipped_no_amount', 'skipped_base_verdict')", async () => {
+  const { store, dir } = tmpStore();
+  const r = await startWatchServer(store, { apiKey: "mock_helius_key", rateLimitPerMin: 0, liveRateLimitPerMin: 0 });
+  const originalFetch = globalThis.fetch;
+  const safeWallet = "SafeWa11et1111111111111111111111111111";
+  const unknownWallet = "UnknwnWa11et1111111111111111111111111111";
+  const testMint = "7ktc9XbVMcShzkpV7gofTEBCqvSVTvw66MCvFCYDpump";
+
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr = String(input);
+    const bodyStr = init?.body ? String(init.body) : "";
+
+    if (urlStr.startsWith("http://127.0.0.1")) {
+      return originalFetch(input, init);
+    }
+
+    if (urlStr.includes(unknownWallet)) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
+    if (urlStr.includes("helius.xyz") || urlStr.includes("/v0/addresses")) {
+      return new Response(
+        JSON.stringify([
+          { signature: "sig1", timestamp: Math.floor(Date.now() / 1000) - 3600, source: "JUPITER", programs: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"] },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (urlStr.includes("jup.ag")) {
+      return new Response(JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 150 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (bodyStr) {
+      let parsed: any;
+      try { parsed = JSON.parse(bodyStr); } catch {}
+      if (parsed?.method === "getBalance") {
+        if (parsed.params?.[0] === unknownWallet) {
+          return new Response(JSON.stringify({ error: "not found" }), { status: 500 });
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: 1_000_000_000 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed?.method === "getTokenAccountsByOwner") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: [{ account: { data: { parsed: { info: { tokenAmount: { uiAmount: 100 } } } } } }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (parsed?.method === "getAccountInfo") {
+        const address = parsed.params?.[0];
+        if (address === testMint) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: { value: { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: { parsed: { type: "mint", info: { freezeAuthority: null, mintAuthority: null, isInitialized: true } } } } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { value: { owner: "11111111111111111111111111111111" } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  };
+
+  try {
+    // 1. skipped_base_verdict
+    const resBase = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: unknownWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(resBase.status, 200);
+    const dataBase = (await resBase.json()) as any;
+    assert.equal(dataBase.tokenCheck, "skipped_base_verdict");
+
+    // 2. skipped_no_mint
+    const resNoMint = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50 }),
+    });
+    assert.equal(resNoMint.status, 200);
+    const dataNoMint = (await resNoMint.json()) as any;
+    assert.equal(dataNoMint.tokenCheck, "skipped_no_mint");
+
+    // 3. skipped_no_amount
+    const resNoAmount = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, mint: testMint }),
+    });
+    assert.equal(resNoAmount.status, 200);
+    const dataNoAmount = (await resNoAmount.json()) as any;
+    assert.equal(dataNoAmount.tokenCheck, "skipped_no_amount");
+
+    // 4. applied
+    const resApplied = await originalFetch(`${r.base}/gate-copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWallet: safeWallet, copyAmountUsd: 50, mint: testMint }),
+    });
+    assert.equal(resApplied.status, 200);
+    const dataApplied = (await resApplied.json()) as any;
+    assert.equal(dataApplied.tokenCheck, "applied");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await r.close();
+    store.close();
+    cleanup(dir);
+  }
+});
+
+
+
+
+
+
+
 

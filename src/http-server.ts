@@ -44,12 +44,12 @@ interface EndpointInfo {
 }
 
 const ENDPOINTS: EndpointInfo[] = [
-  { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 9 deterministic anomaly rules. Returns riskScore (0-100), anomalies with evidence, per-rule reasons, summary, digest, and data freshness." },
+  { method: "POST", path: "/scan", tool: "radar_scan", description: "Full wallet risk scan: Helius history + Jupiter USD pricing + 9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals. Returns riskScore (0-100), anomalies with evidence, per-rule reasons, summary, digest, and data freshness." },
   { method: "POST", path: "/analyze", tool: "radar_analyze", description: "Offline anomaly analysis over a client-supplied transactions fixture. No network calls. Returns riskScore, anomalies, per-rule reasons, summary, and digest." },
-  { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness." },
-  { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once." },
+  { method: "POST", path: "/trust", tool: "radar_trust", description: "Pre-flight trust check: behavioral risk score + payment capacity (SOL + USDC/USDT liquidity) into a safe/hold/unknown verdict, with verdict reasons, per-rule anomaly reasons, summary, and data freshness. Does not check the token mint; use radar_gate_copy for token checks." },
+  { method: "POST", path: "/batch", tool: "radar_batch", description: "Batch trust-gate over up to 20 Solana wallets: runs the pre-flight trust check (behavioral risk + SOL/USDC/USDT payment capacity) on each and returns a deterministic shortlist — safe (ranked by risk, then liquidity), hold, and unknown buckets. Gate a whole copy-trading book at once. Does not check the token mint; use radar_gate_copy for token checks." },
   { method: "POST", path: "/simulate", tool: "radar_simulate", description: "Pre-trade what-if simulation: 'if wallet Y pays out X USDC/SOL, what happens to Y?' The wallet under analysis is the payer. Models liquidity impact, large-payment trigger, risk score delta, and returns an actionable decision (allow/throttle/block/manual_review) with a specific recommendation. The agent asks BEFORE signing." },
-  { method: "POST", path: "/gate-copy", tool: "radar_gate_copy", description: "Pre-trade copy-trading firewall: gates a proposed copy-trade, swap, or payment before execution. Evaluates behavioral risk, token mint freeze/mint authority honeypots, and pre-trade simulation with tiered limits. Returns an immediate ALLOW, THROTTLE, or BLOCK verdict." },
+  { method: "POST", path: "/gate-copy", tool: "radar_gate_copy", description: "Pre-trade copy-trading firewall: gates a proposed copy-trade, swap, or payment before execution. Evaluates behavioral risk against the wallet's history. When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution. Returns an immediate ALLOW, THROTTLE, or BLOCK verdict." },
   { method: "GET", path: "/watch", tool: "radar_watch", description: "List the monitoring watchlist: each watched wallet with its seed status and unalerted-anomaly count. Requires the watch store (start the server with RADAR_WATCH=1)." },
   { method: "POST", path: "/watch", tool: "radar_watch", description: "Add a wallet to the monitoring watchlist so it is continuously re-checked for new anomalies (webhook/Telegram on detection). Requires the watch store (RADAR_WATCH=1)." },
   { method: "POST", path: "/unwatch", tool: "radar_unwatch", description: "Remove a wallet from the monitoring watchlist. Requires the watch store (RADAR_WATCH=1)." },
@@ -71,9 +71,13 @@ const ENDPOINTS: EndpointInfo[] = [
 
 class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  extra?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  constructor(status: number, message: string, extra?: Record<string, unknown>, headers?: Record<string, string>) {
     super(message);
     this.status = status;
+    this.extra = extra;
+    this.headers = headers;
   }
 }
 
@@ -102,7 +106,7 @@ function timingSafeEqualStr(a: string, b: string): boolean {
  * API auth (opt-in via RADAR_API_TOKEN): only the mutating watch/defense
  * endpoints are gated; read endpoints stay open.
  * When authHeavy is enabled (Audit 1.3), resource-intensive endpoints
- * (/batch, /scan, /trust, /simulate) also require authorization.
+ * (/batch, /scan, /trust, /simulate, /gate-copy) also require authorization.
  * Returns true when the request is allowed, false when it must be rejected with 401.
  */
 function authorizeMutating(
@@ -111,6 +115,7 @@ function authorizeMutating(
   req: http.IncomingMessage,
   token: string | undefined,
   authHeavy: boolean = false,
+  protectReads: boolean = false,
 ): boolean {
   if (!token) return true;
   const isMutating =
@@ -119,9 +124,13 @@ function authorizeMutating(
   const isHeavy =
     authHeavy &&
     method === "POST" &&
-    (p === "/batch" || p === "/scan" || p === "/trust" || p === "/simulate");
+    (p === "/batch" || p === "/scan" || p === "/trust" || p === "/simulate" || p === "/gate-copy");
+  const isProtectedRead =
+    protectReads &&
+    method === "GET" &&
+    (p === "/watch" || p === "/alerts" || p === "/defense" || p.startsWith("/defense/") || p === "/poll");
 
-  if (!isMutating && !isHeavy) return true;
+  if (!isMutating && !isHeavy && !isProtectedRead) return true;
   const header = req.headers.authorization;
   const provided =
     typeof header === "string" && header.startsWith("Bearer ")
@@ -307,7 +316,7 @@ async function toolAnalyze(body: Record<string, unknown>, ctx: RequestContext = 
   return { wallet, txCount: parsed.length, riskScore: computeRiskScore(anomalies), anomalies, reasons: anomalyReasons(anomalies), summary: anomalySummary(anomalies), digest: digestAnomalies(anomalies) };
 }
 
-async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
+async function toolTrust(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallet = body.wallet;
   if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
   if (body.maxRisk !== undefined && (typeof body.maxRisk !== "number" || !Number.isFinite(body.maxRisk) || body.maxRisk < 0 || body.maxRisk > 100)) {
@@ -319,7 +328,7 @@ async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   if (body.windowDays !== undefined && (typeof body.windowDays !== "number" || !Number.isFinite(body.windowDays) || body.windowDays <= 0)) {
     throw new HttpError(400, "body.windowDays must be a positive number.");
   }
-  const apiKey = process.env.HELIUS_API_KEY;
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark.");
   return runTrustCheck(apiKey, wallet, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
@@ -328,7 +337,7 @@ async function toolTrust(body: Record<string, unknown>): Promise<unknown> {
   });
 }
 
-async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
+async function toolBatch(body: Record<string, unknown>, ctx: RequestContext = {}): Promise<unknown> {
   const wallets = body.wallets;
   if (!Array.isArray(wallets) || wallets.length === 0) {
     throw new HttpError(400, "body.wallets must be a non-empty array of Solana base58 addresses.");
@@ -348,7 +357,7 @@ async function toolBatch(body: Record<string, unknown>): Promise<unknown> {
   if (body.windowDays !== undefined && (typeof body.windowDays !== "number" || !Number.isFinite(body.windowDays) || body.windowDays <= 0)) {
     throw new HttpError(400, "body.windowDays must be a positive number.");
   }
-  const apiKey = process.env.HELIUS_API_KEY;
+  const apiKey = ctx.apiKey ?? process.env.HELIUS_API_KEY;
   if (!apiKey) throw new HttpError(503, "HELIUS_API_KEY is not set on the server. Live endpoints (/scan, /trust, /simulate) require it. Offline endpoints that still work: GET /selftest, POST /analyze (with your own txs), GET /benchmark.");
   const results = await runTrustChecks(apiKey, wallets, {
     maxRisk: typeof body.maxRisk === "number" ? body.maxRisk : undefined,
@@ -446,6 +455,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       allow: false,
       reason: `BLOCKED by pre-trade firewall: ${reasonsStr}`,
       action: "block",
+      tokenCheck: "skipped_base_verdict",
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
       executionTier: "blocked",
@@ -457,23 +467,32 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
       allow: false,
       reason: "HOLD: insufficient historical data or unverified balance to establish trust baseline",
       action: "manual_review",
+      tokenCheck: "skipped_base_verdict",
       riskScore: trustResult.riskScore,
       maxSafeAmountUsd: 0,
       details: { trust: trustResult },
     };
   }
 
+  const hasMint = Boolean(mint && isBase58Address(mint));
+  const hasAmount = copyAmountUsd !== undefined && copyAmountUsd > 0;
+  const tokenCheck: "applied" | "skipped_no_mint" | "skipped_no_amount" = !hasMint
+    ? "skipped_no_mint"
+    : !hasAmount
+    ? "skipped_no_amount"
+    : "applied";
+
   let simRes: any;
-  if (copyAmountUsd !== undefined && copyAmountUsd > 0) {
+  if (hasAmount) {
     let mintRisk = null;
-    if (mint && isBase58Address(mint)) {
+    if (hasMint) {
       try {
-        mintRisk = await fetchMintMetadata(mint, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
+        mintRisk = await fetchMintMetadata(mint!, { apiKey, rpcUrl: ctx.rpcUrl, store: ctx.store });
       } catch {}
     }
     simRes = simulatePayment({
       wallet: targetWallet as string,
-      amountUsd: copyAmountUsd,
+      amountUsd: copyAmountUsd!,
       balances: trustResult.balances ?? { sol: 0, usdc: 0, usdt: 0 },
       solPrice: trustResult.solPrice,
       riskScore: trustResult.riskScore,
@@ -495,6 +514,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         allow: false,
         reason: simRes.recommendation || `BLOCKED: simulated payment exceeds risk capacity (${(simRes.decision as any)?.reasons?.join("; ") || "unacceptable risk"})`,
         action: "block",
+        tokenCheck,
         riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
         maxSafeAmountUsd: 0,
         executionTier: "blocked",
@@ -510,6 +530,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         allow: true,
         reason: `THROTTLED: ${simRes.recommendation || "payment permitted up to tiered limit"}`,
         action: "throttle",
+        tokenCheck,
         riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
         maxSafeAmountUsd: maxSafe,
         executionTier: simRes.executionTier ?? "guarded",
@@ -524,6 +545,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
         allow: false,
         reason: simRes.recommendation || `HOLD: simulated payment cannot be safely executed as requested`,
         action: "manual_review",
+        tokenCheck,
         riskScore: simRes.projectedRiskScore ?? trustResult.riskScore,
         maxSafeAmountUsd: (simRes.decision as any)?.suggestedLimitUsd ?? (simRes.decision as any)?.maxPaymentUsd ?? 0,
         executionTier: simRes.executionTier ?? "standard",
@@ -539,6 +561,7 @@ async function toolGateCopy(body: Record<string, unknown>, ctx: RequestContext =
     allow: true,
     reason: `VERIFIED_SAFE: risk ${trustResult.riskScore ?? 0} <= ${maxRisk}, liquidity $${trustResult.liquidityUsd} >= $${minLiquidityUsd}${simRes?.executionTier ? ` (Tier: ${simRes.executionTier.toUpperCase()})` : ""}`,
     action: "allow",
+    tokenCheck,
     riskScore: trustResult.riskScore,
     maxSafeAmountUsd: safeMax,
     executionTier: simRes?.executionTier ?? "instant",
@@ -589,7 +612,7 @@ function a2aCard(): Record<string, unknown> {
     description:
       "Pre-flight trust gate for Solana wallets. Given a wallet address it screens the wallet via Wallet Radar (behavioral risk, payment capacity, top-holder concentration, mint toxicity, data freshness) and returns a deterministic safe/hold/unknown verdict with the reasons — so a paying agent can gate a transaction before it commits.",
     url: `${A2A_PUBLIC_URL}/a2a`,
-    version: "0.3.0",
+    version: getVersion(),
     preferredTransport: "JSONRPC",
     capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
     defaultInputModes: ["text"],
@@ -834,10 +857,15 @@ export interface RequestContext {
   }) => Promise<Record<string, unknown>>;
   /**
    * When true (or RADAR_AUTH_HEAVY=1 / RADAR_REQUIRE_AUTH=1 in env), heavy POST
-   * endpoints (/batch, /scan, /trust, /simulate) require the Bearer apiToken to
+   * endpoints (/batch, /scan, /trust, /simulate, /gate-copy) require the Bearer apiToken to
    * prevent DoS and API key exhaustion (Audit 1.3).
    */
   authHeavy?: boolean;
+  /**
+   * When true (or RADAR_PROTECT_READS=1 in env), GET /watch, /alerts, /defense,
+   * and /poll endpoints require the Bearer apiToken.
+   */
+  protectReads?: boolean;
 }
 
 function requireStore(ctx: RequestContext): Store {
@@ -871,7 +899,10 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const authHeavy =
       ctx.authHeavy ??
       (process.env.RADAR_AUTH_HEAVY === "1" || process.env.RADAR_REQUIRE_AUTH === "1");
-    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy)) {
+    const protectReads =
+      ctx.protectReads ??
+      (process.env.RADAR_PROTECT_READS === "1");
+    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy, protectReads)) {
       throw new HttpError(401, "Unauthorized: provide Authorization: Bearer <RADAR_API_TOKEN> (or x-api-token).");
     }
 
@@ -891,10 +922,45 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         recipient: process.env.RADAR_X402_RECIPIENT,
         rpcUrl: ctx.rpcUrl,
         scanHandler: async (wallet: string) => {
-          return await toolTrust({ wallet });
+          return await toolTrust({ wallet }, ctx);
         },
       });
       if (handled) return;
+    }
+
+    // Method constraints for watch/defense/poll routes
+    if (p === "/unwatch" && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for /unwatch. Allowed methods: POST. Hint: use POST /unwatch to remove a wallet.`,
+        { allowed: ["POST"], hint: "use POST /unwatch to remove a wallet" },
+        { "Allow": "POST" }
+      );
+    }
+    if (p === "/poll" && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for /poll. Allowed methods: POST. Hint: use POST /poll to check watchlist for new activity.`,
+        { allowed: ["POST"], hint: "use POST /poll to check watchlist for new activity" },
+        { "Allow": "POST" }
+      );
+    }
+    const defenseClearMatchAny = p.match(/^\/defense\/([^/]+)\/clear$/);
+    if (defenseClearMatchAny && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for ${p}. Allowed methods: POST. Hint: use POST /defense/:wallet/clear to reset defense state to armed.`,
+        { allowed: ["POST"], hint: "use POST /defense/:wallet/clear to reset defense state to armed" },
+        { "Allow": "POST" }
+      );
+    }
+    if (p === "/watch" && method !== "GET" && method !== "POST") {
+      throw new HttpError(
+        405,
+        `Method ${method} not allowed for /watch. Allowed methods: GET, POST. Hint: use POST /unwatch to remove a wallet.`,
+        { allowed: ["GET", "POST"], hint: "use POST /unwatch to remove a wallet" },
+        { "Allow": "GET, POST" }
+      );
     }
 
     if (method === "GET") {
@@ -1001,7 +1067,13 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (p === "/watch") {
         const store = requireStore(ctx);
         const wallet = body.wallet;
-        if (!isBase58Address(wallet)) throw new HttpError(400, "body.wallet must be a Solana base58 address.");
+        if (!isBase58Address(wallet)) {
+          throw new HttpError(
+            400,
+            'Invalid body for POST /watch: expected {"wallet":"<base58>","name":"optional"}',
+            { expected: { wallet: "<base58>", name: "optional" } }
+          );
+        }
         store.addWallet(wallet);
         sendJson(res, 200, { ok: true, wallet, watching: store.listWallets() }, origin);
         return;
@@ -1088,7 +1160,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     throw new HttpError(405, `method ${method} not allowed for ${p}`);
   } catch (err) {
     if (err instanceof HttpError) {
-      sendJson(res, err.status, { error: err.message }, origin);
+      if (err.headers) {
+        for (const [k, v] of Object.entries(err.headers)) {
+          res.setHeader(k, v);
+        }
+      }
+      sendJson(res, err.status, { error: err.message, ...(err.extra ?? {}) }, origin);
     } else {
       if (process.env.RADAR_DEBUG === "1") {
         console.error("[http-server] unhandled error:", err);
@@ -1214,11 +1291,24 @@ export interface ServerOptions {
   }) => Promise<Record<string, unknown>>;
   /** Shared API token for mutating endpoints (env RADAR_API_TOKEN if omitted). */
   apiToken?: string;
+  /** When true, heavy POST endpoints require apiToken. */
+  authHeavy?: boolean;
+  /** When true, GET /watch, /alerts, /defense, /poll require apiToken. */
+  protectReads?: boolean;
+  /** Custom rate limit per min for live Helius endpoints (default 30 from RADAR_LIVE_RATE_LIMIT_PER_MIN). */
+  liveRateLimitPerMin?: number;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
   const limit = options.rateLimitPerMin ?? Number(process.env.RADAR_RATE_LIMIT_PER_MIN ?? 120);
   const rateLimiter = limit > 0 ? createRateLimiter(limit) : null;
+  const defaultLiveLimit = Number(process.env.RADAR_LIVE_RATE_LIMIT_PER_MIN ?? 30);
+  const liveLimit = options.liveRateLimitPerMin ??
+    (options.rateLimitPerMin !== undefined
+      ? (options.rateLimitPerMin === 0 ? 0 : Math.max(defaultLiveLimit, options.rateLimitPerMin))
+      : defaultLiveLimit);
+  const liveRateLimiter = liveLimit > 0 ? createRateLimiter(liveLimit) : null;
+
   const ctx: RequestContext = {
     store: options.store,
     sink: options.sink,
@@ -1230,6 +1320,8 @@ export function createServer(options: ServerOptions = {}): http.Server {
     fetchPrices: options.fetchPrices,
     fetchMintRisk: options.fetchMintRisk,
     hookBridge: options.hookBridge,
+    authHeavy: options.authHeavy,
+    protectReads: options.protectReads,
   };
   const server = http.createServer((req, res) => {
     const rawUrl = req.url ?? "/";
@@ -1239,6 +1331,20 @@ export function createServer(options: ServerOptions = {}): http.Server {
     if (rateLimiter && !isExempt) {
       const ip = clientIp(req);
       const rl = rateLimiter.check(ip);
+      if (!rl.ok) {
+        res.writeHead(429, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": String(rl.retryAfterSec ?? 60),
+          ...corsHeaders(reqOrigin),
+        });
+        res.end(JSON.stringify({ error: "Too Many Requests", retryAfterSec: rl.retryAfterSec ?? 60 }));
+        return;
+      }
+    }
+    const isLiveHelius = LIVE_HELIUS_PATHS.has(pathname);
+    if (liveRateLimiter && isLiveHelius && !isExempt) {
+      const ip = clientIp(req);
+      const rl = liveRateLimiter.check(ip);
       if (!rl.ok) {
         res.writeHead(429, {
           "Content-Type": "application/json; charset=utf-8",

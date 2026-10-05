@@ -298,6 +298,9 @@ export async function runTrustCheck(
   wallet: string,
   opts: TrustCheckOptions = {},
 ): Promise<TrustResult> {
+  if (!isValidBase58(wallet)) {
+    throw new Error(`wallet must be a Solana base58 address (32-44 characters): got "${wallet}"`);
+  }
   const windowDays = opts.windowDays ?? TRUST_DEFAULTS.windowDays;
   const generatedAt = Math.floor(Date.now() / 1000);
   const windowStart = generatedAt - windowDays * 86_400;
@@ -471,6 +474,11 @@ export async function runTrustChecks(
   wallets: string[],
   opts: TrustCheckOptions = {},
 ): Promise<TrustResult[]> {
+  for (const w of wallets) {
+    if (!isValidBase58(w)) {
+      throw new Error(`wallet must be a Solana base58 address (32-44 characters): got "${w}"`);
+    }
+  }
   const out: TrustResult[] = [];
   for (const wallet of wallets) {
     try {

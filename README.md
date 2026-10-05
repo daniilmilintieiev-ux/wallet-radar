@@ -329,7 +329,7 @@ npm run radar -- trust <wallet-address> --max-risk 30 --min-liquidity 50
 
 `trust` answers the question every copy-trader and agent asks before copying or paying an unverified wallet: **"is it safe to trust this wallet right now?"**
 
-It combines the behavioral risk score (9 rules over the recent window; `TOXIC_MINT` is one of the 9 but never actually fires on this specific path, since `runTrustCheck` does not fetch or pass mint risk data, `src/trust.ts:329`) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
+It combines the behavioral risk score (9 behavioral rules plus a funding-source check (TAINTED_FUNDING) and supporting signals over the recent window; `TOXIC_MINT` is one of the 9 but never actually fires on this specific path, since `runTrustCheck` does not fetch or pass mint risk data, `src/trust.ts:329`) with payment capacity (SOL + USDC/USDT liquidity in USD) into one deterministic verdict:
 - `safe`: risk under max and liquidity over min threshold.
 - `hold`: data available, but risk exceeds max or liquidity is below minimum.
 - `unknown`: insufficient historical data to safely evaluate (conservative fail-safe).

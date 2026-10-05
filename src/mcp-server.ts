@@ -6,17 +6,9 @@ import { fileURLToPath } from "node:url";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { buildServer, MCP_TOOL_NAMES } from "./mcp.js";
 import { Store } from "./store.js";
+import { getVersion } from "./version.js";
 
-export function getVersion(): string {
-  try {
-    const pkgPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../package.json");
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-      if (pkg.version) return String(pkg.version);
-    }
-  } catch {}
-  return "1.0.0";
-}
+export { getVersion };
 
 export interface McpHealth {
   ok: boolean;
