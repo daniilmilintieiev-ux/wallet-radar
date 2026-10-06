@@ -120,7 +120,15 @@ export interface RadarClientConfig {
   commitment?: "confirmed" | "finalized";
   /** Pause between 402 retries in milliseconds (default 2000) */
   retryDelayMs?: number;
+  /**
+   * Hard ceiling (in USDC) the client will pay for a single request, whatever the
+   * server's 402 response asks for. Default 0.05 (server prices are 0.001-0.005).
+   */
+  maxPaymentUsdc?: number;
 }
+
+/** Default per-request payment ceiling in USDC (secaudit: never trust server-quoted amounts). */
+export const DEFAULT_MAX_PAYMENT_USDC = 0.05;
 
 export interface RadarClientScanResult {
   wallet: string;
@@ -275,11 +283,13 @@ export class RadarClient {
   readonly offlineFallback: boolean;
   readonly commitment: "confirmed" | "finalized";
   readonly retryDelayMs: number;
+  readonly maxPaymentUsdc: number;
 
   constructor(config: RadarClientConfig = {}) {
     this.offlineFallback = config.offlineFallback ?? false;
     this.commitment = config.commitment ?? "confirmed";
     this.retryDelayMs = config.retryDelayMs ?? 2000;
+    this.maxPaymentUsdc = config.maxPaymentUsdc ?? DEFAULT_MAX_PAYMENT_USDC;
     const rawUrl = config.baseUrl || process.env.RADAR_API_URL || "http://127.0.0.1:4020";
     this.baseUrl = rawUrl.replace(/\/+$/, "");
     if (!this.baseUrl.startsWith("http://") && !this.baseUrl.startsWith("https://")) {
@@ -309,7 +319,34 @@ export class RadarClient {
     this.paymentSigner = config.paymentSigner;
   }
 
+  /**
+   * The 402 terms come from the remote server (or anything between us and it), so
+   * they are untrusted input to a function that moves the payer's funds. Refuse
+   * anything that is not a small, finite USDC payment to the pinned recipient.
+   */
+  private assertPaymentTermsAcceptable(requirement: PaymentRequirementDetails): void {
+    const { amount, recipient, token, mint } = requirement;
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      throw new Error(`Refusing to pay: invalid amount requested by server (${String(amount)})`);
+    }
+    if (amount > this.maxPaymentUsdc) {
+      throw new Error(
+        `Refusing to pay: server requested ${amount} USDC, which exceeds maxPaymentUsdc (${this.maxPaymentUsdc})`,
+      );
+    }
+    if (this.recipient && recipient !== this.recipient) {
+      throw new Error(`Refusing to pay: server-supplied recipient ${recipient} is not the configured recipient`);
+    }
+    if (typeof token === "string" && token.toUpperCase() !== "USDC") {
+      throw new Error(`Refusing to pay: unexpected payment currency ${token} (only USDC is allowed)`);
+    }
+    if (mint !== undefined && mint !== USDC_MINT) {
+      throw new Error(`Refusing to pay: unexpected payment mint ${mint} (only USDC is allowed)`);
+    }
+  }
+
   private async resolvePaymentProof(requirement: PaymentRequirementDetails): Promise<PaymentProof> {
+    this.assertPaymentTermsAcceptable(requirement);
     if (this.paymentSigner) {
       return await this.paymentSigner(requirement);
     }
