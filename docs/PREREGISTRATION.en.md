@@ -619,3 +619,12 @@ Collection ran under shadow-v3, outcome computation under outcomes-v1. The chang
 
 ### 21d. Computation schedule
 The outcome-computation timer was extended with runs at 09:00, 15:00 and 21:00 UTC (reason: GeckoTerminal rate limiting, HTTP 429). The outcomes-v1 code was not changed.
+
+### 21e. Observations on the collected data
+
+Recorded after collection stopped; outcome values were not viewed.
+1. Collection stopped at 2026-10-06T18:00:01Z. The database holds 605 records (first 2026-09-30T09:11:08Z, last 2026-10-06T17:46:02Z). The database copy was verified: the checksum matched on the board and on the analysis computer, integrity_check ok, 605 records.
+2. 138 records have no buyer (NO_BUYER); 467 have a resolved buyer.
+3. 8 records have a seen_at - t gap greater than 1000 minutes (ids 66, 155, 266, 272, 300, 337, 445, 484; t falls in 2024-2025). They are excluded under §18b; the cause has not been established.
+4. In the pool_candidates by-hour table the 03:00 UTC hour has one fewer selected pool for each night since 2026-10-03 (4 pools of 605 in total). The cause has not been established: outcome computation was enabled only on 2026-10-04, so it does not explain the night of 2026-10-03. The deviation depends on time of day, not on outcomes.
+5. The outcome-computation timer was restarted at about 2026-10-06T19:18Z (last timer trigger 19:18:02Z) when additional runs were added; the outcomes-v1 code was not changed.
