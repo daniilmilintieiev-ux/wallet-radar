@@ -103,11 +103,15 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 /**
- * API auth (opt-in via RADAR_API_TOKEN): only the mutating watch/defense
+ * API auth (RADAR_API_TOKEN): only the mutating watch/defense
  * endpoints are gated; read endpoints stay open.
  * When authHeavy is enabled (Audit 1.3), resource-intensive endpoints
  * (/batch, /scan, /trust, /simulate, /gate-copy) also require authorization.
- * Returns true when the request is allowed, false when it must be rejected with 401.
+ * Fails closed: with no token configured, mutating routes are refused (403)
+ * unless the operator explicitly opts in (allowUnauthenticatedMutations /
+ * RADAR_ALLOW_UNAUTH_MUTATIONS=1).
+ * Returns "ok" when allowed, "unauthorized" (401) for a bad/missing token and
+ * "disabled" (403) when mutating routes are off because no token is configured.
  */
 function authorizeMutating(
   method: string,
@@ -116,11 +120,14 @@ function authorizeMutating(
   token: string | undefined,
   authHeavy: boolean = false,
   protectReads: boolean = false,
-): boolean {
-  if (!token) return true;
+  allowUnauthenticatedMutations: boolean = false,
+): "ok" | "unauthorized" | "disabled" {
   const isMutating =
     method === "POST" &&
     (p === "/watch" || p === "/unwatch" || p === "/poll" || /^\/defense\/[^/]+\/clear$/.test(p));
+  if (!token) {
+    return isMutating && !allowUnauthenticatedMutations ? "disabled" : "ok";
+  }
   const isHeavy =
     authHeavy &&
     method === "POST" &&
@@ -130,13 +137,15 @@ function authorizeMutating(
     method === "GET" &&
     (p === "/watch" || p === "/alerts" || p === "/defense" || p.startsWith("/defense/") || p === "/poll");
 
-  if (!isMutating && !isHeavy && !isProtectedRead) return true;
+  if (!isMutating && !isHeavy && !isProtectedRead) return "ok";
   const header = req.headers.authorization;
   const provided =
     typeof header === "string" && header.startsWith("Bearer ")
       ? header.slice("Bearer ".length).trim()
       : (req.headers["x-api-token"] as string | undefined);
-  return typeof provided === "string" && provided.length > 0 && timingSafeEqualStr(token, provided);
+  return typeof provided === "string" && provided.length > 0 && timingSafeEqualStr(token, provided)
+    ? "ok"
+    : "unauthorized";
 }
 
 async function readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<string> {
@@ -882,6 +891,12 @@ export interface RequestContext {
   apiKey?: string;
   /** Shared API token gating mutating endpoints (env RADAR_API_TOKEN if omitted). */
   apiToken?: string;
+  /**
+   * Opt-in (or env RADAR_ALLOW_UNAUTH_MUTATIONS=1): serve the mutating routes
+   * (/watch, /unwatch, /poll, /defense/:wallet/clear) with no apiToken set.
+   * Default is fail-closed (403).
+   */
+  allowUnauthenticatedMutations?: boolean;
   rpcUrl?: string;
   oracleClient?: ZKOracleClient;
   fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
@@ -947,7 +962,24 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const protectReads =
       ctx.protectReads ??
       (process.env.RADAR_PROTECT_READS === "1");
-    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy, protectReads)) {
+    const allowUnauth =
+      ctx.allowUnauthenticatedMutations ?? process.env.RADAR_ALLOW_UNAUTH_MUTATIONS === "1";
+    const authResult = authorizeMutating(
+      method,
+      p,
+      req,
+      ctx.apiToken ?? process.env.RADAR_API_TOKEN,
+      authHeavy,
+      protectReads,
+      allowUnauth,
+    );
+    if (authResult === "disabled") {
+      throw new HttpError(
+        403,
+        "Forbidden: mutating endpoints are disabled because RADAR_API_TOKEN is not set. Set a token (or RADAR_ALLOW_UNAUTH_MUTATIONS=1 to opt in explicitly).",
+      );
+    }
+    if (authResult === "unauthorized") {
       throw new HttpError(401, "Unauthorized: provide Authorization: Bearer <RADAR_API_TOKEN> (or x-api-token).");
     }
 
@@ -1344,6 +1376,8 @@ export interface ServerOptions {
   protectReads?: boolean;
   /** Custom rate limit per min for live Helius endpoints (default 30 from RADAR_LIVE_RATE_LIMIT_PER_MIN). */
   liveRateLimitPerMin?: number;
+  /** Explicit opt-in to serve mutating endpoints without a token (see RequestContext). */
+  allowUnauthenticatedMutations?: boolean;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
@@ -1360,6 +1394,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
     sink: options.sink,
     apiKey: options.apiKey,
     apiToken: options.apiToken,
+    allowUnauthenticatedMutations: options.allowUnauthenticatedMutations,
     rpcUrl: options.rpcUrl,
     oracleClient: options.oracleClient,
     fetchTxs: options.fetchTxs,
@@ -1488,6 +1523,10 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
 
   if (process.env.RADAR_API_TOKEN) {
     console.log(`${SERVICE} API auth enabled — mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) require a Bearer token.`);
+  } else if (process.env.RADAR_ALLOW_UNAUTH_MUTATIONS === "1") {
+    console.warn(`${SERVICE} WARNING: RADAR_ALLOW_UNAUTH_MUTATIONS=1 and no RADAR_API_TOKEN — mutating endpoints are open to any client that can reach the port.`);
+  } else {
+    console.log(`${SERVICE} mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) are disabled (403): set RADAR_API_TOKEN to enable them.`);
   }
 
   // Audit 2.3: oracle→hook bridge. When RADAR_HOOK_MINT + RADAR_HOOK_KEYPAIR

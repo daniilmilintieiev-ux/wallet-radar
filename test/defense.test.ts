@@ -382,7 +382,7 @@ describe("defense in the watch loop (autonomous)", () => {
 // offline tool responses.
 // ---------------------------------------------------------------------------
 async function withServer(store: Store, fn: (base: string) => Promise<void>): Promise<void> {
-  const server = createServer({ store, rateLimitPerMin: 0 });
+  const server = createServer({ store, rateLimitPerMin: 0, allowUnauthenticatedMutations: true });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const addr = server.address();
   if (typeof addr === "string" || addr === null) throw new Error("no server address");

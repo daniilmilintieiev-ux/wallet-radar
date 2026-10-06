@@ -213,7 +213,7 @@ export function validateConfig(
   }
   if (watchEnabled && !env.RADAR_API_TOKEN?.trim()) {
     warnings.push(
-      "RADAR_WATCH=1 is enabled but RADAR_API_TOKEN is not set — the mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) are open to any client that can reach the port",
+      "RADAR_WATCH=1 is enabled but RADAR_API_TOKEN is not set — the mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) are disabled (403) until a token is set, unless RADAR_ALLOW_UNAUTH_MUTATIONS=1 explicitly opts in",
     );
   }
 
