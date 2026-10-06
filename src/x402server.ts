@@ -932,9 +932,13 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
           recentBlockhash: options.recentBlockhash,
           scanHandler,
           verifyPayment: async (signature: string, payer: string, targetWallet: string) => {
-            if (store.hasSettledPayment(signature)) {
+            // SECAUDIT-M2: same replay guard as the main paid flow: in-flight set plus
+            // the settled ledger, and the INSERT result decides who wins a race.
+            if (inFlightPayments.has(signature) || store.hasSettledPayment(signature)) {
               return { ok: false, reason: "Payment signature already settled (replay rejected)" };
             }
+            inFlightPayments.add(signature);
+            try {
             const activeRecipient = recipient || options.recipient || process.env.RADAR_X402_RECIPIENT;
             if (!activeRecipient) {
               return { ok: false, reason: "Service recipient unconfigured" };
@@ -947,14 +951,18 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               if (!verRes.valid) {
                 return { ok: false, reason: verRes.error || "Payment verification failed" };
               }
-              store.recordSettledPayment({
+              if (
+                !store.recordSettledPayment({
                 signature,
                 payer: verRes.payer || payer,
                 recipient: activeRecipient,
                 amount: verRes.amount ?? 0.005,
                 endpoint: "/api/actions/radar-scan/complete",
                 wallet: targetWallet,
-              });
+              })
+              ) {
+                return { ok: false, reason: "Payment signature already settled (replay rejected)" };
+              }
               return { ok: true };
             }
             const rpcTarget =
@@ -974,14 +982,18 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               if (!verRes.valid) {
                 return { ok: false, reason: verRes.error || "Payment verification failed" };
               }
-              store.recordSettledPayment({
+              if (
+                !store.recordSettledPayment({
                 signature,
                 payer: verRes.payer || payer,
                 recipient: activeRecipient,
                 amount: verRes.amount ?? 0.005,
                 endpoint: "/api/actions/radar-scan/complete",
                 wallet: targetWallet,
-              });
+              })
+              ) {
+                return { ok: false, reason: "Payment signature already settled (replay rejected)" };
+              }
               return { ok: true };
             }
             // Audit 1.3: Prevent free scan exploit in production. Reject payment if no RPC verification target is configured.
@@ -991,17 +1003,24 @@ export function createX402Server(options: X402ServerOptions = {}): http.Server {
               process.env.NODE_ENV === "test" ||
               Boolean(process.env.NODE_TEST_CONTEXT);
             if (isMockEnv) {
-              store.recordSettledPayment({
+              if (
+                !store.recordSettledPayment({
                 signature,
                 payer,
                 recipient: activeRecipient,
                 amount: 0.005,
                 endpoint: "/api/actions/radar-scan/complete",
                 wallet: targetWallet,
-              });
+              })
+              ) {
+                return { ok: false, reason: "Payment signature already settled (replay rejected)" };
+              }
               return { ok: true };
             }
             return { ok: false, reason: "Payment RPC verification unavailable (no RPC endpoint configured)" };
+            } finally {
+              inFlightPayments.delete(signature);
+            }
           },
         });
         if (handled) return;
