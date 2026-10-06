@@ -4,7 +4,7 @@
 
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
 
-[![Tests](https://img.shields.io/badge/tests-751%20passing%20%7C%2030%20suites-3fb950.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/test)
+[![Tests](https://img.shields.io/badge/tests-791%20passing-3fb950.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/test)
 [![Security Hardening](https://img.shields.io/badge/security%20hardening-11%20internal%20revisions-blue.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/blob/main/SECURITY.md)
 [![Devnet Program](https://img.shields.io/badge/solana%20devnet-wvN1ky...HwoV-blueviolet.svg)](https://explorer.solana.com/address/wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV?cluster=devnet)
 [![ZK Compression](https://img.shields.io/badge/light%20protocol-~400x%20less%20locked--up%20rent-ffb000.svg)](https://github.com/daniilmilintieiev-ux/wallet-radar/tree/main/src/oracle)
@@ -313,10 +313,10 @@ npm install
 npm run build
 ```
 
-### 2. Verify System Integrity (751 Tests)
+### 2. Verify System Integrity (791 passing, 5 documented known gaps (todo), 46 suites)
 
 ```bash
-# Run the complete test suite (30 suites, 0 failures)
+# Run the complete test suite (791 passing, 5 documented known gaps (todo), 46 suites)
 npm test
 
 # Run offline smoke selftest (no network or API keys required)
@@ -523,7 +523,7 @@ In strict adherence to Colosseum hackathon rules and open-source transparency, h
 - **On-Chain Devnet Deployment**: Compiled Transfer Hook to SBF, deployed to Solana Devnet (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`), and verified live revert on flagged accounts (`886579b`, `56d3caa`, `d8f9a92`).
 - **11 Security Audit Revisions**: Comprehensive hardening against front-running, CPI injection, account hijacking, and double-spending (`990bb36`, `93d32f6`, `a4cf128`).
 - **Trust Proof API**: Launched independently verifiable `/trust-proof` cryptographic bundle (`7707e7d`).
-- **Full Test Suite Expansion**: Expanded to **750+ automated tests across 30 test suites (100% pass)**.
+- **Full Test Suite Expansion**: Expanded to **791 passing, 5 documented known gaps (todo), 46 suites**.
 
 ---
 
@@ -586,7 +586,7 @@ Full list with file:line — [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md). In br
 
 Five reproducible commands (each verified in stages 9B–9E):
 
-1. **Full test suite**: `npm test` → 751/751, 30 suites.
+1. **Full test suite**: `npm test` → 791 passing, 5 documented known gaps (todo), 46 suites.
 2. **Deterministic benchmark**: `npm run radar -- benchmark` → 24/24 on a versioned synthetic fixture set (this is a regression test on the rules themselves, not an independent empirical accuracy benchmark on real data — see "Status of independent evaluation").
 3. **Offline self-test**: `npm run radar -- selftest` → no network or API keys, runs the full detection pipeline on a synthetic wallet.
 4. **Deterministic replay**: `node dist/src/cli.js replay <wallet> --since <unix-ts> --until <unix-ts>` → replays the detector over a historical window of a real wallet; identical input data always yields an identical verdict.

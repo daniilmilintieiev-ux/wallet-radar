@@ -22,8 +22,8 @@ try {
 
 // 1. Get test counts from npm test dynamically
 console.log('Running npm test to retrieve live test metrics...');
-let passCount = '751';
-let totalCount = '751';
+let passCount = '791';
+let totalCount = '791';
 try {
   const testOutput = execSync('npm test', { cwd: REPO_ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
   const passMatch = testOutput.match(/pass\s+(\d+)/);
@@ -40,7 +40,7 @@ try {
   console.log(`Parsed test output from exit: ${passCount}/${totalCount}`);
 }
 
-const testPassingChipText = `${passCount}/${totalCount} Tests Passing`;
+const testPassingChipText = `${passCount} Tests Passing`;
 
 // Read logo SVG
 const lockupSvgRaw = fs.readFileSync(path.join(BRAND_DIR, 'lockup-horizontal.svg'), 'utf-8');

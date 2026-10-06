@@ -221,7 +221,7 @@ def render_slide_4(lang="ru"):
         ("N/A", "WALK-FORWARD ACCURACY", "Retracted -- independent validation not yet complete", TEXT_MUTED),
         ("N/A", "FALSE BLOCKS ON DEX", "Retracted -- independent validation not yet complete", TEXT_MUTED),
         ("~150 MB", "EDGE NODE RAM FOOTPRINT (RSS, stage 9C measurement)", "Physical Orange Pi (ARM64, Armbian) daemon, continuous monitoring", AMBER),
-        ("751", "PASSING UNIT TESTS", "0 failures · CI regression suite (not an accuracy claim)", GREEN)
+        ("791", "PASSING UNIT TESTS", "5 documented known gaps (todo), 46 suites · CI regression suite", GREEN)
     ]
 
     for i, (val, lbl, subtext, col) in enumerate(stats):

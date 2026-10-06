@@ -34,7 +34,7 @@ a separate, future change.
   to avoid breaking `test/regime.test.ts`, which also asserts against
   `src/http-server.ts`/`src/mcp.ts` text that stage 9D is not permitted to
   change).
-- **Status:** fixed in branch fixes-a (commit bb1e9bf), not deployed.
+- **Status:** fixed in main (originally branch fixes-a, commit bb1e9bf), not yet deployed to the public servers.
 
 ## DORMANT_ACTIVE observation: the default 7-day trust window may itself manufacture the "dormancy" gap
 
@@ -64,7 +64,7 @@ a separate, future change.
   *any* continuously-active wallet, not just a genuinely dormant one — but
   this has only been reproduced offline, against a synthetic fixture, this
   stage. It has not been checked against real wallet histories.
-- **Status:** fixed in branch `fixes-b` (commit bcdcef1), not deployed.
+- **Status:** fixed in main (originally branch `fixes-b`, commit bcdcef1), not yet deployed to the public servers.
   Added `RadarConfig.dormantMeasure` ("newest" default, unchanged; "first" —
   measures the gap to the evaluated batch's EARLIEST tx instead) and wired
   `"first"` into `trust.ts`'s one `detectAnomalies` call specifically. The
@@ -95,7 +95,7 @@ a separate, future change.
   `TAINTED_FUNDING` will never fire for it.
 - Documented next to the rule's description in README.md (§"9 Deterministic
   Anomaly Rules", the `TAINTED_FUNDING` paragraph).
-- **Status:** fixed in branch `fixes-b` (commit 54a8c6f), not deployed.
+- **Status:** fixed in main (originally branch `fixes-b`, commit 54a8c6f), not yet deployed to the public servers.
   `checkFundingSource` now scans every incoming native transfer in the
   supplied history, firing on the earliest one matching `KNOWN_EXPLOITERS`
   (unmodified) rather than stopping at the first incoming transfer found
@@ -140,7 +140,7 @@ a separate, future change.
   (confirmed via `grep -n "gate-copy" src/x402server.ts` — no match) — so
   it is both unauthenticated-by-default and free, while still incurring
   real Helius API cost.
-- **Status:** fixed in branch fixes-a (commit f816910), not deployed.
+- **Status:** fixed in main (originally branch fixes-a, commit f816910), not yet deployed to the public servers.
 - Update (branch `secaudit2`): the first bullet is stale for the mutating routes. With no `RADAR_API_TOKEN` they now answer 403 instead of being open; see H3 in the "Security audit, branch `secaudit2`" section at the end of this file.
 
 ## `fetchMintMetadata`/`getTokenLargestAccounts` failure silently skips TOXIC_MINT for that mint (fails open)
@@ -153,7 +153,7 @@ a separate, future change.
   // Fetch failed or no metadata: skip rule for this mint` — a mint whose
   metadata fetch failed receives no TOXIC_MINT evaluation at all,
   regardless of its actual risk.
-- **Status:** fixed in branch `fixes-b` (commit 69c1120), not deployed, for
+- **Status:** fixed in main (originally branch `fixes-b`, commit 69c1120), not yet deployed to the public servers, for
   `/gate-copy` and `radar_gate_copy` specifically (the single-mint
   `fetchMintMetadata` lookup these use, not `fetchSwapMintRisk`'s
   batch-map path used by `/scan`/`/trust`, which this entry's `analyzer.ts:780`
@@ -178,7 +178,7 @@ a separate, future change.
   comparing raw token quantities restricted to `MAJOR_MINTS` (SOL/USDC/
   USDT) only (`analyzer.ts:661-681`) — non-major mints get no LARGE_SWAP
   detection at all during a price-feed outage, not stale hardcoded prices.
-- **Status:** fixed in branch `fixes-b` (commit 3feeaba), not deployed.
+- **Status:** fixed in main (originally branch `fixes-b`, commit 3feeaba), not yet deployed to the public servers.
   `BLUECHIP_FALLBACK_PRICES` is explicitly commented as dead-in-production
   (kept only for `scripts/audit/*.mjs`'s offline historical replay, which
   legitimately needs a frozen, reproducible price set — not wired into any
@@ -201,7 +201,7 @@ a separate, future change.
   halt, `transferHook` — arbitrary on-transfer logic, `defaultAccountState`
   — new accounts start frozen) are not read or evaluated by TOXIC_MINT at
   all.
-- **Status:** fixed in branch `fixes-b` (commit 73395bc), not deployed, for
+- **Status:** fixed in main (originally branch `fixes-b`, commit 73395bc), not yet deployed to the public servers, for
   the RPC `getAccountInfo` jsonParsed fallback path specifically (the
   Helius DAS `getAsset` path, `parseDasAssetResponse`, is NOT extended —
   its Token-2022 extensions jsonParsed shape was not independently
@@ -236,7 +236,7 @@ a separate, future change.
   prevents a duplicate database row, not duplicate delivery.
 - Confirmed by reading the code; not exercised under real multi-process
   concurrency (out of scope, no network/process orchestration this stage).
-- **Status:** fixed in branch fixes-a (commit 0e50956), not deployed.
+- **Status:** fixed in main (originally branch fixes-a, commit 0e50956), not yet deployed to the public servers.
 
 ## Payment-verification error message may include `err.message`; whether it can contain the RPC URL (with the API key) is unconfirmed
 
@@ -251,7 +251,7 @@ a separate, future change.
   request URL (and thus the embedded key) — NOT VERIFIED: confirming this
   requires triggering a real network failure against a key-bearing URL,
   which this stage's rules do not permit.
-- **Status:** fixed in branch fixes-a (commit 27145ac), not deployed.
+- **Status:** fixed in main (originally branch fixes-a, commit 27145ac), not yet deployed to the public servers.
 
 ## Transfer Hook: single program upgrade authority, single per-mint config authority, no explicit risk_score bound
 
@@ -295,7 +295,7 @@ a separate, future change.
      `riskScore` (`:68`).
   5. `test/defense.test.ts:62` — "escalates to gated at risk >= gated
      threshold" — same pattern with `DEFENSE_THRESHOLDS.gated` (`:63`).
-- **Status:** fixed in branch fixes-a (commit e0dc8d9), not deployed.
+- **Status:** fixed in main (originally branch fixes-a, commit e0dc8d9), not yet deployed to the public servers.
 
 ## `npm audit`: 12 known vulnerabilities in the dependency tree (9 moderate, 3 high)
 
@@ -405,7 +405,7 @@ responses, user input) through those import sites:
 - HSTS: `Strict-Transport-Security` header is nowhere set in the application (`grep -rn "Strict-Transport-Security" src/` — zero matches); whether it is enabled at the Cloudflare level — per user observation, not enabled on the public server.
 - CORS: `Access-Control-Allow-Origin: *` confirmed by reading code — `src/config.ts:71`, active when `RADAR_CORS_ORIGINS` is not set.
 - Revenue via `/economics` on the public server at the time of user check: 0.005 USDC (single payment) — user observation, not measured by this session.
-- **Status:** fixed in branch fixes-a (commit f816910), not deployed. See
+- **Status:** fixed in main (originally branch fixes-a, commit f816910), not yet deployed to the public servers. See
   `docs/DEPLOY-CHECKLIST.md` (added in branch `fixes-b`) for the full set of
   env vars and verification steps for a public-facing deployment, including
   the explicit list of routes (`/dashboard`, `/economics`, `/trust-proof`,
@@ -419,7 +419,7 @@ responses, user input) through those import sites:
 - (a) Sole payment in the recipient history of `F6wWPy4c3fXTJDqU19Nax8FhQumeMcsSVpD2YwxLpBNR`: 0.005 USDC, 2026-09-18, payer `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (labeled "x402 Payer" in `src/daily-digest.ts:24` — line number verified via `git grep -n "x402 Payer" -- src/daily-digest.ts`, matches). The payment confirms that the payment pipeline (proof → verify → settle) executes on a real transaction; this is **not** external revenue — sole known payment across all time, from the operator's own demo wallet (per project notes).
 - (b) Upgrade authority of the Transfer Hook program on devnet (`4bDZPMF9j3Jm6rUVofT3be6JH67C1tRFBff9MnrsE2EY`) — regular key: `owner` = System Program, `space` = 0, no indication of multisig (Squads, etc.). Not re-verified in this session (network access was not performed in this stage) — source: report 11E.
 - (c) Typo in address: `src/daily-digest.ts:24` contains `"3fNNuJcvV2bYmrh7XjTq7u22C7V6F2qXq8pE4jM5eYh"` — 43 characters. Directly verified in this session (base58 decoding): this string decodes to **31 bytes**, not 32 as required for a valid Solana address; the actual payer address (44 characters, decodes to 32 bytes) is `3fNNY9iEvzmfqt4gTdEmvRKNa9G3mKkHq523uS5t5eYh` (see item (a) above). The strings differ, though visually similar (shared prefix `3fNN`, shared suffix `5eYh`). The same invalid address in the `radar-watch` watchlist produces a Helius 400 error every 5 minutes (per report 11E, not reproduced in this session — network was not used).
-- **Status:** fixed in branch fixes-a (commit 4478183), not deployed. Branch
+- **Status:** fixed in main (originally branch fixes-a, commit 4478183), not yet deployed to the public servers. Branch
   `fixes-b` (commit 295cb24) separately closes the general class of this bug:
   `isValidBase58` (the check used everywhere before `fixes-b`) only verified
   the base58 alphabet and a 32-44 character length range, so a 43-44
@@ -439,7 +439,7 @@ responses, user input) through those import sites:
   - Server now reads `RADAR_X402_COMMITMENT` ("confirmed" or "finalized", default "confirmed"; invalid values logged with warning and fallback to "confirmed"), and passes `commitment` to `getTransaction`.
   - When RPC returns `null`, server retries up to 3 times with 1-second pause (only if signature matches 86-90 base58 characters; malformed signatures fail immediately without retries) before returning 402 with hint `"Transaction not found on-chain (retry in a few seconds if you just paid)"`.
   - SDK polls `getSignatureStatuses` for up to 20 seconds after transaction submission until desired `commitment` is reached, and retries 402 "not found" responses up to 3 times with 2-second delay.
-- **Status:** fixed in branch fixes-c (commit f888112), not deployed. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`, `test/adversarial.test.ts`).
+- **Status:** fixed in main (originally branch fixes-c, commit f888112), not yet deployed to the public servers. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`, `test/adversarial.test.ts`).
 
 ## POST /analyze and 500: Missing input validation prior to payment and internal error leakage
 
@@ -451,7 +451,7 @@ responses, user input) through those import sites:
   - Handler input errors return HTTP 400; unexpected errors return HTTP 500 `"Internal server error"` without internal details. `isInputError` strictly classifies errors by `status === 400`, `statusCode === 400`, or `name === "ValidationError"` / `InputError"` (no message regex matching).
   - Responses with `"paymentVerified": true` and retry hint guarantee no `"api-key"` or `"http"` leakage.
   - If payment is verified but handler fails, response sets `"paymentVerified": true` and hint `"retry with the same signature within <secondsLeft>s"`, keeping the payment unspent (`settled_payments` not marked) so retrying with a corrected body succeeds without re-paying.
-- **Status:** fixed in branch fixes-c (commit b2a85e1, commit 178ee43), not deployed. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`).
+- **Status:** fixed in main (originally branch fixes-c, commit b2a85e1, commit 178ee43), not yet deployed to the public servers. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`).
 
 ## /economics displays operator test payments rather than external protocol revenue
 
@@ -492,7 +492,7 @@ documented there as `todo` tests.
   `maxPaymentUsdc` (default 0.05), USDC only, recipient must equal the configured `recipient` when one is configured.
 - **Note for operators:** a server price above 0.05 USDC (for example `RADAR_SCAN_PRICE_USDC` raised) is now refused
   by default; the client must pass a higher `maxPaymentUsdc`.
-- **Status:** fixed in branch secaudit2 (commit 48e2a3f), not deployed. Test `test/secaudit-sdk-payment.test.ts`.
+- **Status:** fixed in main (originally branch secaudit2, commit 48e2a3f), not yet deployed to the public servers. Test `test/secaudit-sdk-payment.test.ts`.
 
 ### H2 (high): unauthenticated `/dashboard` and `/api/ledger` caused unbounded upstream work and memory growth
 
@@ -501,7 +501,7 @@ documented there as `todo` tests.
   (`src/oracle/ledger.ts`), keyed by an attacker-chosen string.
 - Reachable by any HTTP client in the default configuration when the dashboard route is served.
 - Fix: base58 validation (HTTP 400) before any query on both routes; `anchorCache` capped at 1000 entries.
-- **Status:** fixed in branch secaudit2 (commit 0e38c15), not deployed. Test `test/secaudit-ledger-dos.test.ts`.
+- **Status:** fixed in main (originally branch secaudit2, commit 0e38c15), not yet deployed to the public servers. Test `test/secaudit-ledger-dos.test.ts`.
 
 ### H3 (high): mutating endpoints were open without `RADAR_API_TOKEN`
 
@@ -514,7 +514,7 @@ documented there as `todo` tests.
   `docs/DEPLOY-CHECKLIST.md` section 2a for the callers found in this repository.
 - Statements elsewhere in this file and in `README.md` that every route is authorized without a token are stale for
   these four routes.
-- **Status:** fixed in branch secaudit2 (commit 306ab78), not deployed. Test `test/secaudit-mutating-auth.test.ts`.
+- **Status:** fixed in main (originally branch secaudit2, commit 306ab78), not yet deployed to the public servers. Test `test/secaudit-mutating-auth.test.ts`.
 
 ### H4 (high, only with non-default configuration): anonymous `POST /scan` triggered operator-signed on-chain writes
 
@@ -526,7 +526,7 @@ documented there as `todo` tests.
 - The paid flow in `src/x402server.ts` is unchanged (the write follows a verified payment). The MCP server is
   stdio-only, so its caller is the local client.
 - The oracle-memo branch shares the gate but has no test (it would need network); the hook-bridge branch is tested.
-- **Status:** fixed in branch secaudit2 (commit 2229619), not deployed. Test `test/secaudit-onchain-gate.test.ts`.
+- **Status:** fixed in main (originally branch secaudit2, commit 2229619), not yet deployed to the public servers. Test `test/secaudit-onchain-gate.test.ts`.
 
 ### M1 (medium; high with `RADAR_WATCH=1`): `/scan` enrolled any wallet in the watch loop
 
@@ -540,7 +540,7 @@ documented there as `todo` tests.
   column added and **every existing row is set to watched=1**, so the current watch list is preserved.
 - **Behaviour change:** `radar scan <wallet>` (CLI) no longer adds the wallet to the watch list; use `radar add`.
   `hasWallet()` still means "a row exists" (used by `radar report` / `radar history`).
-- **Status:** fixed in branch secaudit2 (commit 061d7c7), not deployed. Test `test/secaudit-watched.test.ts`.
+- **Status:** fixed in main (originally branch secaudit2, commit 061d7c7), not yet deployed to the public servers. Test `test/secaudit-watched.test.ts`.
 
 ### M2 (medium): Blink complete route could be replayed concurrently
 
@@ -550,7 +550,7 @@ documented there as `todo` tests.
 - Fix: shares `inFlightPayments` with the main paid flow (released in `finally`) and rejects the loser of the INSERT
   race. Test: 5 concurrent requests with one signature give exactly one 200 (it returned five before the fix).
 - The in-flight set is still per-process (see "x402 replay protection is per-process" above).
-- **Status:** fixed in branch secaudit2 (commit a1dbeb6), not deployed. Test `test/secaudit-blink-replay.test.ts`.
+- **Status:** fixed in main (originally branch secaudit2, commit a1dbeb6), not yet deployed to the public servers. Test `test/secaudit-blink-replay.test.ts`.
 
 ## Found, not fixed
 
