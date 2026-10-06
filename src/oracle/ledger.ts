@@ -526,6 +526,7 @@ export class LightZKOracleClient implements ZKOracleClient {
   readonly oraclePublicKey: string | null;
   private rpc: Rpc | null = null;
   private conn: Connection | null = null;
+  private static readonly ANCHOR_CACHE_MAX = 1000;
   private anchorCache = new Map<string, { records: ScanLedgerRecord[]; expires: number }>();
   private readonly connectionFactory: ((rpcUrl: string) => Connection) | null;
   private readonly jsonRpcFactory: ((method: string, params: unknown[]) => Promise<unknown>) | null;
@@ -915,7 +916,17 @@ export class LightZKOracleClient implements ZKOracleClient {
 
     // Audit 1.4: Cache both positive and negative results (empty records: []) with 60s TTL
     // to prevent DoS and RPC quota exhaustion when querying unknown/unrecorded wallets.
-    this.anchorCache.set(cacheKey, { records: sorted, expires: Date.now() + 60_000 });
+    // Bounded: the key is caller-chosen, so an unbounded Map is a memory-exhaustion vector.
+    const nowMs = Date.now();
+    if (this.anchorCache.size >= LightZKOracleClient.ANCHOR_CACHE_MAX) {
+      for (const [k, v] of this.anchorCache) if (v.expires <= nowMs) this.anchorCache.delete(k);
+      while (this.anchorCache.size >= LightZKOracleClient.ANCHOR_CACHE_MAX) {
+        const oldest = this.anchorCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.anchorCache.delete(oldest);
+      }
+    }
+    this.anchorCache.set(cacheKey, { records: sorted, expires: nowMs + 60_000 });
 
     return sorted;
   }
