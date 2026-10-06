@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/lockup-horizontal.svg" width="360" alt="Wallet Radar"></p>
+
 # Wallet Radar: Autonomous Pre-Trade Firewall for Solana AI Agents
 
 > **Continuous behavioral intelligence, pre-trade simulation, and on-chain hard enforcement for the autonomous Solana economy.**
@@ -229,6 +231,8 @@ Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At 
 ### 3. Web Dashboard
 
 The web dashboard (`GET /dashboard`) provides a radar view of detected anomalies, a recorded replay (`?demo=replay`), the on-chain hook log, and the independent-test timeline. It displays an empty prompt state when no wallet is selected or found. The dashboard visualizes behavioral signals and does not compute detection verdicts itself.
+
+[https://daniilmilintieiev-ux.github.io/wallet-radar/dashboard-preview.html](https://daniilmilintieiev-ux.github.io/wallet-radar/dashboard-preview.html) — static preview with a recorded replay
 
 ---
 
