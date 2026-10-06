@@ -378,6 +378,7 @@ Add Wallet Radar to your MCP host configuration (`claude_desktop_config.json`, C
 - `radar_scan`: Live Helius fetch + baseline + all 9 rules, including `TOXIC_MINT` (this endpoint does fetch mint risk data, unlike `radar_trust`) $\rightarrow$ risk score, evidence, freshness.
 - `radar_trust`: Binary gate before copy/payment $\rightarrow$ `safe` / `hold` / `unknown`.
 - `radar_simulate`: Pre-trade what-if simulation (liquidity stress, risk delta, limits).
+- `radar_gate_copy`: Pre-trade copy-trading firewall: gates a proposed copy-trade, swap, or payment before execution. Evaluates behavioral risk against the wallet's history. When both an amount and a specific token mint are supplied, additionally checks that mint's freeze authority and top-10-holder concentration (not mint authority) before allowing execution. Returns an immediate ALLOW, THROTTLE, or BLOCK verdict.
 - `radar_batch`: Safety-gate up to 20 copy-trader wallets in a single deterministic pass.
 - `radar_analyze`: Offline anomaly analysis over pre-recorded transaction fixtures.
 - `radar_benchmark`: Deterministic 24-case quality evaluation report (a regression suite of 24 fixtures; its accuracy value is not a measure of detection quality).
