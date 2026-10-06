@@ -137,16 +137,26 @@ When Active Defense is enabled (`src/defense.ts`):
 
 ## HTTP service hardening
 
-- **Authentication (opt-in).** `RADAR_API_TOKEN`, when set, requires
-  `Authorization: Bearer <token>` (or an `x-api-token` header) on the mutating
-  endpoints (`POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`);
-  comparison is timing-safe. Read endpoints stay open. When watch mode is
-  enabled without a token, `validateConfig` warns at startup.
+- **Authentication (fail-closed for mutating routes).** Without `RADAR_API_TOKEN`,
+  the mutating endpoints (`POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`)
+  answer 403 Forbidden (unless `RADAR_ALLOW_UNAUTH_MUTATIONS=1` is set); when a token
+  is set, they require `Authorization: Bearer <token>` (or an `x-api-token` header);
+  comparison is timing-safe. Read endpoints stay open.
+  Endpoints `/scan`, `/trust`, `/batch`, `/simulate`, `/gate-copy`, and `/analyze`
+  remain open by default (subject to per-IP rate limits).
+  With `RADAR_API_TOKEN` configured, `RADAR_AUTH_HEAVY=1` (or `RADAR_REQUIRE_AUTH=1`)
+  gates the heavy POST routes (`/batch`, `/scan`, `/trust`, `/simulate`, `/gate-copy`),
+  and `RADAR_PROTECT_READS=1` gates the protected GET routes (`/watch`, `/alerts`,
+  `/defense`, `/defense/:wallet`, `/poll`).
+  Operator-signed on-chain writes from `POST /scan` (hook bridge PDA and oracle memo)
+  require a valid token by default (disabled for anonymous callers unless
+  `RADAR_ALLOW_ANON_ONCHAIN_WRITES=1` is set).
 - **CORS.** Open by default (`Access-Control-Allow-Origin: *` — responses
   contain data about wallets the caller chose). `RADAR_CORS_ORIGINS` restricts
   which browser origins may read responses cross-origin.
 - **Rate limiting.** Per-IP limit (`RADAR_RATE_LIMIT_PER_MIN`, default
-  120/min); `/health` and `/metrics` are exempt.
+  120/min); Helius-incurring live routes are capped at `RADAR_LIVE_RATE_LIMIT_PER_MIN`
+  (default 30/min); `/health` and `/metrics` are exempt.
 - **Input validation.** Wallet parameters are strict-base58-validated at every
   API surface (the `0/O/I/l` lookalikes are rejected); JSON bodies are capped
   at ~1 MB (413 above that); Helius responses are runtime-validated (zod,
@@ -170,6 +180,17 @@ When Active Defense is enabled (`src/defense.ts`):
 - **Evaluation Depth & Sampling:** Live scans analyze up to 50–100 most recent transactions. Baselines require a minimum of 5 transactions before scoring behavioral drift, and `OFF_HOURS` requires at least 20 baseline transactions to establish a representative 24-hour UTC activity histogram.
 - **Timeout & Failure Boundaries:** RPC and Helius network queries are bounded by strict AbortSignal timeouts (10 seconds). In the event of an upstream network failure or incomplete historical data, the system conservatively falls back to `unknown` / `hold`, never blindly assuming safety.
 - **Adversarial Resilience:** Comprehensive attack vectors, simulation edge cases, and exploit scenario results are documented in [ADVERSARIAL-TESTING.md](ADVERSARIAL-TESTING.md).
+
+### Deployment security environment variables (see `docs/DEPLOY-CHECKLIST.md`)
+
+- `RADAR_API_TOKEN`: Shared bearer token gating mutating routes (`POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`) and unlocking heavy/read/on-chain write gates.
+- `RADAR_ALLOW_UNAUTH_MUTATIONS=1`: Explicit opt-in allowing mutating routes to run without a token (default is 403).
+- `RADAR_ALLOW_ANON_ONCHAIN_WRITES=1`: Explicit opt-in allowing anonymous callers of `POST /scan` to trigger operator-signed on-chain writes (default requires valid token).
+- `RADAR_REQUIRE_AUTH=1` / `RADAR_AUTH_HEAVY=1`: Gates heavy routes (`POST /batch`, `/scan`, `/trust`, `/simulate`, `/gate-copy`).
+- `RADAR_PROTECT_READS=1`: Gates protected read routes (`GET /watch`, `/alerts`, `/defense`, `/defense/:wallet`, `/poll`).
+- `RADAR_TRUST_PROXY=1`: Trust `CF-Connecting-IP` / `X-Forwarded-For` from reverse proxies for rate limiting.
+- `RADAR_LIVE_RATE_LIMIT_PER_MIN`: Rate limit for Helius live-query endpoints (default 30/min).
+- `RADAR_RATE_LIMIT_PER_MIN`: General rate limit per IP (default 120/min).
 
 If you spot something in the code that does not match the above, please report
 it privately.
