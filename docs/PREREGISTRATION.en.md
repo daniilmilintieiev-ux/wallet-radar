@@ -606,7 +606,7 @@ The on-chain outcome evaluation code (`scripts/shadow/outcomes.mjs`), database s
 
 ## 21. Code Changes After Collection Stopped
 
-Sections 1-20 are not rewritten. Collection stopped at <STOP_UTC> (server journal on the board). The following was merged into main after the stop.
+Sections 1-20 are not rewritten. Collection stopped at 2026-10-06T18:00:01Z (server journal on the board). The following was merged into main after the stop.
 
 ### 21a. What was merged
 Branches fixes-a, fixes-b, fixes-c, analysis (tag analysis-v1) and dashboard. Changed files in src/: HTTP server authorization and rate limits (including /gate-copy), address validation (32 bytes), sanitized payment errors, 409 on a repeated signature, aligned x402 confirmation level between SDK and server, /analyze body validation before payment, the tokenCheck field and a token-check-unavailable marker, Token-2022 extensions in the TOXIC_MINT rule, a price-unavailable marker, TAINTED_FUNDING over all incoming transfers of the supplied history, the dormancy measure on the trust path for DORMANT_ACTIVE, an optional issuer token list (off by default), the new dashboard; analysis code scripts/shadow/analyze.mjs (section 20).
