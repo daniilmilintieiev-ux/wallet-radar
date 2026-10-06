@@ -628,3 +628,7 @@ Recorded after collection stopped; outcome values were not viewed.
 3. 8 records have a seen_at - t gap greater than 1000 minutes (ids 66, 155, 266, 272, 300, 337, 445, 484; t falls in 2024-2025). They are excluded under §18b; the cause has not been established.
 4. In the pool_candidates by-hour table the 03:00 UTC hour has one fewer selected pool for each night since 2026-10-03 (4 pools of 605 in total). The cause has not been established: outcome computation was enabled only on 2026-10-04, so it does not explain the night of 2026-10-03. The deviation depends on time of day, not on outcomes.
 5. The outcome-computation timer was restarted at about 2026-10-06T19:18Z (last timer trigger 19:18:02Z) when additional runs were added; the outcomes-v1 code was not changed.
+
+### 21g. Further changes after collection stopped
+
+After section 21a, the following were additionally merged into main: security fixes from the defensive audit (authorization of mutating routes, payment cap in the SDK, dashboard parameter validation, disabling unauthenticated on-chain writes, tracking watched wallets, payment signature reuse in Blink) and text edits (docs/index.html, README.md, video scripts). Only files outside scripts/shadow/ were modified; scripts/shadow/collect.mjs, db.mjs, preflight.mjs, outcomes.mjs and tags shadow-v3, outcomes-v1, analysis-v1 were not changed; detection rules and thresholds (src/analyzer.ts, src/mint.ts, src/defense.ts) were not changed. The test result still refers to shadow-v3.
