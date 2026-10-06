@@ -141,6 +141,7 @@ a separate, future change.
   it is both unauthenticated-by-default and free, while still incurring
   real Helius API cost.
 - **Status:** fixed in branch fixes-a (commit f816910), not deployed.
+- Update (branch `secaudit2`): the first bullet is stale for the mutating routes. With no `RADAR_API_TOKEN` they now answer 403 instead of being open; see H3 in the "Security audit, branch `secaudit2`" section at the end of this file.
 
 ## `fetchMintMetadata`/`getTokenLargestAccounts` failure silently skips TOXIC_MINT for that mint (fails open)
 
@@ -468,3 +469,191 @@ responses, user input) through those import sites:
   - Recorded replay (`docs/dashboard/replay-8XeK5m.json`) is explicitly presented as a historical window (`recordedAtUtc: 2026-10-01T20:29:39Z`), annotated with "historical replay, not a confirmed incident", and not represented as live telemetry.
   - Independent test status (`docs/dashboard/test-status.json`) displays `result: null` during collection without previewing or fabricating score numbers.
 - **Status:** implemented in branch `dashboard`, awaiting deployment post-freeze.
+
+# Security audit, branch `secaudit2` (code review + local tests only)
+
+Scope reviewed: `src/http-server.ts`, `src/x402server.ts`, `src/sdk/`, `src/mcp*.ts`, `src/oracle/`, `src/hook/`,
+`programs/` (Rust, read only, not compiled), `src/config.ts`, `src/dashboard*.ts`, `src/watch.ts`, `src/alerts.ts`,
+`src/cli.ts`, `src/daily-digest.ts`, `docs/DEPLOY-CHECKLIST.md`. No network, no keys, no live server, no on-chain
+verification: anything that depends on on-chain behaviour is marked НЕ ПРОВЕРЕНО. Only critical/high findings were
+fixed (none critical, four high), plus two medium findings that were explicitly requested (M1, M2). Detection rules,
+thresholds and verdicts were not changed. Regression tests are in `test/secaudit-*.test.ts`; unfixed gaps are
+documented there as `todo` tests.
+
+## Fixed in branch `secaudit2`
+
+### H1 (high): the SDK paid whatever a 402 response asked for
+
+- `src/sdk/index.ts` (`resolvePaymentProof`, every paid method: `scan`, `analyze`, `trust`, `batch`, `simulate`)
+  signed and sent a payment for the amount, recipient and currency taken from the server's 402 headers/JSON.
+- Reachable by default whenever the client talks to a malicious or compromised server, or to a plain-http server
+  through a MITM.
+- Fix: `assertPaymentTermsAcceptable` runs first in `resolvePaymentProof`: finite positive amount, at most
+  `maxPaymentUsdc` (default 0.05), USDC only, recipient must equal the configured `recipient` when one is configured.
+- **Note for operators:** a server price above 0.05 USDC (for example `RADAR_SCAN_PRICE_USDC` raised) is now refused
+  by default; the client must pass a higher `maxPaymentUsdc`.
+- **Status:** fixed in branch secaudit2 (commit 48e2a3f), not deployed. Test `test/secaudit-sdk-payment.test.ts`.
+
+### H2 (high): unauthenticated `/dashboard` and `/api/ledger` caused unbounded upstream work and memory growth
+
+- `src/dashboard.ts` passed the `wallet` query string, unvalidated, to the oracle reader; each distinct string cost
+  up to about 20 upstream RPC calls and left a permanent entry in `LightZKOracleClient.anchorCache`
+  (`src/oracle/ledger.ts`), keyed by an attacker-chosen string.
+- Reachable by any HTTP client in the default configuration when the dashboard route is served.
+- Fix: base58 validation (HTTP 400) before any query on both routes; `anchorCache` capped at 1000 entries.
+- **Status:** fixed in branch secaudit2 (commit 0e38c15), not deployed. Test `test/secaudit-ledger-dos.test.ts`.
+
+### H3 (high): mutating endpoints were open without `RADAR_API_TOKEN`
+
+- `src/http-server.ts` `authorizeMutating`: with no token every route was authorized, including
+  `POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear`. Default bind is `0.0.0.0`, default CORS is `*`, and
+  the body parser accepts `text/plain` JSON, so even a web page could send these requests.
+- Fix: without a token those routes answer 403 unless `RADAR_ALLOW_UNAUTH_MUTATIONS=1` (or the
+  `allowUnauthenticatedMutations` option) is set. With a token the behaviour is unchanged (401 without it, 200 with it).
+- **Behaviour change:** a deployment with `RADAR_WATCH=1` and no token loses these routes until a token is set. See
+  `docs/DEPLOY-CHECKLIST.md` section 2a for the callers found in this repository.
+- Statements elsewhere in this file and in `README.md` that every route is authorized without a token are stale for
+  these four routes.
+- **Status:** fixed in branch secaudit2 (commit 306ab78), not deployed. Test `test/secaudit-mutating-auth.test.ts`.
+
+### H4 (high, only with non-default configuration): anonymous `POST /scan` triggered operator-signed on-chain writes
+
+- `src/http-server.ts` `toolScan`: when a hook bridge is configured (`RADAR_HOOK_MINT` + `RADAR_HOOK_KEYPAIR`) or
+  `RADAR_ORACLE=1`, any caller could make the operator's key sign and pay for a hook-PDA update / oracle memo for an
+  arbitrary wallet. Not reachable in a default configuration.
+- Fix: the verdict is still returned to everyone; the on-chain writes happen only for requests with a valid API
+  token, or when `RADAR_ALLOW_ANON_ONCHAIN_WRITES=1` / `allowAnonymousOnchainWrites` is set.
+- The paid flow in `src/x402server.ts` is unchanged (the write follows a verified payment). The MCP server is
+  stdio-only, so its caller is the local client.
+- The oracle-memo branch shares the gate but has no test (it would need network); the hook-bridge branch is tested.
+- **Status:** fixed in branch secaudit2 (commit 2229619), not deployed. Test `test/secaudit-onchain-gate.test.ts`.
+
+### M1 (medium; high with `RADAR_WATCH=1`): `/scan` enrolled any wallet in the watch loop
+
+- `saveBaseline` (`src/store.ts`) inserted into the same `wallets` table the watch loop iterates (`src/watch.ts`
+  `listWallets()`), so an anonymous `/scan` (and the MCP `radar_scan`, the x402 `/scan`) put the scanned wallet on
+  the poll list: unbounded table growth and upstream polling of attacker-chosen wallets. It bypassed the H3 control.
+- Fix: column `wallets.watched INTEGER NOT NULL DEFAULT 0`. Only `addWallet` (`POST /watch`, `radar add`) sets 1;
+  `listWallets()` returns only `watched=1`; `saveBaseline` still persists the scoring profile, so verdicts do not
+  change (`scripts/audit/m1-scan-compare.mjs`: output of a fixed 8-scan sequence is byte-identical before and after,
+  sha256 `a2af13b9b87f68561059e85a8636475274783995a15cf01b7c4c6827e46c84d4`). On open, an old database gets the
+  column added and **every existing row is set to watched=1**, so the current watch list is preserved.
+- **Behaviour change:** `radar scan <wallet>` (CLI) no longer adds the wallet to the watch list; use `radar add`.
+  `hasWallet()` still means "a row exists" (used by `radar report` / `radar history`).
+- **Status:** fixed in branch secaudit2 (commit 061d7c7), not deployed. Test `test/secaudit-watched.test.ts`.
+
+### M2 (medium): Blink complete route could be replayed concurrently
+
+- `src/x402server.ts` Blink `verifyPayment`: check (`hasSettledPayment`), then `await` verification, then
+  `recordSettledPayment`, with no in-flight guard and the boolean result ignored. N concurrent requests with one
+  payment signature could all pass the check and each receive a scan (value at risk: 0.005 USDC per extra scan).
+- Fix: shares `inFlightPayments` with the main paid flow (released in `finally`) and rejects the loser of the INSERT
+  race. Test: 5 concurrent requests with one signature give exactly one 200 (it returned five before the fix).
+- The in-flight set is still per-process (see "x402 replay protection is per-process" above).
+- **Status:** fixed in branch secaudit2 (commit a1dbeb6), not deployed. Test `test/secaudit-blink-replay.test.ts`.
+
+## Found, not fixed
+
+### D1 (medium, availability of a feature; НЕ ПРОВЕРЕНО on-chain): oracle memo anchors are binary, not UTF-8
+
+- `src/oracle/ledger.ts` `sendMemoAnchor` (`:642`, `memoData` at `:683`) sends `RADAR_ORACLE:` + the RS01 binary record
+  (header, risk byte, 8-byte timestamp, and a 96-byte Ed25519 signature trailer) as SPL Memo instruction data.
+  `scripts/audit/oracle-memo-utf8.mjs`: 0 of 2000 realistic signed records are valid UTF-8. The SPL Memo program is
+  documented to accept only UTF-8 data, so such a transaction would be rejected; if so, the verified-anchor read
+  path (`:848` onward) would find nothing and clients fall back to the unverified lamports decode. This was not
+  confirmed on a real cluster (no network in this audit); `SECURITY.md` and the class docs describe the memo path as
+  working. **Needs a devnet check by the owner.**
+- `test/secaudit-oracle-memo.test.ts` has a `todo` test for it.
+- **Status:** not fixed (not critical/high), not verified on-chain.
+
+### D2 (medium, latent): the attestation signature does not cover `topRules`, `txSignatures`, or a custom verdict
+
+- `buildAttestationDigest` (`src/oracle/ledger.ts:116`) hashes wallet, risk, verdict code and timestamp only. The
+  payload JSON (`topRules`, `txSignatures`, a verdict string when the code is 255) travels outside the signature.
+  The anchor reader first reads transactions that merely list the wallet as an account (`:848`) and accepts any memo
+  whose signature verifies, so a replayed genuine signed record with a different payload would be accepted as
+  verified. Exploiting it needs a genuine signed memo on-chain, which D1 may make impossible today.
+  `deserializeScanRecord` also passes a non-array `topRules` through (`:308`).
+- **Status:** not fixed. Suggested: include a hash of the payload in the digest and type-check `topRules`.
+
+### D3 (low, latent): `data-anomaly-text` attribute is not quote-escaped
+
+- `src/dashboard.ts:1231` writes `escapeText(description)` into a double-quoted attribute; `escapeText` does not
+  escape `"`. Reproduced offline: `x" onfocus="alert(1)" autofocus="` in a replay anomaly text yields a live
+  `onfocus` attribute. Sources of that text today: the repo-controlled replay JSON, and ledger `topRules` (see D2).
+  All other interpolations reviewed in `src/dashboard.ts` and `src/dashboard-radar.ts` are escaped, there is no JSON
+  embedded in the inline `<script>` (it is static), and `/dashboard` rejects non-base58 wallets (H2).
+- **Status:** not fixed. One-line fix: use `escapeHtml` for the attribute. `todo` test in
+  `test/secaudit-dashboard-escaping.test.ts`.
+
+### D4 (low): Telegram parse mode is auto-detected from unescaped text
+
+- `src/alerts.ts:37`: a plain-text message containing `<b>` or `<code>` is sent with `parse_mode=HTML`;
+  `formatAlert` does not escape anomaly text. Anomaly texts today embed numbers, base58 addresses and venue names,
+  so hostile markup would have to come from upstream data. `WEBHOOK_URL`, `TG_BOT_TOKEN`, `TG_CHAT_ID` are read only
+  from the operator environment (`grep` found no route or tool that sets them), so SSRF through them is not
+  reachable from external input. Failed sends log status and response body only, never the token.
+- **Status:** not fixed. `todo` test in `test/secaudit-alerts.test.ts`.
+
+### L1 (low): heavy routes are unauthenticated by default
+
+- `src/http-server.ts:131` (`isHeavy` is evaluated only when `authHeavy` is on). `/batch`, `/scan`, `/trust`,
+  `/simulate`, `/gate-copy` cost Helius credits and are open by default; the per-IP limits
+  (`RADAR_LIVE_RATE_LIMIT_PER_MIN`, default 30; `RADAR_RATE_LIMIT_PER_MIN`, default 120) are the only brake.
+- **Status:** not fixed (intended for a public API). Set `RADAR_AUTH_HEAVY=1` with a token to gate them.
+
+### L2 (low): CORS is `*` by default
+
+- `src/config.ts:90`. No cookie authentication is used, so there is no credentialed cross-site read; before H3 it
+  made the open mutating routes reachable from a web page. `RADAR_CORS_ORIGINS` restricts it.
+- **Status:** not fixed.
+
+### L3 (low): default bind address is `0.0.0.0`
+
+- `src/http-server.ts:1502, 1524`, `src/x402server.ts:1498` (`HOST` overrides).
+- **Status:** not fixed.
+
+### L4 (low): `RADAR_PROTECT_READS=1` without a token protects nothing
+
+- `authorizeMutating` (`src/http-server.ts:128`) returns "ok" for non-mutating routes when no token is configured, so
+  an operator who sets `RADAR_PROTECT_READS=1` but forgets `RADAR_API_TOKEN` gets no protection and no warning
+  (same for `RADAR_AUTH_HEAVY`).
+- **Status:** not fixed.
+
+### L5 (low): MCP `radar_analyze` does not validate `wallet` and does not bound `txs`
+
+- `src/mcp.ts:164-196`: `wallet` is used unvalidated (only for a parameterized store lookup and echoed back);
+  `txs` is an unbounded JSON string. The server is stdio-only, so the caller is the local client (an LLM agent that
+  can be prompt-injected), and the effect is local CPU/memory. The other tools validate wallets
+  (`isValidSolanaAddress`, and again inside `runTrustCheck` and the collector, which also URL-encodes the address);
+  `test/secaudit-mcp-input.test.ts` shows hostile wallets/mints are refused before any network call.
+- **Status:** not fixed.
+
+### I1 (info): Blink routes on the plain HTTP server serve a trust check without payment
+
+- `src/http-server.ts:1018` calls `handleBlinkHttpRequest` with a `scanHandler` that runs `toolTrust` and no
+  `verifyPayment`; this equals the open `/trust` route. The paid Blink flow is in `src/x402server.ts`.
+- **Status:** not fixed.
+
+### I2 (info): upstream error text can reach API responses
+
+- `TOKEN_CHECK_UNAVAILABLE` (`src/mcp.ts:446`, `src/http-server.ts`) includes `err.message` from the mint-metadata
+  fetch. The messages built in `src/collector.ts`, `src/pricing.ts`, `src/trust.ts` carry status codes, not URLs or
+  keys; RPC server error bodies are forwarded (`src/trust.ts:209`). Whether a third-party error body can echo an
+  API key is НЕ ПРОВЕРЕНО.
+- **Status:** not fixed.
+
+### I3 (info): CLI and digest take operator input without validation
+
+- `radar add` stores any string (`src/cli.ts:159`; the HTTP route validates base58), the default export file name is
+  built from the first 8 characters of the wallet argument (`src/cli.ts:303`), and the daily digest writes
+  `shortAddress` into Telegram HTML unescaped (`src/daily-digest.ts:294`). The CLI is run by the operator; env
+  file contents are never printed (the MCP server logs only the file path). `radar history --export` HTML is escaped (tested).
+- **Status:** not fixed.
+
+### Not reviewed or not verified
+
+- `programs/radar-transfer-hook` (Rust) was read, not compiled; no on-chain test.
+- `npm audit` / dependency versions were not re-checked in this audit (no network); see the existing dependency entry above.
+- Behaviour on a real cluster of the oracle memo path (D1/D2) and of the Light Protocol write path.
+- The environment of the board's HTTP server process (its unit file is not in `deploy/`).
