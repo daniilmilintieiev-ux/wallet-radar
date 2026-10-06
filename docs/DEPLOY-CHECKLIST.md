@@ -6,11 +6,21 @@ changed by this file. Every claim below was checked by reading
 they will drift as the file changes) or by running the exact command shown.
 Default behavior (nothing set) is unchanged by this document.
 
+> **Updated in branch `secaudit2` (not deployed).** That branch changes two
+> defaults, so a redeploy of it is **not** behavior-neutral:
+> (1) with no `RADAR_API_TOKEN`, the four mutating routes now answer **403**
+> instead of being open (section 2a); (2) `POST /scan` no longer performs
+> operator-signed on-chain writes for callers without a valid token (section
+> 2a). Line numbers in rows that this update did not touch were **not**
+> re-verified and may have drifted.
+
 ## 1. Environment variables for a public-facing deployment
 
 | Variable | Effect | Code reference |
 |---|---|---|
-| `RADAR_API_TOKEN` | Shared bearer token. With nothing else set, this alone gates only the four "mutating" routes (see §2). Without it, `authorizeMutating` returns `true` unconditionally for every route — nothing is gated. | `src/http-server.ts:120` (`if (!token) return true;`) |
+| `RADAR_API_TOKEN` | Shared bearer token (`Authorization: Bearer <token>` or `x-api-token`). With nothing else set, this alone gates the four "mutating" routes (see §2) and is what unlocks on-chain writes from `POST /scan` (§2a). **After secaudit2:** without it the four mutating routes answer 403 (they used to be open); heavy and protected-read routes are still open without it, as before. | `src/http-server.ts:116-150` (`authorizeMutating`, `hasValidApiToken`) |
+| `RADAR_ALLOW_UNAUTH_MUTATIONS=1` | Explicit opt-in (secaudit2): serve `POST /watch`, `/unwatch`, `/poll`, `/defense/:wallet/clear` with **no** token set. Restores the old open behavior; only use on a closed network. Has no effect when `RADAR_API_TOKEN` is set. | `src/http-server.ts:980-981`, `:991-996` |
+| `RADAR_ALLOW_ANON_ONCHAIN_WRITES=1` | Explicit opt-in (secaudit2): let callers **without** a valid token trigger the operator-signed on-chain writes of `POST /scan` (hook-bridge PDA update, and the oracle memo when `RADAR_ORACLE=1`). Default: those writes happen only for requests carrying a valid token. | `src/http-server.ts:1001-1003`, `:229-230`, `:257` |
 | `RADAR_REQUIRE_AUTH=1` or `RADAR_AUTH_HEAVY=1` | Either one sets `authHeavy = true`, which additionally gates the five "heavy" POST routes (§2). Both env vars are read identically — there is no behavioral difference between them. | `src/http-server.ts:899-901` |
 | `RADAR_PROTECT_READS=1` | Gates the five "protected read" GET routes (§2). | `src/http-server.ts:902-904` |
 | `RADAR_TRUST_PROXY=1` | Makes the IP-based rate limiter trust the `CF-Connecting-IP` header (falling back to the first `X-Forwarded-For` entry) instead of the raw socket address. **Only set this when a real reverse proxy (Cloudflare, Nginx, Caddy) sits in front and strips/overwrites these headers from direct client connections** — otherwise any caller can spoof `CF-Connecting-IP` to defeat per-IP rate limiting. | `src/http-server.ts:1182-1203` |
@@ -22,7 +32,9 @@ Default behavior (nothing set) is unchanged by this document.
 `authorizeMutating` (`src/http-server.ts:112-140`) only ever inspects three
 fixed route sets, each independently toggled:
 
-- **Mutating** (gated by `RADAR_API_TOKEN` alone, no other flag needed):
+- **Mutating** (gated by `RADAR_API_TOKEN` alone, no other flag needed;
+  with no token set they answer 403 unless
+  `RADAR_ALLOW_UNAUTH_MUTATIONS=1`, see §2a):
   `POST /watch`, `POST /unwatch`, `POST /poll`, `POST /defense/:wallet/clear`.
 - **Heavy** (needs `RADAR_API_TOKEN` **and** `RADAR_AUTH_HEAVY=1` /
   `RADAR_REQUIRE_AUTH=1`): `POST /batch`, `POST /scan`, `POST /trust`,
@@ -73,6 +85,36 @@ token, because none of them appear in any of the three sets in §2:
   `RADAR_AUTH_HEAVY`/`RADAR_REQUIRE_AUTH`/`RADAR_PROTECT_READS` does not
   break the canary agent**, because `/selftest` was never in any of the
   three gated sets in the first place.
+
+## 2a. Behavior added in branch `secaudit2` (not deployed)
+
+| Situation | Before | After |
+|---|---|---|
+| No `RADAR_API_TOKEN`, `POST /watch` / `/unwatch` / `/poll` / `/defense/:wallet/clear` | 200 for any caller | **403** (`Forbidden: mutating endpoints are disabled because RADAR_API_TOKEN is not set...`). `GET /watch`, `/alerts`, `/defense...` unchanged. |
+| Token set, wrong/missing token on those routes | 401 | 401 (unchanged) |
+| `POST /scan` without a valid token, hook bridge or `RADAR_ORACLE=1` configured | verdict returned **and** on-chain write made with the operator key | verdict returned, **no** on-chain write (response has no `hookBridge` / `oracle` fields) |
+| `POST /scan` with a valid token | as above | unchanged (write is made) |
+| `POST /scan` for a wallet that is not on the watch list | wallet silently joined the poll list | stays out of the poll list; only `POST /watch` / `radar add` enrol it (`wallets.watched`; the migration marks all existing rows watched=1) |
+
+**Who calls the gated routes on the board** (found by reading the code in this repository; the HTTP server's own
+unit file is **not** in `deploy/`, so its environment is НЕ ПРОВЕРЕНО):
+
+- `deploy/radar-watch.service` runs `node dist/src/cli.js watch`. That is the watch loop reading the SQLite store
+  directly; it does **not** call the HTTP routes above, so it is unaffected by the 403 change. It polls only
+  `watched=1` rows after the M1 change; the migration marks every existing row as watched on first open, so the
+  current list is preserved.
+- `deploy/canary-agent.service` runs `dist/scripts/canary-agent.js`, which calls only `POST {scanUrl}/selftest` and
+  `POST {x402Url}/selftest` (`scripts/canary-agent.ts:207-214, 239-249`): `/selftest` is in none of the gated sets,
+  so it is unaffected.
+- `deploy/x402server.service` runs `dist/src/x402server.js`. `grep` finds no `authorizeMutating`, `/watch`, `/poll`
+  or `/clear` handling in `src/x402server.ts`; its own paid `/scan` flow is unchanged (payment verified before the
+  hook-bridge write).
+- No script under `scripts/`, `deploy/` or `bin/` calls `/watch`, `/unwatch`, `/poll` or `/defense/:wallet/clear`
+  (`grep -rn` over those directories). Any remaining caller is outside this repository (manual `curl`, an agent, an
+  external integration): **before deploying, check the HTTP server's environment for `RADAR_API_TOKEN`; if it is
+  not set and something calls these routes, they will start returning 403.**
+- The README/KNOWN-ISSUES statements that "without `RADAR_API_TOKEN` every route is authorized" are stale for the
+  mutating routes after this change (see `docs/KNOWN-ISSUES.md`).
 
 ## 3. `RADAR_LIVE_RATE_LIMIT_PER_MIN` coverage
 
@@ -136,6 +178,17 @@ curl -s -o /dev/null -w "/a2a: %{http_code}\n" -X POST "$BASE/a2a" \
 
 # 6. POST /selftest remains free and unauthenticated by design (expect 200)
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/selftest"
+
+# 7. (secaudit2) Mutating route without a token (expect 403 if RADAR_API_TOKEN is NOT set on the server,
+#    401 if it is set but the request has no token; 200 only with a valid token or RADAR_ALLOW_UNAUTH_MUTATIONS=1).
+#    /unwatch of an address that is not watched is harmless.
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/unwatch" \
+  -H "Content-Type: application/json" -d '{"wallet":"11111111111111111111111111111111"}'
+
+# 8. (secaudit2) The same route with the token (expect 200)
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/unwatch" \
+  -H "Authorization: Bearer $RADAR_API_TOKEN" \
+  -H "Content-Type: application/json" -d '{"wallet":"11111111111111111111111111111111"}'
 ```
 
 ## 5. Rollback order
@@ -149,10 +202,13 @@ the others:
    `/alerts`, `/defense`, `/defense/:wallet`, `/poll`.
 2. `RADAR_AUTH_HEAVY` / `RADAR_REQUIRE_AUTH` — restores anonymous access to
    `POST /batch`, `/scan`, `/trust`, `/simulate`, `/gate-copy`.
-3. `RADAR_API_TOKEN` — last, since removing it makes `authorizeMutating`
-   return `true` unconditionally (`src/http-server.ts:120`), reopening the
-   four mutating routes too, regardless of whatever `RADAR_AUTH_HEAVY` /
-   `RADAR_PROTECT_READS` are still set to.
+3. `RADAR_API_TOKEN` — last. **After secaudit2**, removing it does **not** reopen
+   the four mutating routes: they answer 403 (and `POST /scan` stops doing
+   on-chain writes) unless `RADAR_ALLOW_UNAUTH_MUTATIONS=1` /
+   `RADAR_ALLOW_ANON_ONCHAIN_WRITES=1` are set. On a build without secaudit2,
+   removing it makes `authorizeMutating` return `true` unconditionally and
+   reopens the four mutating routes regardless of `RADAR_AUTH_HEAVY` /
+   `RADAR_PROTECT_READS`.
 4. `RADAR_TRUST_PROXY` — only unset this if the reverse proxy itself is
    being removed or reconfigured; leaving it set with no real proxy in
    front re-opens the IP-spoofing gap described in §1.

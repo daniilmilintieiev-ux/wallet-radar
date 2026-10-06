@@ -103,11 +103,15 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 /**
- * API auth (opt-in via RADAR_API_TOKEN): only the mutating watch/defense
+ * API auth (RADAR_API_TOKEN): only the mutating watch/defense
  * endpoints are gated; read endpoints stay open.
  * When authHeavy is enabled (Audit 1.3), resource-intensive endpoints
  * (/batch, /scan, /trust, /simulate, /gate-copy) also require authorization.
- * Returns true when the request is allowed, false when it must be rejected with 401.
+ * Fails closed: with no token configured, mutating routes are refused (403)
+ * unless the operator explicitly opts in (allowUnauthenticatedMutations /
+ * RADAR_ALLOW_UNAUTH_MUTATIONS=1).
+ * Returns "ok" when allowed, "unauthorized" (401) for a bad/missing token and
+ * "disabled" (403) when mutating routes are off because no token is configured.
  */
 function authorizeMutating(
   method: string,
@@ -116,11 +120,14 @@ function authorizeMutating(
   token: string | undefined,
   authHeavy: boolean = false,
   protectReads: boolean = false,
-): boolean {
-  if (!token) return true;
+  allowUnauthenticatedMutations: boolean = false,
+): "ok" | "unauthorized" | "disabled" {
   const isMutating =
     method === "POST" &&
     (p === "/watch" || p === "/unwatch" || p === "/poll" || /^\/defense\/[^/]+\/clear$/.test(p));
+  if (!token) {
+    return isMutating && !allowUnauthenticatedMutations ? "disabled" : "ok";
+  }
   const isHeavy =
     authHeavy &&
     method === "POST" &&
@@ -130,7 +137,13 @@ function authorizeMutating(
     method === "GET" &&
     (p === "/watch" || p === "/alerts" || p === "/defense" || p.startsWith("/defense/") || p === "/poll");
 
-  if (!isMutating && !isHeavy && !isProtectedRead) return true;
+  if (!isMutating && !isHeavy && !isProtectedRead) return "ok";
+  return hasValidApiToken(req, token) ? "ok" : "unauthorized";
+}
+
+/** True when the request carries the configured API token (Bearer or x-api-token). */
+function hasValidApiToken(req: http.IncomingMessage, token: string | undefined): boolean {
+  if (!token) return false;
   const header = req.headers.authorization;
   const provided =
     typeof header === "string" && header.startsWith("Bearer ")
@@ -211,7 +224,10 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
   const finalRiskScore = typeof result.riskScore === "number" ? result.riskScore : riskScore;
   const finalVerdict = typeof result.verdict === "string" ? result.verdict : verdict;
 
-  if (process.env.RADAR_ORACLE === "1") {
+  // SECAUDIT-H4: on-chain writes (oracle memo commit, hook-bridge PDA update) are
+  // signed/paid by the operator's key, so only authorized callers may trigger them.
+  const onchainWritesAllowed = ctx.onchainWritesAllowed === true;
+  if (onchainWritesAllowed && process.env.RADAR_ORACLE === "1") {
     try {
       const topRules = Array.from(new Set(anomalies.map((a) => a.type)));
       const txSignatures = txs.map((t) => t.signature).filter(Boolean).slice(0, 10);
@@ -238,7 +254,7 @@ async function toolScan(body: Record<string, unknown>, ctx: RequestContext = {})
   // to the destination wallet's on-chain hook scan-record PDA so the transfer
   // hook gates the wallet on the latest verdict. A bridge failure never fails
   // the scan.
-  if (ctx.hookBridge) {
+  if (onchainWritesAllowed && ctx.hookBridge) {
     try {
       result.hookBridge = await ctx.hookBridge({ wallet, riskScore: finalRiskScore, verdict: finalVerdict, timestamp: nowSec });
     } catch (err) {
@@ -882,6 +898,20 @@ export interface RequestContext {
   apiKey?: string;
   /** Shared API token gating mutating endpoints (env RADAR_API_TOKEN if omitted). */
   apiToken?: string;
+  /**
+   * Opt-in (or env RADAR_ALLOW_UNAUTH_MUTATIONS=1): serve the mutating routes
+   * (/watch, /unwatch, /poll, /defense/:wallet/clear) with no apiToken set.
+   * Default is fail-closed (403).
+   */
+  allowUnauthenticatedMutations?: boolean;
+  /**
+   * Opt-in (or env RADAR_ALLOW_ANON_ONCHAIN_WRITES=1): let anonymous /scan
+   * callers trigger operator-signed on-chain writes (oracle commit, hook bridge).
+   * Default: only requests carrying a valid API token may.
+   */
+  allowAnonymousOnchainWrites?: boolean;
+  /** Per-request, set by handleRequest: this request may trigger on-chain writes. */
+  onchainWritesAllowed?: boolean;
   rpcUrl?: string;
   oracleClient?: ZKOracleClient;
   fetchTxs?: (wallet: string) => Promise<EnhancedTx[]>;
@@ -947,9 +977,31 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const protectReads =
       ctx.protectReads ??
       (process.env.RADAR_PROTECT_READS === "1");
-    if (!authorizeMutating(method, p, req, ctx.apiToken ?? process.env.RADAR_API_TOKEN, authHeavy, protectReads)) {
+    const allowUnauth =
+      ctx.allowUnauthenticatedMutations ?? process.env.RADAR_ALLOW_UNAUTH_MUTATIONS === "1";
+    const authResult = authorizeMutating(
+      method,
+      p,
+      req,
+      ctx.apiToken ?? process.env.RADAR_API_TOKEN,
+      authHeavy,
+      protectReads,
+      allowUnauth,
+    );
+    if (authResult === "disabled") {
+      throw new HttpError(
+        403,
+        "Forbidden: mutating endpoints are disabled because RADAR_API_TOKEN is not set. Set a token (or RADAR_ALLOW_UNAUTH_MUTATIONS=1 to opt in explicitly).",
+      );
+    }
+    if (authResult === "unauthorized") {
       throw new HttpError(401, "Unauthorized: provide Authorization: Bearer <RADAR_API_TOKEN> (or x-api-token).");
     }
+
+    const onchainWritesAllowed =
+      (ctx.allowAnonymousOnchainWrites ?? process.env.RADAR_ALLOW_ANON_ONCHAIN_WRITES === "1") ||
+      hasValidApiToken(req, ctx.apiToken ?? process.env.RADAR_API_TOKEN);
+    const toolCtx: RequestContext = { ...ctx, onchainWritesAllowed };
 
     // Dashboard & ZK Ledger routes
     if (p === "/dashboard" || p === "/api/ledger") {
@@ -1178,7 +1230,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       // Path dispatch (primary).
       const byPath = TOOL_BY_PATH[p];
       if (byPath) {
-        let out = await byPath(body, ctx);
+        let out = await byPath(body, toolCtx);
         if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
         if (ctx.store && LIVE_HELIUS_PATHS.has(p)) recordHeliusCost(ctx.store, p);
         sendJson(res, 200, out, origin);
@@ -1191,7 +1243,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const norm = sel.replace(/^radar_/, "").toLowerCase();
         const target = TOOL_BY_PATH[`/${norm}`];
         if (target) {
-          let out = await target(body, ctx);
+          let out = await target(body, toolCtx);
           if (ctx.store) applyDefense(ctx.store, body, out as Record<string, unknown>);
           sendJson(res, 200, out, origin);
           return;
@@ -1344,6 +1396,10 @@ export interface ServerOptions {
   protectReads?: boolean;
   /** Custom rate limit per min for live Helius endpoints (default 30 from RADAR_LIVE_RATE_LIMIT_PER_MIN). */
   liveRateLimitPerMin?: number;
+  /** Explicit opt-in to serve mutating endpoints without a token (see RequestContext). */
+  allowUnauthenticatedMutations?: boolean;
+  /** Explicit opt-in for anonymous callers to trigger on-chain writes (see RequestContext). */
+  allowAnonymousOnchainWrites?: boolean;
 }
 
 export function createServer(options: ServerOptions = {}): http.Server {
@@ -1360,6 +1416,8 @@ export function createServer(options: ServerOptions = {}): http.Server {
     sink: options.sink,
     apiKey: options.apiKey,
     apiToken: options.apiToken,
+    allowUnauthenticatedMutations: options.allowUnauthenticatedMutations,
+    allowAnonymousOnchainWrites: options.allowAnonymousOnchainWrites,
     rpcUrl: options.rpcUrl,
     oracleClient: options.oracleClient,
     fetchTxs: options.fetchTxs,
@@ -1488,6 +1546,10 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
 
   if (process.env.RADAR_API_TOKEN) {
     console.log(`${SERVICE} API auth enabled — mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) require a Bearer token.`);
+  } else if (process.env.RADAR_ALLOW_UNAUTH_MUTATIONS === "1") {
+    console.warn(`${SERVICE} WARNING: RADAR_ALLOW_UNAUTH_MUTATIONS=1 and no RADAR_API_TOKEN — mutating endpoints are open to any client that can reach the port.`);
+  } else {
+    console.log(`${SERVICE} mutating endpoints (POST /watch, /unwatch, /poll, /defense/:wallet/clear) are disabled (403): set RADAR_API_TOKEN to enable them.`);
   }
 
   // Audit 2.3: oracle→hook bridge. When RADAR_HOOK_MINT + RADAR_HOOK_KEYPAIR
@@ -1498,7 +1560,7 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<vo
     const bridge = buildEnvHookBridge();
     if (bridge) {
       options.hookBridge = bridge;
-      console.log(`${SERVICE} oracle→hook bridge enabled (mint ${process.env.RADAR_HOOK_MINT}).`);
+      console.log(`${SERVICE} oracle→hook bridge enabled (mint ${process.env.RADAR_HOOK_MINT}) — on-chain writes only for requests with a valid RADAR_API_TOKEN (or RADAR_ALLOW_ANON_ONCHAIN_WRITES=1).`);
     } else if (process.env.RADAR_HOOK_MINT || process.env.RADAR_HOOK_KEYPAIR) {
       console.warn(`${SERVICE} partial hook-bridge config (need BOTH RADAR_HOOK_MINT and RADAR_HOOK_KEYPAIR) — hook bridge disabled.`);
     }

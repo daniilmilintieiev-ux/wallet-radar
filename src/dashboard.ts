@@ -4,7 +4,7 @@ import path from "node:path";
 import { readScanLedger, ScanLedgerRecord, ZKOracleClient } from "./oracle/index.js";
 import { escapeHtml, computeVerdict } from "./htmlreport.js";
 import { Store } from "./store.js";
-import { corsHeaders, isValidSolanaAddress } from "./config.js";
+import { corsHeaders, isValidBase58, isValidSolanaAddress } from "./config.js";
 import { enforcementFor, DEFENSE_THRESHOLDS, DefenseState, DefenseEnforcement } from "./defense.js";
 import { FONT_FACES_CSS, DISPLAY_FONT_STACK, MONO_FONT_STACK } from "./dashboard-fonts.js";
 import { renderRadar, RadarAnomaly } from "./dashboard-radar.js";
@@ -1479,6 +1479,13 @@ export async function handleDashboardHttpRequest(
 
     const demo = url.searchParams.get("demo")?.trim() || "";
     const wallet = url.searchParams.get("wallet")?.trim() || "";
+    // Unauthenticated route: an arbitrary string must not reach the oracle/RPC
+    // reader (each distinct value costs upstream calls and a cache entry).
+    if (wallet && !isValidBase58(wallet)) {
+      res.writeHead(400, { "Content-Type": "application/json", ...corsHeaders(req.headers.origin as string | undefined) });
+      res.end(JSON.stringify({ error: "wallet must be a Solana base58 address" }));
+      return true;
+    }
     let watchlist: string[] = [];
     if (options.store) {
       try {
@@ -1545,6 +1552,11 @@ export async function handleDashboardHttpRequest(
     if (!wallet) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Missing required query parameter: wallet" }));
+      return true;
+    }
+    if (!isValidBase58(wallet)) {
+      res.writeHead(400, { "Content-Type": "application/json", ...corsHeaders(req.headers.origin as string | undefined) });
+      res.end(JSON.stringify({ error: "wallet must be a Solana base58 address" }));
       return true;
     }
 

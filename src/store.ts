@@ -19,7 +19,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS wallets (
         address TEXT PRIMARY KEY,
         added_at INTEGER NOT NULL,
-        baseline_json TEXT
+        baseline_json TEXT,
+        watched INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS seen_txs (
         wallet TEXT NOT NULL,
@@ -98,6 +99,15 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_defense_events_wallet_ts ON defense_events(wallet, ts);
     `);
+    // Migration (secaudit M1): wallets.watched separates "polled by the watch loop"
+    // (set only by /watch and `radar add`) from "has a stored scan profile" (set by
+    // /scan). Rows that already exist were all on the watch list before this column
+    // existed, so they are marked watched=1 to keep the current list intact.
+    const walletCols = this.db.prepare("PRAGMA table_info(wallets)").all() as Array<{ name: string }>;
+    if (!walletCols.some((c) => c.name === "watched")) {
+      this.db.exec("ALTER TABLE wallets ADD COLUMN watched INTEGER NOT NULL DEFAULT 0");
+      this.db.exec("UPDATE wallets SET watched = 1");
+    }
     // Migration: add top10_pct to mint_cache for databases created before it existed.
     const mintCols = this.db.prepare("PRAGMA table_info(mint_cache)").all() as Array<{ name: string }>;
     if (!mintCols.some((c) => c.name === "top10_pct")) {
@@ -136,7 +146,10 @@ export class Store {
 
   addWallet(address: string, nowSec: number = Math.floor(Date.now() / 1000)): void {
     this.db
-      .prepare("INSERT OR IGNORE INTO wallets (address, added_at, baseline_json) VALUES (?, ?, NULL)")
+      .prepare(
+        `INSERT INTO wallets (address, added_at, baseline_json, watched) VALUES (?, ?, NULL, 1)
+         ON CONFLICT(address) DO UPDATE SET watched = 1`,
+      )
       .run(address, nowSec);
   }
 
@@ -151,10 +164,17 @@ export class Store {
     });
   }
 
+  /** Wallets the watch loop polls (watched=1). Scan-only profiles are excluded. */
   listWallets(): string[] {
-    return this.db.prepare("SELECT address FROM wallets ORDER BY added_at").all().map((r) => r.address as string);
+    return this.db.prepare("SELECT address FROM wallets WHERE watched = 1 ORDER BY added_at").all().map((r) => r.address as string);
   }
 
+  /** True when the wallet is on the watch list (watched=1), not merely scanned. */
+  isWatched(address: string): boolean {
+    return this.db.prepare("SELECT 1 FROM wallets WHERE address = ? AND watched = 1").get(address) !== undefined;
+  }
+
+  /** True when a row exists for the wallet (watched or scan-only profile). */
   hasWallet(address: string): boolean {
     return this.db.prepare("SELECT 1 FROM wallets WHERE address = ?").get(address) !== undefined;
   }
@@ -170,8 +190,8 @@ export class Store {
   saveBaseline(baseline: Baseline): void {
     this.db
       .prepare(
-        `INSERT INTO wallets (address, added_at, baseline_json)
-         VALUES (?, unixepoch(), ?)
+        `INSERT INTO wallets (address, added_at, baseline_json, watched)
+         VALUES (?, unixepoch(), ?, 0)
          ON CONFLICT(address) DO UPDATE SET baseline_json = excluded.baseline_json`,
       )
       .run(baseline.walletAddress, JSON.stringify(baseline));

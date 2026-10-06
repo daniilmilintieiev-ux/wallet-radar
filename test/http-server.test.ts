@@ -30,8 +30,8 @@ interface Running {
   close: () => Promise<void>;
 }
 
-async function startTestServer(): Promise<Running> {
-  const server = createServer();
+async function startTestServer(opts: Parameters<typeof createServer>[0] = {}): Promise<Running> {
+  const server = createServer(opts);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const addr = server.address();
   if (typeof addr === "string" || addr === null) throw new Error("no server address");
@@ -448,7 +448,7 @@ interface WatchRunning {
 }
 
 async function startWatchServer(store: Store, extra: Parameters<typeof createServer>[0] = {}): Promise<WatchRunning> {
-  const server = createServer({ store, rateLimitPerMin: 0, ...extra });
+  const server = createServer({ store, rateLimitPerMin: 0, allowUnauthenticatedMutations: true, ...extra });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const addr = server.address();
   if (typeof addr === "string" || addr === null) throw new Error("no server address");
@@ -518,7 +518,7 @@ test("http-server: POST /unwatch removes a wallet from the watchlist", async () 
 });
 
 test("http-server: watch endpoints return 503 when no store is configured", async () => {
-  const r = await startTestServer();
+  const r = await startTestServer({ allowUnauthenticatedMutations: true });
   try {
     const res = await fetch(`${r.base}/watch`);
     assert.equal(res.status, 503);
@@ -717,7 +717,7 @@ test("http-server: GET /economics returns the P&L report (200)", async () => {
   const now = Math.floor(Date.now() / 1000);
   store.recordSettledPayment({ signature: "e1", payer: "P", recipient: "R", amount: 0.005, endpoint: "/scan" }, now);
   store.recordCostEvent({ ts: now, category: "helius", quantity: 1, unitPriceUsd: 0.0005, totalUsd: 0.0005 });
-  const server = createServer({ store, rateLimitPerMin: 0 });
+  const server = createServer({ store, rateLimitPerMin: 0, allowUnauthenticatedMutations: true });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const addr = server.address();
   if (typeof addr === "string" || addr === null) throw new Error("no server address");
@@ -984,7 +984,7 @@ test("http-server: internal server error returns clean 500 without leaking stack
 
 test("http-server: GET /defense/:wallet and POST /defense/:wallet/clear validate base58 wallet", async () => {
   const { store, dir } = tmpStore();
-  const server = createServer({ store, rateLimitPerMin: 0 });
+  const server = createServer({ store, rateLimitPerMin: 0, allowUnauthenticatedMutations: true });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const addr = server.address();
   if (typeof addr === "string" || addr === null) throw new Error("no server address");
