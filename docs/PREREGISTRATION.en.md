@@ -654,3 +654,19 @@ For each T, each stratum and each table (1 and 2, and the secondary "one record 
 
 ### 22e. Implementation
 Script scripts/shadow/sensitivity.mjs, tag sensitivity-v1. The script and tests were written and checked only on synthetic data without reading outcomes. It is run once on a copy of the database after 2026-10-10 09:00 UTC (§15g). analyze.mjs and outcomes.mjs were not changed.
+
+## 23. Verification of Collected Data Before Viewing Outcomes
+
+Recorded before outcome values were viewed (outcome values were not read during these checks). Sections 1-22 are not rewritten.
+
+### 23a. Sample check against the blockchain
+From the 459 records with a resolved buyer (excluding the eight records of §23b), 15 records were drawn with a deterministic generator (mulberry32, seed 20261008): ids 101, 170, 218, 234, 242, 265, 364, 390, 396, 406, 425, 488, 533, 550, 604. For each, Solana chain data was checked: (a) the pool exists and the mint matches; (b) the pool age at t is at most 20 minutes; (c) the buyer received the token and is not the pool creator; (d) t equals the block time of the transaction buyer_tx_signature (tolerance 120 seconds). Result: 15 of 15 for each of the four fields. 76 Helius calls were used. The sample is about 3% of the records and does not rule out isolated defects.
+
+### 23b. Records with a seen_at − t gap greater than 1000 minutes
+Eight records (ids 66, 155, 266, 272, 300, 337, 445, 484) were checked against the blockchain: the pools were created in 2024-2025, the first buy occurred 0-9 seconds after pool creation, and t equals the block time of buyer_tx_signature. The t and buyer values correspond to on-chain events; what is violated is the sampling frame (fresh pools). The cause of old pools appearing in the new-pairs feed has not been established. The records are excluded under §18b.
+
+### 23c. Distribution of gaps
+Over 605 records, the seen_at − t gap (minutes): 0 to 5 inclusive 553; over 5 up to 15 inclusive 44; over 15 up to 60: 0; over 60 up to 1000: 0; over 1000: 8 (all above 760,000 minutes). The maximum among the remaining records is 14.6 minutes (id 137). There are no negative gaps. Any threshold value from 15 minutes to 760,000 minutes separates the same eight records; the 1000-minute threshold was not changed.
+
+### 23d. What this check does not cover
+The correctness of the radar verdicts and of outcome values was not checked; the check concerns the authenticity and frame of the records.
