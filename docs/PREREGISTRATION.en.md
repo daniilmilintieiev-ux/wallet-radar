@@ -670,3 +670,16 @@ Over 605 records, the seen_at − t gap (minutes): 0 to 5 inclusive 553; over 5 
 
 ### 23d. What this check does not cover
 The correctness of the radar verdicts and of outcome values was not checked; the check concerns the authenticity and frame of the records.
+
+## 24. Known Limitation of the Tested Version (declared before viewing outcomes)
+
+Recorded before outcome values were viewed. Sections 1-23 are not rewritten.
+
+### 24a. What was found
+A code check on a stubbed network (no real data, 2026-10-08) established that runTrustCheck returns verdict safe with riskScore 0 for a wallet with an empty or very short history (checked on 0, 1, 2 and 5 transactions) when the balance is sufficient; there is no minimum-history check. The same logic is present in version shadow-v3 (tag 563a943) under which the data was collected.
+
+### 24b. What does not change
+The test rules, outcome criteria, thresholds and analysis code were not changed and will not be. The limitation is taken into account in interpretation: the result refers to the radar's behavior as it is, and blocks from other verdict conditions (liquidity, token check, other anomalies) remain in force.
+
+### 24c. Fix
+A minimum-history rule is planned after the result is published as a separate version; shadow-v3 verdicts are not recomputed.
