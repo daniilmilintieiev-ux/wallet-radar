@@ -25,7 +25,7 @@ When an autonomous agent interacts with a wallet, it faces critical risks:
 
 It enforces safety at two coordinated layers:
 - **Layer 1 (Off-Chain Pre-Trade Gate):** Offline analysis: milliseconds. Live check: about 1-2 seconds. Risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
-- **Layer 2 (On-Chain Hard Enforcement):** SPL Token-2022 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level, backed by Light Protocol ZK compression (~0.000005 SOL audit attestations).
+- **Layer 2 (On-Chain Hard Enforcement):** SPL Token-2022 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level; signed scan records are verified offline; the SPL Memo anchoring path currently fails (the record is not valid UTF-8; confirmed by a devnet simulation, see docs/KNOWN-ISSUES.md D1); writing to the Light Protocol compressed ledger on a live cluster has not been verified.
 
 ```
                      ┌────────────────────────────────────────────────────────┐
@@ -83,7 +83,7 @@ It enforces safety at two coordinated layers:
 | **A2A Agent Gate** | [`https://radar.cbellory.xyz`](https://radar.cbellory.xyz) | `POST /a2a`, `GET /.well-known/agent.json` |
 | **x402 Pay-per-Call** | [`https://pay.cbellory.xyz`](https://pay.cbellory.xyz) | `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC) |
 | **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | radar view of detected anomalies, a recorded replay (?demo=replay), the on-chain hook log, and the independent-test timeline; shows behavioral signals, not accuracy |
-| **Trust Proof API** | `https://radar.cbellory.xyz/trust-proof?wallet=<addr>` | Verifiable on-chain attestation + x402 receipt |
+| **Trust Proof API** | [`https://radar.cbellory.xyz/trust-proof?wallet=<addr>`](https://radar.cbellory.xyz/trust-proof?wallet=<addr>) | signed scan records are verified offline; the SPL Memo anchoring path currently fails (the record is not valid UTF-8; confirmed by a devnet simulation, see docs/KNOWN-ISSUES.md D1); writing to the Light Protocol compressed ledger on a live cluster has not been verified + x402 receipt |
 | **Actions & Blinks** | [`https://pay.cbellory.xyz/actions.json`](https://pay.cbellory.xyz/actions.json) | Phantom, Solflare, Dialect one-tap scan card |
 | **Canary Node** | Orange Pi 6 Plus (ARM64, 12 cores, 32 GB RAM, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
 
@@ -116,6 +116,16 @@ There is no single continuous risk-score axis mapping to `allow`/`throttle`/`blo
 3. **Simulation-time tiered limits** (`src/simulate.ts:104-121`, only reached inside `toolGateCopy` when both an amount and a mint are supplied — see `docs/PROPOSED-DESCRIPTIONS.md`): a literal `riskScore >= 70` zeroes out every payment tier ("Strictly blocked"). This governs per-tier `maxAmountUsd`/`allowed`, a different mechanism from `computeDecision`'s verdict field, though `toolGateCopy` folds the result into its own final answer.
 
 **Reproduced offline** (`scratch/task2-large-swap.mjs`, not committed — a single swap at 5×, 50×, and 500× the wallet's baseline median, all else identical): all three multiples produced the *identical* result — `riskScore: 30`, base verdict `safe` (30 is not `>` `maxRisk` 30), yet `computeDecision`'s verdict was `block` every time, because `LARGE_SWAP` is always severity `"high"`. **The trade's magnitude past the trigger threshold makes no difference to the verdict.** This directly contradicts a claim that "one large trade gives a hold, not a block, at any amount": in this reproduction, it is neither `hold` (the base verdict is actually `safe`) nor merely held back — `computeDecision` blocks it outright, independent of size.
+
+#### Which field decides
+
+These are three separate systems on the same data; they can disagree. For a copy decision use the action field of /gate-copy.
+
+| Endpoint | Field | Values | Purpose |
+|---|---|---|---|
+| `POST /gate-copy` | `action` | `allow`, `throttle`, `block`, `manual_review` | Pre-trade copy-trading firewall decision (combines wallet trust with token mint check) |
+| `POST /trust` | `verdict` | `safe`, `hold`, `unknown` | Pre-flight counterparty safety check (behavioral risk $\le 30$ and liquidity $\ge \$50$; does not check token mint) |
+| `GET /defense/:wallet` | `state` (`state.state`) | `armed`, `alerting`, `gated`, `blocked` | Persistent longitudinal defense stance across monitored windows (escalates on repeated anomalies, requires `RADAR_WATCH=1`) |
 
 ### 3. Risk Score vs. Defense State vs. Verdict — three distinct concepts
 
@@ -214,9 +224,13 @@ When a Token-2022 mint enables Wallet Radar's hook, every `transfer_checked` ins
 - **Deterministic Record PDAs**: Records derive from seeds `[b"radar_record", mint.key(), wallet.key()]` ensuring strict cross-mint isolation.
 - **Safe Account Deallocation**: The `close_scan_record` instruction validates program account ownership (`InvalidAccountOwner = 6011`) before deallocating account memory and reclaiming lamports to fee payer, preventing Solana VM `IllegalOwner` panics.
 
+#### Scope and limitations of the hook
+
+The hook is invoked only for Token-2022 mints that configure this program as their transfer-hook extension. It does not protect native SOL, legacy SPL tokens, or Token-2022 mints that do not use this hook. Per mint, the allow_unverified setting decides whether a counterparty without an on-chain scan record may receive transfers (allow_unverified: true) or is rejected (UnverifiedCounterparty). The hook enforces a verdict written on-chain by the operator; it does not detect anything by itself. Verified on devnet: nine rejections with error 6001.
+
 ### 2. Light Protocol ZK Scan Ledger (The Oracle)
 
-Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At agent scale, this is economically prohibitive. Wallet Radar integrates **Light Protocol ZK compression**:
+Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At agent scale, this is economically prohibitive. Wallet Radar integrates **Light Protocol ZK compression** (signed scan records are verified offline; the SPL Memo anchoring path currently fails (the record is not valid UTF-8; confirmed by a devnet simulation, see docs/KNOWN-ISSUES.md D1); writing to the Light Protocol compressed ledger on a live cluster has not been verified):
 
 | Metric | Traditional Solana PDA | Wallet Radar ZK Compressed State | Improvement |
 |---|---|---|---|
@@ -292,7 +306,7 @@ Agents invoke `POST /simulate` or MCP tool `radar_simulate` **before signing** a
 
 ## Cryptographic Payment Security (x402 & Blinks)
 
-Wallet Radar's HTTP services implement the **x402 payment-required standard** for autonomous machine-to-machine commerce ($0.005 USDC per live scan).
+Wallet Radar's HTTP services implement an **x402-style payment-required protocol** (own X-Payment-* headers and payment-proof format; not validated against official x402 v2 clients, which use PAYMENT-REQUIRED / PAYMENT-SIGNATURE / PAYMENT-RESPONSE) for autonomous machine-to-machine commerce ($0.005 USDC per live scan).
 
 Security features implemented across 11 audit revisions:
 - **Anti-Frontrunning (`X-Payment-Proof`)**: The calling agent signs a cryptographic Ed25519 signature over message format `RadarScan:<targetWallet>:<timestamp>` (or `RadarScan:<targetWallet>`) matching the on-chain payment fee payer. Attackers eavesdropping on the mempool cannot steal or replay another agent's payment transaction.
@@ -305,6 +319,8 @@ Security features implemented across 11 audit revisions:
 ## Developer Quick Start
 
 ### 1. Installation & Build
+
+Install by cloning the repository and building (npm ci && npm run build). The npm package metadata is incomplete: no type declarations are generated and dist/ is not part of the packed tarball (see docs/KNOWN-ISSUES.md).
 
 ```bash
 git clone https://github.com/daniilmilintieiev-ux/wallet-radar.git
