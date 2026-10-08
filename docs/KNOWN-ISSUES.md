@@ -555,17 +555,15 @@ documented there as `todo` tests.
 
 ## Found, not fixed
 
-### D1 (medium, availability of a feature; НЕ ПРОВЕРЕНО on-chain): oracle memo anchors are binary, not UTF-8
+### D1 (medium, availability of a feature): oracle memo anchors are binary, not UTF-8
 
 - `src/oracle/ledger.ts` `sendMemoAnchor` (`:642`, `memoData` at `:683`) sends `RADAR_ORACLE:` + the RS01 binary record
   (header, risk byte, 8-byte timestamp, and a 96-byte Ed25519 signature trailer) as SPL Memo instruction data.
   `scripts/audit/oracle-memo-utf8.mjs`: 0 of 2000 realistic signed records are valid UTF-8. The SPL Memo program is
   documented to accept only UTF-8 data, so such a transaction would be rejected; if so, the verified-anchor read
-  path (`:848` onward) would find nothing and clients fall back to the unverified lamports decode. This was not
-  confirmed on a real cluster (no network in this audit); `SECURITY.md` and the class docs describe the memo path as
-  working. **Needs a devnet check by the owner.**
+  path (`:848` onward) would find nothing and clients fall back to the unverified lamports decode.
 - `test/secaudit-oracle-memo.test.ts` has a `todo` test for it.
-- **Status:** not fixed (not critical/high), not verified on-chain.
+- **Status:** not fixed (fix planned: encode as UTF-8, e.g. base64). CONFIRMED by devnet simulation on 2026-10-08: the SPL Memo program rejects the 202-byte binary record (InstructionError InvalidInstructionData, log 'Invalid UTF-8, from byte 18'), while a valid UTF-8 string of the same length succeeds. Memo anchoring as implemented does not work.
 
 ### D2 (medium, latent): the attestation signature does not cover `topRules`, `txSignatures`, or a custom verdict
 
@@ -658,3 +656,26 @@ documented there as `todo` tests.
 - `npm audit` / dependency versions were not re-checked in this audit (no network); see the existing dependency entry above.
 - Behaviour on a real cluster of the oracle memo path (D1/D2) and of the Light Protocol write path.
 - The environment of the board's HTTP server process (its unit file is not in `deploy/`).
+
+## Trust check returns safe for wallets with empty or very short history
+
+- Source: external review checked on a stubbed network (no real data), 2026-10-08. For wallet 4Nd1mBQtrMJVYVfKf2PJy9NZPdUZKnZiHgZCMZFgu5TD with sufficient balances ($100 USDC, 2 SOL), runTrustCheck returned verdict safe, riskScore 0 for 0, 1, 2 and 5 recent transactions. There is no minimum-history rule (src/trust.ts; MIN_PRIOR_SAMPLES only splits baseline from evaluation samples).
+- Impact: the absence of evidence is treated as the absence of anomalies. Other conditions (liquidity, token check on /gate-copy) can still block.
+- Status: finding; it does not change the published test (shadow-v3); fix planned after the result is published (a minimum-history rule returning unknown).
+
+## x402 interoperability
+
+- The server emits its own headers (X-Payment-Required, X-Payment-Amount, X-Payment-Currency, X-Payment-Recipient) and a body with version 1.0; it accepts X-Payment-Signature, X-Payment-Payer, X-Payment-Proof, X-Payment, and Authorization: x402. The official x402 v2 headers (PAYMENT-REQUIRED, PAYMENT-SIGNATURE, PAYMENT-RESPONSE) are not supported; the flow was exercised only with this project's SDK.
+- Status: finding; wording changed to 'x402-style'; conformance work planned after the result.
+
+## npm package metadata is incomplete
+
+- package.json declares types ./dist/src/sdk/index.d.ts, but tsconfig.json sets declaration false, so no .d.ts is generated; dist/ is gitignored and there is no files field, so the packed tarball contains no dist/. A TypeScript consumer installing the tarball gets TS2307 (checked 2026-10-08).
+- Status: finding; use clone-and-build; fix planned after the result (declaration build config, files field, npm pack smoke test in CI).
+
+## CI covers build and test only
+
+- .github/workflows/ci.yml runs checkout, Node 22, npm ci, build, test. No npm pack smoke test, npm audit, Rust/Anchor fmt, clippy or build, and no coverage report.
+- Status: finding.
+
+## x402 settlement crash window: if the process crashes after on-chain verification but before the durable SQLite record is written, the same signature may be served again after a restart (idempotent retry window is bounded by maxAgeSec, 300 s by default). Status: finding; planned fix: pending -> verify -> settled with reconciliation.
