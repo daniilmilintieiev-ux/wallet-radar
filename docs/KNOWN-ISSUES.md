@@ -440,6 +440,7 @@ responses, user input) through those import sites:
   - When RPC returns `null`, server retries up to 3 times with 1-second pause (only if signature matches 86-90 base58 characters; malformed signatures fail immediately without retries) before returning 402 with hint `"Transaction not found on-chain (retry in a few seconds if you just paid)"`.
   - SDK polls `getSignatureStatuses` for up to 20 seconds after transaction submission until desired `commitment` is reached, and retries 402 "not found" responses up to 3 times with 2-second delay.
 - **Status:** fixed in main (originally branch fixes-c, commit f888112), not yet deployed to the public servers. Verified in test suite (`test/x402.test.ts`, `test/sdk.test.ts`, `test/adversarial.test.ts`).
+- **Live verification (2026-10-08):** with the fixed build deployed on the public servers, two real x402 payments made by the operator with the default SDK settings were accepted by the server within seconds (scan 0.005 USDC, signature 4DpwQio7AkrwEggFfYeX53Hfgt4LiKmpGcPmNQxn4YBqckqhoUpG92ZaesPuX4YuMEYXK2TyRw6syauPPG7cahCL; analyze 0.001 USDC, signature 2vrnuqK98AJYp2pxbeAz9rX4LbAXsvcc6cszxcAmVpZ6kmUSrEwEwQhC8h1wci6pSVmxTE3KyyNJwVyTLZQyTKY3); both finalized on-chain; reuse of an accepted signature was rejected ('already settled'). These are operator test payments, not customer revenue.
 
 ## POST /analyze and 500: Missing input validation prior to payment and internal error leakage
 
