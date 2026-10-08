@@ -326,6 +326,8 @@ npm run radar -- selftest
 npm run radar -- benchmark
 ```
 
+Note: the number of counted tests depends on the Node version. Node 24 (Windows): 796 tests, 791 passing; Node 22 (Linux ARM64): 765 tests, 760 passing; 0 failures and 5 documented todo in both. The cause of the difference in the number of counted tests has not been investigated.
+
 ### 3. Live Wallet Scan
 
 ```bash
