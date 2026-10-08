@@ -632,3 +632,25 @@ Recorded after collection stopped; outcome values were not viewed.
 ### 21g. Further changes after collection stopped
 
 After section 21a, the following were additionally merged into main: security fixes from the defensive audit (authorization of mutating routes, payment cap in the SDK, dashboard parameter validation, disabling unauthenticated on-chain writes, tracking watched wallets, payment signature reuse in Blink) and text edits (docs/index.html, README.md, video scripts). Only files outside scripts/shadow/ were modified; scripts/shadow/collect.mjs, db.mjs, preflight.mjs, outcomes.mjs and tags shadow-v3, outcomes-v1, analysis-v1 were not changed; detection rules and thresholds (src/analyzer.ts, src/mint.ts, src/defense.ts) were not changed. The test result still refers to shadow-v3.
+
+## 22. Exploratory Sensitivity Analysis to the Risk Threshold (declared before viewing outcomes)
+
+Recorded before outcome values were viewed: only counters were used in summaries and checks. Sections 1-21 are not rewritten.
+
+### 22a. Purpose and status
+The primary test result is determined only by sections 1-20 and the code analysis-v1; it is published first and unchanged. The exploratory analysis below does not replace it and is not used to revise the rules, thresholds or conclusions of the primary result. Its aim is to show how much the primary conclusion depends on the risk threshold in the "blocked" group.
+
+### 22b. What is computed (the set of variants is closed)
+For each threshold T in {20, 30, 40, 50, 60}, a record is "blocked" if the stored top-level riskScore of the radar_verdict field is strictly greater than T, otherwise "passed". Records without radar_verdict, records outside the sampling frame (§18b, gap over 1000 minutes) and special outcome classes (§5) are treated as in the primary analysis. Nothing else is varied: not the detection rules, not the other verdict conditions, not the outcome criteria. No other threshold values, variables or splits are added to the exploratory analysis.
+
+### 22c. Metrics
+For each T, each stratum and each table (1 and 2, and the secondary "one record per buyer" table): the number of "blocked" and "passed" records, the number of DANGEROUS outcomes in each group, shares, 95% Wilson intervals, the ratio of shares and the status under the same rules (§4.5, §4.6, §14d).
+
+### 22d. Interpretation rules
+1. No "best" threshold is selected; the results for all five values are published together.
+2. Because five comparisons are made on the same data, an improvement at any T is not treated as confirmation; it can only be a hypothesis for independent verification on new data.
+3. The result is labelled "exploratory, same data, thresholds not independently validated".
+4. The T=30 variant need not coincide with the primary analysis: the primary "blocked" group is defined by the whole verdict (including liquidity and the token check), not by risk alone. The number of differences between them is given in the report.
+
+### 22e. Implementation
+Script scripts/shadow/sensitivity.mjs, tag sensitivity-v1. The script and tests were written and checked only on synthetic data without reading outcomes. It is run once on a copy of the database after 2026-10-10 09:00 UTC (§15g). analyze.mjs and outcomes.mjs were not changed.
