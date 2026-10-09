@@ -127,9 +127,8 @@ footer .gh{color:var(--muted);font-family:Consolas,monospace}
 
 <section>
   <div class="about">
-    The payoff is the <b>gate before you copy</b>. Copy-trading bots (BonkBot, Maestro,
-    Trojan, Axiom, Photon, BullX) surface wallets to copy — none of them safety-gate the
-    wallet first. <code>radar_trust</code> is that gate: it returns one decision —
+    The payoff is the <b>gate before you copy</b>. We are not aware of copy-trading bots
+    that safety-gate the counterparty before executing. <code>radar_trust</code> is that gate: it returns one decision —
     <b>safe / hold / unknown</b> — with a per-rule <code>reasons[]</code> breakdown, a one-line
     summary, and a <code>freshness</code> stamp on how recent the data is. An agent about to
     copy-trade a wallet calls it first and stops, instead of sending money to a wallet that
