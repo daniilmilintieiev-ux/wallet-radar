@@ -188,7 +188,7 @@ Wallet Radar does not rely on a single defensive checkpoint. It provides an end-
                     │                                │
 ┌───────────────────▼────────────────────────────────▼───────────────────┐
 │                   7. ON-CHAIN ENFORCEMENT LAYER                        │
-│   Token-2022 Transfer Hook (Devnet Proven · Devnet-proven Revert Gate) │
+│   Token-2022 Transfer Hook (Devnet-proven Revert Gate)                 │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -555,7 +555,7 @@ Early-access prototype (package `1.0.0`, per `package.json`). The core detection
 
 ## Feature status
 
-Status as of 2026-10-08, build 2dc3e37 (live runs: agent simulator 14A and CLI smoke test on 2026-10-02; payments verified on-chain 2026-10-08).
+Status as of 2026-10-08, build 2dc3e37 (live runs: agent simulator and CLI smoke test on 2026-10-01, logs not in the repository; operator payments verified on-chain 2026-10-02 and 2026-10-08).
 
 | Feature | Status | Limitation |
 |---|---|---|
@@ -565,9 +565,9 @@ Status as of 2026-10-08, build 2dc3e37 (live runs: agent simulator 14A and CLI s
 | CLI `radar prices` | live run | public GET to Jupiter Price API |
 | CLI `radar add` / `history` / `report` / `alerts` / `remove` | live run | local SQLite read/write, no network required |
 | CLI `radar digest` | live run | local run without Telegram keys |
-| CLI `radar replay` | live run | run with a Helius key on 2026-10-07 on historical window of wallet 8XeK5m…; tests in test/replay.test.js |
-| CLI `radar scan` | live run | CLI smoke test with a Helius key, exit code 0 (2026-10-02) |
-| CLI `radar trust` | live run | CLI smoke test with a Helius key, exit code 0 (2026-10-02) |
+| CLI `radar replay` | live run | run with a Helius key on a historical window of wallet 8XeK5m… (recorded 2026-10-01, see docs/dashboard/replay-8XeK5m.json); tests in test/replay.test.js |
+| CLI `radar scan` | live run | CLI smoke test with a Helius key, exit code 0 (2026-10-01) |
+| CLI `radar trust` | live run | CLI smoke test with a Helius key, exit code 0 (2026-10-01) |
 | CLI `radar watch` | tests | loop verified by tests in `test/watch.test.js`/`test/defense.test.js` and systemd service on board |
 | `GET /health`, `POST /selftest`, `POST /benchmark`, `GET /.well-known/agent.json`, `GET /dashboard`, `GET /economics`, `GET /trust-proof`, `POST /a2a` — 23 endpoints (see GET /health) | live run | without paid Helius key (offline/public data) |
 | `POST /analyze` | live run | offline, median response time 3.69 ms |
@@ -578,7 +578,7 @@ Status as of 2026-10-08, build 2dc3e37 (live runs: agent simulator 14A and CLI s
 | `POST /simulate` | tests | covered by `test/simulate.test.js` |
 | `POST /batch` | tests | covered by `test/trust.test.js` |
 | MCP `radar_selftest` / `radar_benchmark` / `radar_analyze` | live run | |
-| MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | live run | called by an agent simulator over stdio (2026-10-01/02); tests in test/mcp.test.js |
+| MCP `radar_scan` / `radar_trust` / `radar_batch` / `radar_simulate` / `radar_gate_copy` | live run | called by an agent simulator over stdio (2026-10-01); tests in test/mcp.test.js |
 | SPL Token-2022 Transfer Hook (Devnet) | live run | real transaction with rollback `0x1771`/`CounterpartyFlagged` |
 | Demo `examples/copy-bot-firewall.ts` | unconfirmed | `fetchFn` uses built-in mocks with hardcoded verdicts, no real call to radar by default |
 | Light Protocol attestation recording (on-chain, Devnet) | unconfirmed | `getCompressedAccountsByOwner` unavailable on standard Devnet RPC (`-32601 Method not found`); only offline logic confirmed (`test/oracle.test.js`) |
