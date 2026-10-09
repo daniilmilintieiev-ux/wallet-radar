@@ -679,3 +679,27 @@ documented there as `todo` tests.
 - Status: finding.
 
 ## x402 settlement crash window: if the process crashes after on-chain verification but before the durable SQLite record is written, the same signature may be served again after a restart (idempotent retry window is bounded by maxAgeSec, 300 s by default). Status: finding; planned fix: pending -> verify -> settled with reconciliation.
+
+## The "blocked" bucket mixes reasons
+The test's "blocked" bucket (actions `block` and `manual_review`) includes a balance below $50 (form F1 even at risk 0, scenario S8), any reactivation after a pause of 7 days or more (form F5 even at risk 15, scenario S4), data failures (F2, and F5 with the token check unavailable), and behavior inside the buyer's own window. The share of each reason is unknown.
+Status: finding; not fixed; does not change the preregistered test; see docs/DESIGN-REVIEW.md
+
+## Snapshot-mode baseline for wallets with few older trades
+When fewer than 3 trades are older than 7 days, the trust path uses the evaluated trades as their own baseline. This applies to 802 of 1001 cached wallets; novelty rules fire for 4.1% of wallets in snapshot mode against 95.4% in windowed mode, and burst, concentration, large swap and regime shift compare the window with itself.
+Status: finding; not fixed; does not change the preregistered test; see docs/DESIGN-REVIEW.md
+
+## Additive scoring over rule instances and REGIME_SHIFT double counting
+Risk is summed over rule instances (low 5, medium 15, high 30, cap 100): 153 of 1001 cached wallets are at exactly 100 and 59 of 391 hold wallets are scored by a single repeated rule type. The REGIME_SHIFT meta-rule adds 30 points on top of rules already counted (scenario S2: risk 80 from five rules).
+Status: finding; not fixed; does not change the preregistered test; see docs/DESIGN-REVIEW.md
+
+## COUNTERPARTY_ESCALATION fires on stationary wallets
+The rule compares a batch with a counterparty's entire prior history; with two windows of equal length it fired for 23 of 197 cached wallets in windowed mode (11.7%), and in a synthetic stationary control with random counterparty choice (S11) it moved the wallet to hold (risk 45). The report does not establish that those 23 cache wallets are stationary.
+Status: finding; not fixed; does not change the preregistered test; see docs/DESIGN-REVIEW.md
+
+## Funding-source list has six addresses of unverified origin; KNOWN_CEX_WALLETS is unused
+`KNOWN_EXPLOITERS` has 6 addresses; the rule fired for 0 of 1001 cached wallets and the origin of the addresses is NOT VERIFIED. `KNOWN_CEX_WALLETS` is not referenced anywhere in `src`.
+Status: finding; not fixed; does not change the preregistered test; see docs/DESIGN-REVIEW.md
+
+## Known evasions: gradual growth and splitting
+A swap size that grows gradually up to $118 stays under the 3x large-swap rule (scenario S5, risk 0, allow), and splitting $600 into 6 x $100 swaps 45 minutes apart evades both the large-swap and concentration rules (scenario S5b, risk 15, allow).
+Status: finding; not fixed; does not change the preregistered test; see docs/DESIGN-REVIEW.md
