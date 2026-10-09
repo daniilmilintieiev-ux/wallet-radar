@@ -25,7 +25,7 @@ When an autonomous agent interacts with a wallet, it faces critical risks:
 
 It enforces safety at two coordinated layers:
 - **Layer 1 (Off-Chain Pre-Trade Gate):** Offline analysis: milliseconds. Live check: about 1-2 seconds. Risk scoring, liquidity stress testing, and what-if simulation via MCP & Agent SDK before funds are in motion.
-- **Layer 2 (On-Chain Hard Enforcement):** SPL Token-2022 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level; signed scan records are verified offline; the SPL Memo anchoring path currently fails (the record is not valid UTF-8; confirmed by a devnet simulation, see docs/KNOWN-ISSUES.md D1); writing to the Light Protocol compressed ledger on a live cluster has not been verified.
+- **Layer 2 (On-Chain Hard Enforcement):** SPL Token-2022 Transfer Hook (`wvN1kyvjoFSJq5YqaniVRUm9Tay2wADtMGSayAzHwoV`) reverting flagged transfers at the Solana runtime level; signed scan records (offline-verified); on-chain anchoring not working yet, see KNOWN-ISSUES D1.
 
 ```
                      ┌────────────────────────────────────────────────────────┐
@@ -83,7 +83,7 @@ It enforces safety at two coordinated layers:
 | **A2A Agent Gate** | [`https://radar.cbellory.xyz`](https://radar.cbellory.xyz) | `POST /a2a`, `GET /.well-known/agent.json` |
 | **x402 Pay-per-Call** | [`https://pay.cbellory.xyz`](https://pay.cbellory.xyz) | `POST /scan` (0.005 USDC), `POST /analyze` (0.001 USDC) |
 | **Web Dashboard** | [`https://radar.cbellory.xyz/dashboard`](https://radar.cbellory.xyz/dashboard) | radar view of detected anomalies, a recorded replay (?demo=replay), the on-chain hook log, and the independent-test timeline; shows behavioral signals, not accuracy |
-| **Trust Proof API** | [`https://radar.cbellory.xyz/trust-proof?wallet=<addr>`](https://radar.cbellory.xyz/trust-proof?wallet=<addr>) | signed scan records are verified offline; the SPL Memo anchoring path currently fails (the record is not valid UTF-8; confirmed by a devnet simulation, see docs/KNOWN-ISSUES.md D1); writing to the Light Protocol compressed ledger on a live cluster has not been verified + x402 receipt |
+| **Trust Proof API** | `https://radar.cbellory.xyz/trust-proof?wallet=<addr>` | Signed scan record (offline-verified) + x402-style receipt |
 | **Actions & Blinks** | [`https://pay.cbellory.xyz/actions.json`](https://pay.cbellory.xyz/actions.json) | Phantom, Solflare, Dialect one-tap scan card |
 | **Canary Node** | Orange Pi 6 Plus (ARM64, 12 cores, 32 GB RAM, Armbian) (`192.168.0.164`) | Continuous monitoring; restarts after power interruptions are logged |
 
@@ -124,7 +124,7 @@ These are three separate systems on the same data; they can disagree. For a copy
 | Endpoint | Field | Values | Purpose |
 |---|---|---|---|
 | `POST /gate-copy` | `action` | `allow`, `throttle`, `block`, `manual_review` | Pre-trade copy-trading firewall decision (combines wallet trust with token mint check) |
-| `POST /trust` | `verdict` | `safe`, `hold`, `unknown` | Pre-flight counterparty safety check (behavioral risk $\le 30$ and liquidity $\ge \$50$; does not check token mint) |
+| `POST /trust` | `verdict` | `safe`, `hold`, `unknown` | verdict from behavioral risk <= 30 and liquidity >= $50; does not check the token mint |
 | `GET /defense/:wallet` | `state` (`state.state`) | `armed`, `alerting`, `gated`, `blocked` | Persistent longitudinal defense stance across monitored windows (escalates on repeated anomalies, requires `RADAR_WATCH=1`) |
 
 ### 3. Risk Score vs. Defense State vs. Verdict — three distinct concepts
@@ -230,7 +230,9 @@ The hook is invoked only for Token-2022 mints that configure this program as the
 
 ### 2. Light Protocol ZK Scan Ledger (The Oracle)
 
-Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At agent scale, this is economically prohibitive. Wallet Radar integrates **Light Protocol ZK compression** (signed scan records are verified offline; the SPL Memo anchoring path currently fails (the record is not valid UTF-8; confirmed by a devnet simulation, see docs/KNOWN-ISSUES.md D1); writing to the Light Protocol compressed ledger on a live cluster has not been verified):
+Storing scan records in regular Solana PDAs costs ~0.002039 SOL per account. At agent scale, this is economically prohibitive. Wallet Radar integrates **Light Protocol ZK compression** (signed scan records (offline-verified); on-chain anchoring not working yet, see KNOWN-ISSUES D1):
+
+Signed scan records are verified offline. The SPL Memo anchoring path currently fails: the record is not valid UTF-8 (confirmed by a devnet simulation; see docs/KNOWN-ISSUES.md D1). Writing to the Light Protocol compressed ledger on a live cluster has not been verified.
 
 | Metric | Traditional Solana PDA | Wallet Radar ZK Compressed State | Improvement |
 |---|---|---|---|
