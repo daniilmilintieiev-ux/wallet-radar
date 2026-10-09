@@ -683,3 +683,16 @@ The test rules, outcome criteria, thresholds and analysis code were not changed 
 
 ### 24c. Fix
 A minimum-history rule is planned after the result is published as a separate version; shadow-v3 verdicts are not recomputed.
+
+## 25. Review of the Scoring Method (published before viewing outcomes)
+
+Recorded before outcome values were viewed. Sections 1-24 are not rewritten.
+
+### 25a. What was done
+The review of the scoring method (docs/DESIGN-REVIEW.md) was completed and published before outcome values were viewed; the rules, thresholds, criteria and analysis code were not changed.
+
+### 25b. For interpretation
+For interpretation: the "blocked" group in the test means the gate's decision for any reason (low balance, reactivation after a pause, data failures, behavior in the window, token check), not only token danger; the share of reasons is unknown.
+
+### 25c. Publishing the result
+The test result under §4.5-4.6 is published as is; the review does not replace it and is not used to revise conclusions.
