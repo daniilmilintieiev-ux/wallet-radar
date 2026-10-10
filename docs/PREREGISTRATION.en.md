@@ -696,3 +696,19 @@ For interpretation: the "blocked" group in the test means the gate's decision fo
 
 ### 25c. Publishing the result
 The test result under §4.5-4.6 is published as is; the review does not replace it and is not used to revise conclusions.
+
+## 26. Test Result
+
+Recorded after the computation (2026-10-10, 12:04Z). Sections 1-25 are not rewritten.
+
+### 26a. Versions and input data
+analysis-v1 (d3d406d), outcomes-v1 (5ff5ddc), sensitivity-v1 (82dcd00). Database copy of 605 records: sha256 e8029e49…5af5a; reports report-full.txt (sha256 C3E2A068…92AA5) and report-sensitivity.txt (sha256 8FF0769A…729BB); full values in docs/RESULT.md.
+
+### 26b. Result under the preregistered rules
+Stratum A, tables 1 and 2: DIFFERENCE_NOT_ESTABLISHED (blocked 55 of 167, 32.93%, CI95 [26.26%, 40.38%]; passed n=0). Secondary 'one record per buyer' tables: INSUFFICIENT_DATA (25 DANGEROUS against a threshold of 30; 25 of 54, 46.30%). Stratum B: INSUFFICIENT_DATA (0 resolved records). The 'radar is useful' criterion (§4.5, §14d) is not met.
+
+### 26c. Caveat
+In the primary definition all 167 resolved records fell into the 'blocked' group and the 'passed' group is empty; the groups cannot be compared. Other records: NO_BUYER 138; outside the frame (§18b) 8; RADAR_ERROR 1; MIGRATION_NOT_AN_OUTCOME 1; IRRECOVERABLE 217; IRRECOVERABLE_NO_LIQUIDITY_AT_T 73.
+
+### 26d. Exploratory analysis
+The exploratory sensitivity analysis (§22) is given in docs/RESULT.md; it does not replace the result and is not used to revise its conclusions.
