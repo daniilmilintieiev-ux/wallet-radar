@@ -153,6 +153,8 @@ The full protocol of the current run — including criteria (a)/(b), thresholds,
 
 English translations of the protocol documents are provided next to the Russian originals (docs/PREREGISTRATION.en.md, docs/TESTER-SPEC.en.md, docs/SHADOW-COLLECTOR.en.md, docs/SHADOW-RUNBOOK.en.md, ground-truth/PROTOCOL.en.md); the Russian text is authoritative.
 
+Result (2026-10-10): the preregistered 'radar is useful' criterion is not met; the gate blocked all 167 resolved records, so blocked and passed could not be compared. See docs/RESULT.md.
+
 ---
 
 ## Modular Multi-Layer Architecture
