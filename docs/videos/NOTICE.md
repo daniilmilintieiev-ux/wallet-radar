@@ -1,0 +1,1 @@
+The file wallet-radar-scope.mp4 in this directory was recorded on 2026-09-10, before the corrections made to this repository (retraction of early accuracy figures, corrected rule counts, error names and hook figures). It may show retracted numbers. It is kept for reference only and is not linked from the site. Current claims are in README.md and docs/RESULT.md.
