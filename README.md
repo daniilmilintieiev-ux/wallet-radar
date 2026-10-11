@@ -335,6 +335,13 @@ npm install
 npm run build
 ```
 
+Run the local HTTP API and dashboard (no keys needed for offline endpoints):
+```bash
+npm run http
+# or: PORT=7799 npm run http
+# open http://127.0.0.1:7799/dashboard?demo=replay
+```
+
 ### 2. Verify System Integrity (791 passing, 5 documented known gaps (todo), 46 suites)
 
 ```bash
