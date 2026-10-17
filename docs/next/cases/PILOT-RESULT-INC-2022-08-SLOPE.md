@@ -168,7 +168,7 @@ As specified in Amendment 1, the pilot was executed with `prices = null` and `mi
 
 ## 5. Deviations
 
-None. All executions followed the protocol in `SCORING-SPEC-PILOT.md` and Amendment 1 exactly.
+None (superseded: see Deviation 1).
 
 ## 6. Not Done
 
@@ -176,3 +176,74 @@ None. All executions followed the protocol in `SCORING-SPEC-PILOT.md` and Amendm
 - False-alarm rate was not computed.
 - Threshold sweeps were not performed.
 - No claim is made regarding detection accuracy, sensitivity, or specificity.
+
+## 7. Deviation 1: Reporting Defect in Baseline Mode Selection (`pilot_score.mjs:54`)
+
+### 7.1. Published Table (Run 1, Commit `50d0343`)
+
+In the initial pilot report (commit `50d0343`), the case results were published as follows:
+
+| Case ID | Wallet | Depth Reached | Mode ($T_a$ / $T_b$) | Flagged at $T_a$ (Score) | Flagged at $T_b$ (Score) | History File SHA-256 |
+|:--------|:-------|:--------------|:---------------------|:-------------------------|:-------------------------|:---------------------|
+| C-001-1 | `4J7uT2PQnrfWazv3DJcM82i49WmTugyfpdmDvEjKLDks` | 101 txs | windowed / snapshot | **no** (20) | **no** (0) | `036d64a636384522...` |
+| C-001-2 | `96StvqZyFUPtyMr4o9s7K4V29RSNyRpVi76vNwxG5rUf` | 401 txs | windowed / windowed | **yes** (50) | **yes** (50) | `1ff34abb3db2afb2...` |
+| C-001-3 | `AWrN51REFu1ZWoT2qHjXaVaUuqmUV4SqTWPxSbC2DVqW` | 45 txs | windowed / snapshot | **no** (20) | **no** (0) | `07499a61fe8e5010...` |
+| C-001-4 | `5K659U8aiopakWpVn3jH7ihXnEnuBBKmCavW3o185MZS` | 101 txs | windowed / snapshot | **yes** (35) | **no** (0) | `de1e1ab062ef8dc6...` |
+| C-001-5 | `7GKE13Q3PW8EBMdVm6ENYyZPV5ELSYq4qGFVijFwRctd` | 63 txs | windowed / windowed | **no** (5) | **no** (15) | `acbf7c429ad8f8b7...` |
+
+Notice that for dormant cases C-001-1, C-001-3, and C-001-4, the mode at $T_b$ was reported as `snapshot`.
+
+### 7.2. Defect Description (`scripts/next/pilot_score.mjs:54`)
+
+During Stage N7 diagnostics and independent recomputation (`scripts/next/pilot_recompute.mjs`), a discrepancy was identified in how `scripts/next/pilot_score.mjs` computed the descriptive string `baselineMode`.
+
+Line 54 originally read:
+```javascript
+const baselineMode = baselineTxs.length !== txs.length ? "windowed" : "snapshot";
+```
+
+In `selectScoring` (`src/trust.ts:167-175`), the scoring mode branch is determined by whether the wallet has at least 3 transactions older than the 7-day evaluation window (`priorCount >= 3`):
+```javascript
+const prior = txs.filter((t) => (t.timestamp ?? 0) < windowStart);
+if (prior.length >= 3) {
+  return { baselineTxs: prior, evalTxs: recent };
+}
+return { baselineTxs: txs, evalTxs: txs };
+```
+
+For wallets that were completely dormant during the 7-day evaluation window $[T_b - 7\text{d}, T_b]$ (cases C-001-1, C-001-3, C-001-4), `recent.length === 0`. Consequently, all transactions in the evaluated history set `txs` were prior transactions, making `baselineTxs.length === txs.length`.
+Because `baselineTxs.length !== txs.length` evaluated to `false`, `pilot_score.mjs` erroneously assigned `baselineMode = "snapshot"`, even though `selectScoring` had taken the windowed branch (`prior.length >= 3`) and passed `evalTxs = []` to `detectAnomalies`.
+
+The scoring calculations (`riskScore` and `anomalies`) were completely unaffected because `selectScoring` correctly routed the data in `runTrustCheck`. Only the reported string label `baselineMode` was incorrect.
+
+### 7.3. The Fix (Commit `4bbc6e0`)
+
+In commit `4bbc6e0` (`fix(next): pilot script defect (Deviation 1)`), line 54 of `scripts/next/pilot_score.mjs` was replaced with the exact condition evaluated by `selectScoring`:
+```javascript
+const priorCount = txs.filter((t) => (t.timestamp ?? 0) < windowStart).length;
+const baselineMode = priorCount >= 3 ? "windowed" : "snapshot";
+```
+
+### 7.4. Recomputed Table (Run 2, Post-Fix Offline Recompute)
+
+Recomputation performed strictly offline using the preserved raw transaction histories in `analysis-data/pilot/`:
+
+| Case ID | Wallet | Depth Reached | Mode ($T_a$ / $T_b$) | Flagged at $T_a$ (Score) | Flagged at $T_b$ (Score) | History File SHA-256 |
+|:--------|:-------|:--------------|:---------------------|:-------------------------|:-------------------------|:---------------------|
+| C-001-1 | `4J7uT2PQnrfWazv3DJcM82i49WmTugyfpdmDvEjKLDks` | 101 txs | windowed / windowed | **no** (20) | **no** (0) | `036d64a636384522...` |
+| C-001-2 | `96StvqZyFUPtyMr4o9s7K4V29RSNyRpVi76vNwxG5rUf` | 401 txs | windowed / windowed | **yes** (50) | **yes** (50) | `1ff34abb3db2afb2...` |
+| C-001-3 | `AWrN51REFu1ZWoT2qHjXaVaUuqmUV4SqTWPxSbC2DVqW` | 45 txs | windowed / windowed | **no** (20) | **no** (0) | `07499a61fe8e5010...` |
+| C-001-4 | `5K659U8aiopakWpVn3jH7ihXnEnuBBKmCavW3o185MZS` | 101 txs | windowed / windowed | **yes** (35) | **no** (0) | `de1e1ab062ef8dc6...` |
+| C-001-5 | `7GKE13Q3PW8EBMdVm6ENYyZPV5ELSYq4qGFVijFwRctd` | 63 txs | windowed / windowed | **no** (5) | **no** (15) | `acbf7c429ad8f8b7...` |
+
+### 7.5. Comparison of Counters Across Runs
+
+| Metric | Run 1 (Published, commit `50d0343`) | Run 2 (Post-fix recompute, commit `4bbc6e0`) | Difference |
+|:-------|:------------------------------------|:----------------------------------------------|:-----------|
+| Flagged at $T_a$ (`riskScore > 30`) | **2 of 5** (C-001-2: 50, C-001-4: 35) | **2 of 5** (C-001-2: 50, C-001-4: 35) | 0 (identical) |
+| Flagged at $T_b$ (`riskScore > 30`) | **1 of 5** (C-001-2: 50) | **1 of 5** (C-001-2: 50) | 0 (identical) |
+| Risk Scores ($T_a$) | `[20, 50, 20, 35, 5]` | `[20, 50, 20, 35, 5]` | None |
+| Risk Scores ($T_b$) | `[0, 50, 0, 0, 15]` | `[0, 50, 0, 0, 15]` | None |
+| Anomalies ($T_a$) | Identical across all 5 cases | Identical across all 5 cases | None |
+| Anomalies ($T_b$) | Identical across all 5 cases | Identical across all 5 cases | None |
+| Baseline Modes | 3 cases mislabeled `snapshot` at $T_b$ | All 5 cases correctly labeled `windowed` | Mode label only |
