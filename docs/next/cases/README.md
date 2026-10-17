@@ -7,3 +7,5 @@
 5. The radar is not run on any case until the list is frozen (date in DETECTION-TARGET.md section 10). Cases found after the freeze are not added.
 6. The radar's own output is never a source.
 7. Every rejected case keeps its row with the reason.
+
+Pilot results (docs/next/cases/PILOT-RESULT-INC-2022-08-SLOPE.md) are descriptive counts of five sampled wallets. They are not a test and are not used to tune any rule.

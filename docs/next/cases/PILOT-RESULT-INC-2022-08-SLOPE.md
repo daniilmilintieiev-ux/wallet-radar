@@ -247,3 +247,72 @@ Recomputation performed strictly offline using the preserved raw transaction his
 | Anomalies ($T_a$) | Identical across all 5 cases | Identical across all 5 cases | None |
 | Anomalies ($T_b$) | Identical across all 5 cases | Identical across all 5 cases | None |
 | Baseline Modes | 3 cases mislabeled `snapshot` at $T_b$ | All 5 cases correctly labeled `windowed` | Mode label only |
+
+## 8. Corrected reading of the results (published after Deviation 1; scores unchanged)
+
+### 8.1. Case Summary Table
+
+| Case ID | History Txs | Recent Txs ($T_a$ / $T_b$) | Score at $T_a$ | Anomalies at $T_a$ | Score at $T_b$ | Anomalies at $T_b$ / Evaluability |
+|:---|:---:|:---:|:---:|:---|:---:|:---|
+| C-001-1 | 101 | 1 / 0 | 20 | [MEDIUM] DORMANT_ACTIVE, [LOW] NEW_COUNTERPARTY | 0 | not evaluable (no transactions in the 7 days before T_b) |
+| C-001-2 | 401 | 25 / 22 | 50 | [LOW] NEW_PROTOCOL (×4), [LOW] NEW_COUNTERPARTY (×3), [MEDIUM] REGIME_SHIFT | 50 | [LOW] NEW_PROTOCOL (×4), [LOW] NEW_COUNTERPARTY (×3), [MEDIUM] REGIME_SHIFT |
+| C-001-3 | 45 | 1 / 0 | 20 | [MEDIUM] DORMANT_ACTIVE, [LOW] NEW_COUNTERPARTY | 0 | not evaluable (no transactions in the 7 days before T_b) |
+| C-001-4 | 101 | 1 / 0 | 35 | [HIGH] DORMANT_ACTIVE, [LOW] NEW_COUNTERPARTY | 0 | not evaluable (no transactions in the 7 days before T_b) |
+| C-001-5 | 63 | 6 / 5 | 5 | [LOW] NEW_COUNTERPARTY | 15 | [MEDIUM] REGIME_SHIFT |
+
+### 8.2. Summary Counters
+
+- **Flagged at $T_a$**: **2 of 5** (C-001-2: score 50; C-001-4: score 35)
+- **Evaluable at $T_b$**: **2 of 5**; **flagged at $T_b$**: **1 of 2 evaluable** (C-001-2: score 50; C-001-5: score 15)
+- **Newly flagged at $t_0$ (not flagged at $T_b$, flagged at $T_a$)**: **0 of 2 evaluable**; **1 case flagged at $T_a$ is not evaluable at $T_b$** (Case C-001-4 was flagged at $T_a$ with score 35 due to `DORMANT_ACTIVE` triggered by the drain transaction, but had no transactions in the 7 days before $T_b$; Case C-001-2 was already flagged at $T_b$)
+
+### 8.3. Corrected History Fetch Stop Reasons
+
+Under the pilot retrieval logic, transactions older than $t_0$ were fetched in pages of up to 100 transactions using `before=<cursor>`:
+
+- **C-001-1**:
+  - Pages fetched: 1 page (100 history transactions + 1 separate $t_0$ transaction = 101 total).
+  - Last page size: 100 transactions.
+  - Earliest transaction: `2022-02-22T18:29:44Z` (161.21 days before $t_0$).
+  - Stop reason: `first page older than 90 days` (single batch of 100 transactions already reached beyond $t_0 - 90\text{d}$).
+  - *Note*: Older on-chain transactions may exist beyond 161 days; the baseline was constructed from the latest 100 fetched transactions.
+- **C-001-2**:
+  - Pages fetched: 4 pages (400 history transactions + 1 separate $t_0$ transaction = 401 total).
+  - Last page size: 100 transactions (all 4 pages were full).
+  - Earliest transaction: `2022-05-04T16:04:30Z` (90.28 days before $t_0$).
+  - Stop reason: `reached the 90-day rule after several pages` (stopped after 4 full pages upon crossing the 90-day threshold).
+  - *Note*: Older on-chain transactions may exist; the baseline was constructed from the 376 transactions older than 7 days from the fetched set.
+- **C-001-3**:
+  - Pages fetched: 1 page (44 history transactions + 1 separate $t_0$ transaction = 45 total).
+  - Last page size: 44 transactions (< 100).
+  - Earliest transaction: `2021-10-28T05:15:00Z` (278.76 days before $t_0$).
+  - Stop reason: `history exhausted` (returned a partial page of 44 transactions; entire on-chain history of the wallet was retrieved).
+- **C-001-4**:
+  - Pages fetched: 1 page (100 history transactions + 1 separate $t_0$ transaction = 101 total).
+  - Last page size: 100 transactions.
+  - Earliest transaction: `2021-11-07T06:43:24Z` (268.77 days before $t_0$).
+  - Stop reason: `first page older than 90 days` (single batch of 100 transactions already reached beyond $t_0 - 90\text{d}$).
+  - *Note*: Older on-chain transactions may exist beyond 268 days; the baseline was constructed from the latest 100 fetched transactions.
+- **C-001-5**:
+  - Pages fetched: 1 page (62 history transactions + 1 separate $t_0$ transaction = 63 total).
+  - Last page size: 62 transactions (< 100).
+  - Earliest transaction: `2022-03-26T14:31:54Z` (129.49 days before $t_0$).
+  - Stop reason: `history exhausted` (returned a partial page of 62 transactions; entire on-chain history of the wallet was retrieved).
+
+### 8.4. What This Pilot Can and Cannot Say
+
+- **What it CAN say**:
+  - It demonstrates the exact, reproducible behavior of the frozen submitted version (tag `submission-colosseum-fall2026`) on five sampled wallets from one documented real-world incident (`INC-2022-08-SLOPE`), evaluated at two stated check times ($T_a$ and $T_b$).
+- **What it CANNOT say**:
+  - It cannot determine detection quality, sensitivity, or detection rate.
+  - It cannot determine false-alarm rate (FAR) or specificity, as no control or ordinary wallets were scored.
+  - It cannot generalize to other incidents, key-theft mechanisms, or wallet types.
+  - The sample was drawn exclusively from victims whose seed phrases/keys were documented in the S3 transmission logs (1,326 identified out of an estimated ~9,231 affected wallets).
+  - History depth differs substantially between cases (from 45 to 401 transactions, spanning 90 to 278 days).
+  - Price feeds and token metadata were not available (`prices = null`, `mintRisk = null`), meaning price-dependent and token-concentration rules were not evaluated.
+
+### 8.5. Hypothesis for a Future Version (Not Tested, Not Tuned on These Cases)
+
+A private key compromise or unauthorized wallet takeover typically sweeps most or all assets to a newly seen address in a short burst of outgoing transfers. The current submitted rules focus heavily on decentralized exchange swaps, token metadata, and behavioral novelty (such as counterparty/protocol introduction and cadence shifts).
+
+Any new rule designed to detect asset drainage or balance depletion sweeps would need to be preregistered and evaluated strictly on incidents not used in this exploratory pilot and against an appropriate control group of ordinary non-compromised wallets.

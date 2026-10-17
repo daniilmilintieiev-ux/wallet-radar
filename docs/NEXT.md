@@ -13,5 +13,5 @@ Planned order:
 3. Fixes for the known weaknesses (docs/DESIGN-REVIEW.md, docs/KNOWN-ISSUES.md).
 4. A new preregistered test with sample size calculated in advance.
 
-Current step: pilot diagnostics, equivalence tests, and Deviation 1 documented (docs/next/cases/PILOT-RESULT-INC-2022-08-SLOPE.md).
+Current step: descriptive pilot on INC-2022-08-SLOPE done (docs/next/cases/PILOT-RESULT-INC-2022-08-SLOPE.md). Not done: control wallets, further incidents. Open decision for the author: continue or pause.
 Sampling INC-2022-08-SLOPE: rules fixed in docs/next/cases/SAMPLING-INC-2022-08-SLOPE.md before any on-chain check.
