@@ -51,7 +51,8 @@ export function scoreAt(wallet, txs, T) {
   );
 
   const riskScore = computeRiskScore(anomalies);
-  const baselineMode = baselineTxs.length !== txs.length ? "windowed" : "snapshot";
+  const priorCount = txs.filter((t) => (t.timestamp ?? 0) < windowStart).length;
+  const baselineMode = priorCount >= 3 ? "windowed" : "snapshot";
 
   return {
     riskScore,
