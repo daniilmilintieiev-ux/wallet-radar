@@ -13,4 +13,4 @@ Planned order:
 3. Fixes for the known weaknesses (docs/DESIGN-REVIEW.md, docs/KNOWN-ISSUES.md).
 4. A new preregistered test with sample size calculated in advance.
 
-Current step: see docs/next/DETECTION-TARGET.md (draft v0).
+Current step: detection target v0.1 (docs/next/DETECTION-TARGET.md) and the case list (docs/next/cases/). No case is scored until the list is frozen.
