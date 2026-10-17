@@ -13,5 +13,5 @@ Planned order:
 3. Fixes for the known weaknesses (docs/DESIGN-REVIEW.md, docs/KNOWN-ISSUES.md).
 4. A new preregistered test with sample size calculated in advance.
 
-Current step: pilot scoring specification (docs/next/cases/SCORING-SPEC-PILOT.md) fixed before any run; then a descriptive pilot on the sampled Slope wallets.
+Current step: descriptive pilot on the sampled Slope wallets completed (docs/next/cases/PILOT-RESULT-INC-2022-08-SLOPE.md).
 Sampling INC-2022-08-SLOPE: rules fixed in docs/next/cases/SAMPLING-INC-2022-08-SLOPE.md before any on-chain check.
