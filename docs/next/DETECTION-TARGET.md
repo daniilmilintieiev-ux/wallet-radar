@@ -1,7 +1,7 @@
-# Detection target (draft v0.1)
+# Detection target (draft v0.2)
 
-Status: draft v0.1, 2026-10-14 (correction of v0)
-Changes from v0: the two event types are separated by who is harmed; the check-time rule is corrected for takeover cases; measures are defined.
+Status: draft v0.2, 2026-10-14 (clusters, prices, sources)
+Changes from v0.1: incident is the unit of analysis; historical-price limitation; news articles are pointers only.
 Nothing here changes the submitted version (tag `submission-colosseum-fall2026`) or the preregistered test.
 
 ## 1. The question
@@ -25,6 +25,7 @@ A case is accepted only if all of the following hold:
 2. The wallet address and the signature of the first harmful transaction (t0) are public and checkable on chain.
 3. At least 20 transactions of the wallet exist before t0, so that a baseline can exist; otherwise the case is recorded as "no baseline" and analyzed separately.
 4. The event type is one of those chosen in section 10 and the description names the loss to counterparties.
+5. Incidents and clusters. One cause with many victim wallets (for example a key leak in wallet software) is one incident. At most 5 wallets per incident are sampled, chosen by a seeded random draw whose seed and script are recorded before sampling. Results are reported per wallet and per incident (an incident counts as flagged at t0 if at least one sampled wallet is flagged). Sample-size planning in section 6 counts independent incidents, not wallets.
 
 For every case the file records: address, t0, event type, source link, source date, who recorded it and when.
 
@@ -51,6 +52,7 @@ Target: at least 200 comparison cases.
 - Sensitivity: for a 95% Wilson interval with half-width at most 0.15 around 0.5, about 43 positive cases are needed (1.96^2 x 0.25 / 0.15^2 = 42.7). With fewer than 30 positives no claim is made.
 - Specificity: for a half-width at most 0.05 around 0.9, about 139 comparison cases (1.96^2 x 0.09 / 0.05^2 = 138.3). The plan is 200 or more.
 - If fewer than 30 positives are found in the available time, the study is reported as a case series, not as a test.
+- The sensitivity estimate above applies to independent incidents; wallets from one incident are correlated and are not counted as independent positives.
 
 ## 6b. Measures (fixed before scoring)
 
@@ -65,6 +67,7 @@ Target: at least 200 comparison cases.
 
 - Results would apply only to the kinds of wallets and events sampled; they would not transfer to other chains, to bots and snipers, or to token-level risk.
 - Documented incidents are biased toward large and public events. This is recorded as a limitation in the result.
+- Historical valuation: the radar normalizes amounts to USD. For old events, historical prices may be missing or approximate. The price source and its date are recorded per case, and cases where a rule depends on prices (for example the large-swap rule) are marked.
 
 ## 8. Target B (token collapse), deferred
 
