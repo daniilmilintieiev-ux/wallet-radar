@@ -12,3 +12,5 @@ Planned order:
 2. Labeled cases: documented incidents with independent sources and a comparison set of ordinary wallets.
 3. Fixes for the known weaknesses (docs/DESIGN-REVIEW.md, docs/KNOWN-ISSUES.md).
 4. A new preregistered test with sample size calculated in advance.
+
+Current step: see docs/next/DETECTION-TARGET.md (draft v0).
