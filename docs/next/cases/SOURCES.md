@@ -5,3 +5,5 @@ Acceptable (must publish the wallet address and allow t0 to be checked on chain)
 Not acceptable: posts without addresses, rumors, paid promotion, the radar's own output, and claims that the source itself says cannot be established from on-chain flows alone (record as allegation).
 
 Every source URL and date are recorded; the source must be reachable without a login.
+
+News articles are accepted only as pointers. For every case the primary source (the investigator's post, the incident report or the official statement) is found and recorded; a case with only secondary sources stays 'candidate'.
