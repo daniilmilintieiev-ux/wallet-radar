@@ -149,3 +149,41 @@ Report overall summary in raw counts only:
 
 This specification is committed and pushed to `next` **before** any evaluation script is run on the pilot cases.
 If any technical adjustment is required during execution, it must be recorded under a `Deviations` section in the results file with exact rationale.
+
+## 11. Amendment 1 (before any run)
+
+This amendment refines the scoring protocol prior to executing any on-chain pilot queries:
+
+1. **History depth**:
+   - The fetched transaction history for a check time $T$ extends back to $T - 90\text{ days}$ or 1,000 transactions, whichever comes first.
+   - The exact depth reached (number of transactions and oldest timestamp) is recorded per case.
+   - The baseline includes every fetched transaction older than $T - 7\text{ days}$ (i.e. not artificially clamped to a 14-day window).
+
+2. **Pipeline**:
+   - Composed directly from the exported modules of the submitted build (`submission-colosseum-fall2026` in `radar-submitted/dist/`):
+     - `selectScoring` (`dist/src/trust.js`)
+     - `updateBaseline` (`dist/src/baseline.js`)
+     - `detectAnomalies` (`dist/src/analyzer.js`)
+     - `computeRiskScore` (`dist/src/analyzer.js`)
+   - An explicit check time $T$ is passed instead of system `Date.now()`.
+   - An equivalence test against `runTrustCheck` on a synthetic fixture with a stubbed network must produce identical anomaly types and `riskScore`. If the equivalence test does not pass, the pilot is not run.
+
+3. **Price-dependent behavior**:
+   When evaluating with `prices = null` and `mintRisk = null`:
+   - `LARGE_SWAP` (`src/analyzer.ts:681-721`): With `prices = null` (or `usdMedian === 0`), the rule falls back to evaluating raw quantities on `MAJOR_MINTS` (`SOL_MINT`, `USDC_MINT`, `USDT_MINT`) if `rawMedian > 0 && rawSamples >= 5`. Swaps involving non-major mints cannot be evaluated for `LARGE_SWAP` and are skipped.
+   - `TOXIC_MINT` (`src/analyzer.ts:811-872`): Conditioned on `if (mintRisk)`. With `mintRisk = null`, the entire check is skipped (no `TOXIC_MINT` anomalies are emitted).
+   - `REGIME_SHIFT` (amount dimension) (`src/analyzer.ts:953-978`): With `prices = null`, the amount shift dimension falls back to major token amounts (`MAJOR_MINTS`: SOL, USDC, USDT) if `rawMedian > 0 && recentMajors.length >= 2`. Other token swaps are omitted from the amount dimension.
+   - `updateBaseline` (`src/baseline.ts:68-76, 92-96, 125-127`): With `prices = null`, `recentSwapAmountsUsd` is not populated (`medianSwapAmountUsd` remains `undefined`), and PnL FIFO matching does not calculate realized USD.
+   - Rules whose behavior is affected by missing prices are flagged as `price-dependent` in the report.
+
+4. **Data fetching**:
+   - Historical transactions are retrieved via the Helius Enhanced Transactions API (`/v0/addresses/{wallet}/transactions`) using pagination with the `before` parameter (page size: 100).
+   - The $t_0$ drain transaction itself is fetched / parsed by its signature (`POST /v0/transactions` or API query) and included in the dataset.
+   - Budget constraint: At most 300 requests to Helius in total for the entire stage. If the cap is reached, any remaining case is marked as `incomplete history` and not scored.
+
+5. **Time rule**:
+   - $T_a$ history: All fetched transactions with `timestamp <= t0`, including the confirmed $t_0$ drain transaction.
+   - $T_b$ history: All fetched transactions strictly before the compromise: `timestamp < t0 - 300` seconds.
+
+6. **Not changed**:
+   - All criteria, thresholds, and reporting formats from Sections 1 through 10 remain in full effect.
