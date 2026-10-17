@@ -1,19 +1,21 @@
-# Detection target (draft v0)
+# Detection target (draft v0.1)
 
-Status: draft, written on 2026-10-17 in branch `next` before any new data is collected. Nothing here changes the submitted version (tag `submission-colosseum-fall2026`) or the preregistered test.
+Status: draft v0.1, 2026-10-14 (correction of v0)
+Changes from v0: the two event types are separated by who is harmed; the check-time rule is corrected for takeover cases; measures are defined.
+Nothing here changes the submitted version (tag `submission-colosseum-fall2026`) or the preregistered test.
 
 ## 1. The question
 
 Before an agent copies a trade from, or sends money to, a wallet W: using only W's on-chain history up to a stated check time, can a behavioral check tell, better than chance, whether W is about to act against its counterparties?
 
-## 2. What "act against its counterparties" means (target A)
+## 2. Events in scope
 
-Target A is a break in a wallet's behavior that is followed, within H days (default H = 3), by a loss to the people who copied it or paid it. Two event types are candidates (the author decides, see section 10):
+The submitted tool is a behavior-break detector. Two kinds of documented events are in scope; each is evaluated separately.
 
-- A1. Takeover: a quiet or ordinary wallet starts moving funds in a way the owner did not intend (drainer or key compromise) and counterparties lose money through it, documented by an independent source.
-- A2. Dump on followers: a wallet that is publicly copied sells or moves out a position that followers just bought, within minutes or hours, documented by an independent source.
+- A1. Takeover: a wallet is drained or taken over by someone other than its owner, documented by an independent source with a public victim address and a public first harmful transaction (t0). The owner or a custodian is the victim. Use case: continuous watch and alert.
+- A2. Dump on followers: a wallet that others copy or follow sells or moves a position within hours of its followers buying, documented by an independent source. The followers are the victims. Use case: pre-trade gate.
 
-Out of scope for this target: token-level collapse that does not depend on who bought the token (target B, section 8), and ordinary market losses.
+Out of scope: token-level collapse independent of who bought (target B, section 8) and ordinary market losses.
 
 ## 3. Positive cases (events)
 
@@ -39,7 +41,7 @@ Target: at least 200 comparison cases.
 ## 5. Rules that protect the result
 
 1. Labels are collected and frozen before the radar is run on any case.
-2. The check time is t0 minus 5 minutes for a positive case, and a random time inside the matched window for a comparison case. History after the check time is never given to the radar. Cases where the harmful act is the first sign of a break are recorded as "no pre-signal".
+2. Check time. A1: the radar is run twice: on the history up to and including t0 (the first harmful transaction), which measures whether it flags the break at the moment it happens, and on the history up to t0 minus 5 minutes, which measures whether any earlier signal exists; a case where t0 is the first transaction after a long silence is recorded as 'no pre-signal expected'. A2: the check time is the moment the followers' buys begin, as documented by the source, never later. Comparison wallets: a random time inside the matched window. History after the check time is never given to the radar.
 3. Cases found while looking at radar output are not added.
 4. The decision rule (what counts as success) is written into a new preregistration section before any case is scored.
 5. All cases, sources and scoring output are published, including the cases that make the radar look bad.
@@ -49,6 +51,15 @@ Target: at least 200 comparison cases.
 - Sensitivity: for a 95% Wilson interval with half-width at most 0.15 around 0.5, about 43 positive cases are needed (1.96^2 x 0.25 / 0.15^2 = 42.7). With fewer than 30 positives no claim is made.
 - Specificity: for a half-width at most 0.05 around 0.9, about 139 comparison cases (1.96^2 x 0.09 / 0.05^2 = 138.3). The plan is 200 or more.
 - If fewer than 30 positives are found in the available time, the study is reported as a case series, not as a test.
+
+## 6b. Measures (fixed before scoring)
+
+- Flag at t0 (A1): the share of cases the radar flags with the first harmful transaction included, with a 95% Wilson interval.
+- Loss after the flag (A1, descriptive): the share of the documented loss that occurred after the flag time, computed from public transaction data.
+- Earlier signal (A1, descriptive): the share of cases flagged at t0 minus 5 minutes.
+- False-alarm rate: the share of comparison wallets flagged at the same decision threshold, with a 95% Wilson interval.
+- Decision threshold: fixed in the preregistration before any case is scored; no threshold is chosen from the data.
+- Reporting: A1 and A2 are reported separately; fewer than 30 positives in a type means a case series, not a test.
 
 ## 7. What this does not claim
 
@@ -65,7 +76,8 @@ The first test sampled first buyers of new pools. The radar flagged all 167 reso
 
 ## 10. Open decisions for the author (to be answered before the next step)
 
-1. Which event types are in scope: A1, A2 or both.
-2. The horizon H: keep 3 days or choose another.
-3. Which public sources are acceptable as independent.
-4. How many hours per week go into collecting cases, and the date by which the study must end.
+Defaults proposed on 2026-10-14 (to be confirmed by the author):
+1. Types: A1 first, A2 only if enough confirmed cases exist.
+2. Horizon H = 3 days for comparison wallets only.
+3. Sources: see docs/next/cases/SOURCES.md.
+4. Time: 1-2 hours per day; the list of cases is frozen by 2026-10-28.
